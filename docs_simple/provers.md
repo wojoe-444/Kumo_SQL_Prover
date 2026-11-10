@@ -154,6 +154,8 @@ A query that removes duplicates inside a subquery, then joins it to a table on w
 
 When a proof tries several fallback rules, it keeps the earlier normalization result for that same proof. It also keeps the assumptions attached to it. A different proof, such as one with different declared keys, starts fresh.
 
+A long calculation used to cost far more than its length. Take `SELECT c1 + c2 + .. + c40 FROM t` compared with itself: every `+` might overflow, and for each one the prover asked the solver two questions that carried all the columns before it. That took one to two minutes, however short the time limit was, because the limit applies to each question and not to their number. The questions are now put so that the earlier columns drop out of them where they cannot change the answer, and the same forty-column comparison takes two to three seconds. The answers are the same; only the work is less. The limit is still per question, so a very long expression can still take many times the limit. The [full reference](../docs/provers.md#numbers-and-runtime-errors) has the details and the measurements.
+
 If a query returns two columns and a view returns twenty, returning the entire view cannot answer that query. KumoSQL skips that impossible candidate and still proves any proposed two-column projection. Stars whose width is not settled keep the existing checks. These changes reduce work; they do not relax proof acceptance.
 
 Python can clean up old objects on a different thread from the one using the solver. KumoSQL now keeps that automatic cleanup inside the solver lock as well, and restores the caller's cleanup setting afterwards. This addresses concurrent proof hangs without changing proof acceptance or increasing test timeouts.
