@@ -26,6 +26,10 @@ jobs:
         id: floors
         continue-on-error: true
         run: python -m pytest -n auto -m eval -q --junitxml=eval-report.xml
+      - name: Run the slow tier
+        id: slow
+        continue-on-error: true
+        run: python -m pytest -n auto -m "not eval" -q
       - name: Check the scoreboard is current
         id: scoreboard
         continue-on-error: true
@@ -36,14 +40,14 @@ jobs:
           name: eval-report
           path: eval-report.xml
       - name: Open an issue when a floor dropped
-        if: steps.floors.outcome == 'failure' || steps.scoreboard.outcome == 'failure'
+        if: steps.floors.outcome == 'failure' || steps.slow.outcome == 'failure' || steps.scoreboard.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh issue create --repo "$GITHUB_REPOSITORY" \
             --title "Benchmark floors failed on $(date -u +%Y-%m-%d)" \
             --label benchmarks \
-            --body "The scheduled benchmark run failed (floors: ${{ steps.floors.outcome }}, scoreboard check: ${{ steps.scoreboard.outcome }}). Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || \
+            --body "The scheduled benchmark run failed (floors: ${{ steps.floors.outcome }}, slow tier: ${{ steps.slow.outcome }}, scoreboard check: ${{ steps.scoreboard.outcome }}). Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || \
           gh issue create --repo "$GITHUB_REPOSITORY" \
             --title "Benchmark floors failed on $(date -u +%Y-%m-%d)" \
             --body "The scheduled benchmark run failed. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

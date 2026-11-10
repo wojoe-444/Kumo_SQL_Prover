@@ -8,7 +8,7 @@ on:
 
 jobs:
   gate:
-    name: pytest (sqlglot 30.21.0 compiled, no benchmark floors)
+    name: gate (sqlglot 30.21.0 compiled, no benchmark floors, no slow tier)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,5 +19,5 @@ jobs:
       - name: Install
         run: python -m pip install -e ".[dev]" "sqlglotc==30.21.0" --only-binary sqlglotc
       - name: Run the gate
-        # Benchmark floors run on a schedule (benchmarks.yml); they report, they do not gate.
-        run: python -m pytest -n auto -m "not eval" -q
+        # Benchmark floors and the slow tier (tests/order.json) run on a schedule (benchmarks.yml); they report, they do not gate.
+        run: python -m pytest -n auto -m "not eval" --quick -q

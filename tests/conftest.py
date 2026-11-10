@@ -1,4 +1,5 @@
 import functools
+import json
 import os
 import re
 import sys
@@ -85,8 +86,36 @@ def eval_files() -> frozenset[str]:
     return frozenset(found)
 
 
-# The pull-request gate runs ``pytest -m "not eval"``; the scheduled benchmark run (``.github/workflows/benchmarks.yml``)
-# runs ``pytest -m eval``.
+# The pull-request gate runs ``pytest -m "not eval" --quick``; the scheduled benchmark run
+# (``.github/workflows/benchmarks.yml``) runs ``pytest -m eval``, and a full run is plain ``pytest``.
+ORDER_FILE = Path(__file__).resolve().parent / "order.json"
+
+
+def pytest_addoption(parser):
+    parser.addoption("--quick", action="store_true", default=False, help="skip the slow tier (the tests listed as slow in tests/order.json)")
+
+
+@functools.lru_cache(maxsize=1)
+def _slow_tests() -> frozenset[str]:
+    """Node ids of the tests that take about two seconds or more, measured over many runs (tests/order.json)."""
+
+    try:
+        return frozenset(json.loads(ORDER_FILE.read_text(encoding="utf-8")).get("slow", {}))
+    except (OSError, ValueError):
+        return frozenset()
+
+
+def pytest_collection_modifyitems(config, items):
+    """``--quick`` drops the slow tier. A canary stands for its benchmark family in the gate, so it is never dropped."""
+
+    if not config.getoption("--quick"):
+        return
+    slow = _slow_tests()
+    dropped = [item for item in items if item.nodeid in slow and not item.get_closest_marker("canary")]
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        gone = {id(item) for item in dropped}
+        items[:] = [item for item in items if id(item) not in gone]
 
 
 @pytest.fixture(autouse=True)
