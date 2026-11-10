@@ -123,15 +123,24 @@ def exact_class(compiler, e, env, agg, aliases) -> str | None:
         cls = compiler._class_of(e, env, agg, aliases)
         return cls if cls in SCALE else None
     if isinstance(e, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
+        from .smt_equivalence import _NOT_KEPT
+
+        # Every level of a long sum asks for this again: the compiler keeps the answer while it compiles the operands.
+        kept = compiler._kept_class("exact", e, env, agg, aliases)
+        if kept is not _NOT_KEPT:
+            return kept
         typed = S.fold_typed(e)
         if typed is not None:
-            return S.INT64 if typed[0] == "int" else None  # literal arithmetic is folded as BigQuery evaluates it
-        left = exact_class(compiler, e.this, env, agg, aliases)
-        right = exact_class(compiler, e.expression, env, agg, aliases)
-        if left is None or right is None:
-            return None
-        wide = _wide(left, right)
-        return None if wide == S.INT64 else wide  # INT64 op INT64 is not modelled here (and ``/`` of two is FLOAT64)
+            cls = S.INT64 if typed[0] == "int" else None  # literal arithmetic is folded as BigQuery evaluates it
+        else:
+            left = exact_class(compiler, e.this, env, agg, aliases)
+            right = exact_class(compiler, e.expression, env, agg, aliases)
+            if left is None or right is None:
+                cls = None
+            else:
+                wide = _wide(left, right)
+                cls = None if wide == S.INT64 else wide  # INT64 op INT64 is not modelled here (``/`` of two is FLOAT64)
+        return compiler._keep_class("exact", e, env, agg, aliases, cls)
     if isinstance(e, exp.Cast) and not isinstance(e, exp.TryCast):
         to = e.args["to"]
         if to.args.get("expressions"):
@@ -170,7 +179,8 @@ def compile_node(compiler, e, env, agg, aliases):
     """``(null, value)`` of ``e`` when it is an operation of this module on values of known scale, else ``None``.
     Records the overflow and division errors it can raise as error sites of the compiler."""
 
-    built = _build(compiler, e, env, agg, aliases)
+    with compiler._operands():  # an operand here is built by ``_build`` again, which asks for its class again
+        built = _build(compiler, e, env, agg, aliases)
     return None if built is None else built[:2]
 
 
