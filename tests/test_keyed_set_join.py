@@ -10,6 +10,8 @@ from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 from kumo_sql_prover.keyed_set_join import lift_keyed_set_join
 from kumo_sql_prover.smt_equivalence import TableConstraints
 
+pytestmark = pytest.mark.eval
+
 LEFT = "SELECT d.x,d.v,b.y FROM (SELECT DISTINCT f.x,f.v FROM f) d JOIN b ON d.x=b.k"
 RIGHT = "SELECT DISTINCT f.x,f.v,b.y FROM f JOIN b ON f.x=b.k"
 SCHEMA = {"f": ["x", "v"], "b": ["k", "y"]}

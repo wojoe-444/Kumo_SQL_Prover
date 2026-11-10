@@ -1,5 +1,6 @@
 import functools
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -64,38 +65,28 @@ def _no_pandas_probe():
         sys.modules.setdefault("pandas", None)
 
 
-# Test files that score the prover against a benchmark corpus and hold its floors. They are marked ``eval``, so
-# ``pytest -m eval`` runs just the floors and ``pytest -m "not eval"`` everything else. The pull-request gate runs
-# the second; the scheduled benchmark run (``.github/workflows/benchmarks.yml``) runs the first.
-EVAL_FILES = {
-    "test_calcite_mined_benchmarks.py",
-    "test_conditional_benchmark.py",
-    "test_conditional_candidates.py",
-    "test_constraint_dependence.py",
-    "test_cosette_benchmarks.py",
-    "test_dbgpt_rules_bench.py",
-    "test_dlbench_bench.py",
-    "test_engine_pairs_bench.py",
-    "test_eval_execution_cache.py",
-    "test_join_rewrite_bench.py",
-    "test_keyed_set_join.py",
-    "test_llm_sql_solver_bench.py",
-    "test_logos_bench.py",
-    "test_numeric_traps_bench.py",
-    "test_optimizer_bugs_bench.py",
-    "test_output_properties.py",
-    "test_qed_benchmarks.py",
-    "test_quite_bench.py",
-    "test_rbot_benchmarks.py",
-    "test_rbot_normalise.py",
-    "test_singh_bedathur_benchmark.py",
-    "test_smt_counterexample_determinism.py",
-    "test_soundness_fuzz.py",
-    "test_sqliq_bench.py",
-    "test_sqlsolver_benchmarks.py",
-    "test_uexpr_tpch.py",
-    "test_verieql_benchmarks.py",
-}
+# A test file that scores the prover against a benchmark corpus and holds its floors declares it with
+# ``pytestmark = pytest.mark.eval``: ``pytest -m eval`` runs just the floors and ``pytest -m "not eval"`` everything
+# else. Nothing registers the file here; ``eval_files`` finds the declaration.
+_EVAL_DECLARATION = re.compile(r"^pytestmark\s*=.*\bmark\.eval\b", re.M)
+
+
+@functools.lru_cache(maxsize=1)
+def eval_files() -> frozenset[str]:
+    """Names of the test files that declare themselves benchmark floors."""
+
+    found = set()
+    for path in Path(__file__).resolve().parent.glob("test_*.py"):
+        try:
+            if _EVAL_DECLARATION.search(path.read_text(encoding="utf-8")):
+                found.add(path.name)
+        except OSError:
+            continue
+    return frozenset(found)
+
+
+# The pull-request gate runs ``pytest -m "not eval"``; the scheduled benchmark run (``.github/workflows/benchmarks.yml``)
+# runs ``pytest -m eval``.
 
 
 @pytest.fixture(autouse=True)
@@ -110,9 +101,3 @@ def pytest_configure(config):
 
     _single_threaded_duckdb()
     _no_pandas_probe()
-
-
-def pytest_collection_modifyitems(config, items):
-    for item in items:
-        if item.path.name in EVAL_FILES:
-            item.add_marker(pytest.mark.eval)
