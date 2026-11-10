@@ -11,6 +11,7 @@ It is the prover of [KumoSQL](https://github.com/wojoe-444/KumoSQL), which uses 
 | Understand whether two queries match | [Provers](provers.md) |
 | Understand singleton joins and nested UNION identities in a proof | [Singleton aggregation and set identity](singleton-and-set-identity.md) |
 | See how rewrites are double-checked | [Proof safeguards](proof-safeguards.md) |
+| See why a benchmark score cannot go up unchecked | [Proof admission](proof-admission.md) |
 | See how KumoSQL checks it read a query correctly | [Parser checks](parser-checks.md) |
 | See when two queries match only if some facts hold | [Equivalent under conditions](conditional-equivalence.md) |
 | See why two queries differ, as one condition | [Difference explanations](difference-explanations.md) |
