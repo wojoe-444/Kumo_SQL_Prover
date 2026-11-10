@@ -11,6 +11,7 @@ Start with the [README](../README.md): what the prover answers, how to install i
 | [Singleton aggregation and set identity](singleton-and-set-identity.md) | Key-fixed aggregation and scoped set-tree identity, with explicit collation conditions |
 | [Equivalence provers](provers.md) | Structural prover, synthetic-data comparison, Z3, the algebraic prover and SQLSolver |
 | [Proof safeguards](proof-safeguards.md) | The independent predicate, CTE, parenthesis, DISTINCT, qualification, layout, subquery-lift and prover column-resolution checkers, the checker registry, Dataform expressions in proofs, and what is not covered yet |
+| [Proof admission](proof-admission.md) | The ledger of proofs each eval's count is made of, the gate that compares the two, and how a new proof is admitted |
 | [Parser checks](parser-checks.md) | A second reading of every query a proof depends on, checked against MySQL, DuckDB and BigQuery, and what sqlglot gets wrong |
 | [Equivalent under conditions](conditional-equivalence.md) | The fourth verdict: a pair that is equal when stated NOT NULL, unique or foreign-key facts hold, with a SQL check for each |
 | [Difference explanations](difference-explanations.md) | "Equivalent except when P": a verified predicate for the rows two different queries disagree on, in the API, CLI, Compare queries and change reports |
