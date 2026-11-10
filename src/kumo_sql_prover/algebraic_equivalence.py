@@ -105,7 +105,21 @@ from .constant_correlation import propagate_constant_correlations
 from .constant_regroup_rules import collapse_constant_regroup
 from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
+from .closed_sources import closed_derived_source, inner_join_conditions, plain_inner_join
+from .listed_output_names import name_listed_outputs
 from .membership_dedup import relax_membership_dedup
+from .case_arm_rules import rewrite_case_arms
+from .unmatched_outer_join import drop_unmatched_left_join
+from .having_count_rules import rewrite_count_tests
+from .semijoin_shapes import rewrite_semijoin_shapes
+from .grouped_self_membership import read_grouped_self_membership
+from .disjoint_union import separate_disjoint_unions
+from .one_row_tails import drop_one_row_tail
+from .string_spelling_rules import string_spelling_rules
+from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
+from .printed_spelling import spell_as_printed
+from .tailed_grouping_sets import isolate_tailed_grouping_sets
+from .wrapped_join_filters import push_filter_into_wrapped_join
 from .smt_equivalence import SmtEquivalenceResult, SmtStatus, prove_equivalent_smt
 
 MAX_BRANCHES = 16
@@ -1179,10 +1193,10 @@ def _decorrelated(inner: exp.Select, table_columns, outer_resolves):
     if len(inner.expressions) != 1 or not _no_extras(inner, allow_group=False) or inner.args.get("limit"):
         return None
     sources = _sources_of(inner)
-    if not sources or any(not isinstance(i, exp.Table) or not i.alias_or_name for i in sources):
+    if not sources or any(not (isinstance(i, exp.Table) or closed_derived_source(i, table_columns)) or not i.alias_or_name for i in sources):
         return None
     for join in inner.args.get("joins") or []:
-        if join.args.get("side") or join.args.get("kind") in _OUTER or join.args.get("using") is not None or join.args.get("on") is not None:
+        if join.args.get("side") or join.args.get("kind") in _OUTER or join.args.get("using") is not None or not plain_inner_join(join):
             return None
     known = [(i.alias_or_name.lower(), table_columns(i)) for i in sources]
     if any(cols is None for _, cols in known) or len({a for a, _ in known}) != len(known):
@@ -1215,11 +1229,11 @@ def _decorrelated(inner: exp.Select, table_columns, outer_resolves):
             return None
         return kinds.pop()
 
-    if any(isinstance(n, (exp.Subquery, exp.Exists)) for n in inner.walk() if n is not inner):
+    if any(isinstance(n, (exp.Subquery, exp.Exists)) for n in inner.walk() if n is not inner and not any(_within(n, s) for s in sources)):
         return None
     local, keys = [], []
     where = inner.args.get("where")
-    for condition in _conjuncts(where.this) if where is not None else []:
+    for condition in [c for part in ([where.this] if where is not None else []) + inner_join_conditions(inner) for c in _conjuncts(part)]:
         columns = list(condition.find_all(exp.Column))
         kinds = {side(c) for c in columns}
         if kinds == {"inner"} or not columns:
@@ -4845,7 +4859,7 @@ def normalize(
     can hide a match the first attempt finds.
     """
 
-    tree = expand_alias_columns(check_modeled(canonical_negation(strip_positions(sqlglot.parse_one(sql, read=dialect)))), schema)
+    tree = expand_alias_columns(name_listed_outputs(check_modeled(canonical_negation(strip_positions(sqlglot.parse_one(sql, read=dialect))))), schema)
     if group_by_constants:
         tree = _drop_constant_groupings(tree)
     tree = _resolve_ordinals(tree, group_by=not group_by_constants)
@@ -4855,6 +4869,10 @@ def normalize(
     tree = inline_named_windows(tree)
     from .nonnull_any import rewrite_nonnull_any
 
+    from .mysql_exists_casts import drop_mysql_exists_cast
+    from .single_source_columns import qualify_single_source_columns
+
+    tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
     tree = trim_redundant_row_clauses(tree)
@@ -4865,8 +4883,10 @@ def normalize(
     tree = exists_over_aggregate(tree)
     tree = fold_grouped_count_cases(tree, not_null)
     tree = _left_join_indicator_to_exists(tree, keys)
+    tree = read_grouped_self_membership(tree, dialect)  # before the groups of an IN subquery become a derived table
     tree = _grouped_in_to_derived(tree)
     tree = _in_over_union(tree)
+    tree = separate_disjoint_unions(tree)
     tree = expand_grouping_sets(tree)
     for select in list(tree.find_all(exp.Select))[::-1]:
         replacement = collapse_grouping_expansion(select) or collapse_counted_intersection(select)
@@ -4875,7 +4895,7 @@ def normalize(
                 tree = replacement
             else:
                 select.replace(replacement)
-    tree = grouping_sets_to_union(tree)
+    tree = grouping_sets_to_union(isolate_tailed_grouping_sets(tree))  # pre-pass: a row tail moves one level up first
     tree = _drop_group_in_membership_tests(tree)
     tree = _fold_dates(extract_to_ranges(tree))
     tree = _fold_boolean_constants(_fold_constants(tree))
@@ -4940,6 +4960,15 @@ def normalize(
             for rule in (null_contradiction, lambda sel: nullable_lateral_boolean_group(sel, schema, not_null), distribute_over_constant_union, collapse_named_counted_intersection, lambda sel: distinct_rules(sel, schema), _mean_times_count, _single_row_source, lambda sel: _drop_exists_witnessed_by_join(sel, dialect), _drop_empty_null_extended_side, _inline_constant_source, _constant_counts, _inline_constant_columns, lambda sel: _push_distinct_into_sources(sel, schema, keys), _push_filter_into_derived, push_filter_into_set_operation, _unwrap_distinct_projection, _drop_redundant_distinct_source, left_join_to_inner, lambda sel: join_rewrites(sel, schema, not_null, foreign_keys), strengthen_under_outer_on, _full_join_to_one_sided, lambda sel: _drop_unused_left_join(sel, keys), lambda sel: decorrelation_step(sel, not_null, schema, dialect), lambda sel: _decorrelate_aggregate(sel, schema), lambda sel: _decorrelate_select_list(sel, schema), lambda sel: _inline_expression_projection(sel, schema), _inline_expression_projection, _prune_derived, _distinct_over_union_all, _merge_spj_source, _fold_filter_into_grouping, _merge_outer_right_filter, lambda sel: move_exists_into_padded_side(sel, schema), lambda sel: _drop_derived_null_guard(sel, not_null or {}), lambda sel: _pull_up_exists(sel, schema), lambda sel: _drop_implied_exists(sel, schema), _flatten_join_source, lambda sel: outer_join_rules(sel, keys), qualify, _order_grouped_columns, fold_literal_int_div, lambda sel: _fold_identity_casts(sel, types_map, dialect), lambda sel: fold_casts_and_constant_cases(sel, types_map, dialect), lambda sel: _shifted_sums(sel, types_map), _wrap_outer_join_aggregate, lambda sel: limit_rule(sel, types_map, dialect), _lift_limit_derived, _group_by_to_distinct, _unwrap_projection, key_having_to_where, window_rules, _collapse_aggregate, _drop_global_null_filter, _roll_up_aggregate, _regroup_distinct, lambda sel: regroup_arithmetic(sel, (_collapse_aggregate, _roll_up_aggregate, _regroup_distinct)), _split_aggregates, _distribute, unnest_grouped_source, flatten_grouped_join, lambda sel: pull_up_aggregate(sel, keys), lambda sel: read_back_eager_sums(sel, not_null), _key_aggregates, rewrite_aggregates, lambda sel: remove_keyed_grouping(sel, keys, not_null), lambda sel: drop_fk_join(sel, keys, not_null, foreign_keys), drop_unread_outer_join, strengthen_derived_outer_join, lambda sel: drop_grouped_sum_coalesce(sel, not_null or {}), lift_derived_expressions, lambda sel: _indicator_join_above(sel, keys), split_distinct_select, grouped_outer_join_rules, lambda sel: propagate_constant_correlations(sel, types_map), lambda sel: propagate_grouped_join_facts(sel, types_map), lambda sel: expose_correlated_key_groups(sel, keys, not_null or {}, types_map), lambda sel: exists_constant_rules(sel, schema, not_null, foreign_keys, types_map), collapse_constant_regroup, regroup_tuple_count, sum_of_grouped_counts,
                     fold_boolean_identities,
                     relax_membership_dedup,
+                    lambda sel: drop_mysql_exists_cast(sel, dialect),
+                    lambda sel: rewrite_case_arms(sel, dialect),
+                    lambda sel: drop_unmatched_left_join(sel, schema, dialect),
+                    rewrite_count_tests,
+                    lambda sel: rewrite_semijoin_shapes(sel, schema, types_map),
+                    lambda sel: string_spelling_rules(sel, types_map, dialect),
+                    wrap_tailed_outer_join_aggregate,
+                    push_filter_into_wrapped_join,
+                    drop_one_row_tail,
             ):
                 rewritten = rule(node)
                 if rewritten is not None:
@@ -4971,6 +5000,7 @@ def normalize(
             if replacement is not None:
                 subquery.replace(replacement)
     tree = expose_set_identity(tree, schema)
+    tree = spell_as_printed(tree, dialect)  # post-pass: the tree must match the text printed from it
     return faithful_sql(parenthesize_is_operands(_parenthesize_boolean(_parenthesize_set_operations(_constant_keys(canonical_empty(tree))))), dialect)
 
 
