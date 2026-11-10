@@ -13,6 +13,7 @@ import sqlglot
 pytest.importorskip("z3")
 pytest.importorskip("duckdb")
 
+from kumo_sql_prover import bigquery_syntax, result_equivalence
 from kumo_sql_prover import bounded_equivalence, check_result_equivalence, prove_equivalent, prove_equivalent_smt, statement_proof, tie_determinism
 from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 from kumo_sql_prover.result_equivalence import ResultEquivalenceStatus, query_constants
@@ -85,22 +86,41 @@ def test_the_tie_analysis_and_the_tie_witness_search_do_not_raise(case):
     assert isinstance(query_constants(UNREADABLE[case], PLAIN), dict)
 
 
-def test_a_long_chain_of_set_operations_is_an_error_not_a_crash():
-    """142 branches are as deep for the SQL writer as fifty nested parentheses are for the parser."""
+def _boom(*args, **kwargs):
+    raise RecursionError("maximum recursion depth exceeded")
+
+
+def test_a_long_chain_of_set_operations_is_an_error_not_a_crash(monkeypatch):
+    """142 branches are as deep for the SQL writer as fifty nested parentheses are for the parser, on an interpreter whose
+    recursion limit and sqlglot build make that so (a compiled sqlglot keeps no Python frames and reads them all).
+    The conversion is pinned by raising the error where it would come from; the real chain must be answered either way."""
 
     chain = " UNION ALL ".join([PLAIN] * 142)
+    real = check_result_equivalence(chain, chain, TYPES, seeds=(1,))
+    assert real.status in (ResultEquivalenceStatus.EQUIVALENT, ResultEquivalenceStatus.ERROR), real
+    assert real.status is ResultEquivalenceStatus.EQUIVALENT or "nested too deeply" in real.reason
+    monkeypatch.setattr(result_equivalence, "spell_for_duckdb", _boom)
     result = check_result_equivalence(chain, chain, TYPES, seeds=(1,))
     assert result.status is ResultEquivalenceStatus.ERROR and "nested too deeply" in result.reason
+    monkeypatch.undo()
     assert prove_equivalent_smt(chain, chain, schema=SCHEMA).status is SmtStatus.PROVEN_EQUIVALENT  # the provers read it
 
 
-def test_deep_nesting_is_a_parse_error_for_every_caller_of_the_bigquery_parser():
-    """One place turns the interpreter's ``RecursionError`` into the ``ParseError`` callers already handle."""
+def test_deep_nesting_is_a_parse_error_for_every_caller_of_the_bigquery_parser(monkeypatch):
+    """One place turns the interpreter's ``RecursionError`` into the ``ParseError`` callers already handle. Whether sixty
+    parentheses exhaust the stack depends on the interpreter's limit and on whether sqlglot is compiled, so the conversion
+    is pinned by raising the error where the parse would, and the real text must give a tree or a ParseError, never a crash."""
 
-    with pytest.raises(sqlglot.errors.ParseError, match="nested too deeply"):
+    try:
         sqlglot.parse_one(DEEP, read="bigquery")
+    except sqlglot.errors.ParseError as error:
+        assert "nested too deeply" in str(error)
+    monkeypatch.setattr(bigquery_syntax, "_check_literals", _boom)
     with pytest.raises(sqlglot.errors.ParseError, match="nested too deeply"):
-        sqlglot.parse(DEEP + "; SELECT 1", read="bigquery")
+        sqlglot.parse_one("SELECT 1", read="bigquery")
+    with pytest.raises(sqlglot.errors.ParseError, match="nested too deeply"):
+        sqlglot.parse("SELECT 1; SELECT 2", read="bigquery")
+    monkeypatch.undo()
     assert sqlglot.parse_one("SELECT " + "(" * 20 + "1" + ")" * 20, read="bigquery") is not None  # ordinary nesting still parses
 
 
