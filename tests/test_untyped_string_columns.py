@@ -151,3 +151,41 @@ def test_another_tables_declared_type_does_not_type_a_bare_column(prover, types)
     integer ``t.s`` that holds 0."""
 
     assert not prover("SELECT k FROM t WHERE s = 'x' AND s = 'y'", "SELECT k FROM t WHERE FALSE", dialect="mysql", types=types).proven
+
+
+JOINED = (
+    "SELECT t.k FROM t JOIN u ON t.k = u.k WHERE s = 'x' AND s = 'y'",
+    "SELECT t.k FROM t JOIN u ON t.k = u.k WHERE FALSE",
+)
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+def test_a_schema_that_lists_the_other_tables_columns_types_the_bare_name(prover):
+    """Only ``t.s`` is declared (a caller may type just the text columns); the schema says ``u`` has no ``s``, so ``s`` is ``t.s``."""
+
+    types, schema = {"t": {"s": "VARCHAR"}}, {"t": ["k", "s"], "u": ["k", "v"]}
+    assert prover(*JOINED, dialect="mysql", types=types, schema=schema).status is SmtStatus.PROVEN_EQUIVALENT
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+@pytest.mark.parametrize("types, schema", [
+    ({"t": {"s": "VARCHAR"}}, None),  # nothing is known about u: it may hold an untyped s
+    ({"t": {"s": "VARCHAR"}, "u": {"k": "INT"}}, None),  # u's types need not list all of its columns
+])
+def test_a_bare_name_another_read_table_may_hold_is_not_typed(prover, types, schema):
+    assert not prover(*JOINED, dialect="mysql", types=types, schema=schema).proven
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+@pytest.mark.parametrize("types, schema", [
+    ({"u": {"s": "VARCHAR", "k": "INT"}}, {"t": ["k", "s"], "u": ["k", "s"]}),
+    ({"t": {"k": "INT"}, "u": {"s": "VARCHAR", "k": "INT"}}, None),
+    ({"t": {"k": "INT"}, "u": {"s": "VARCHAR", "k": "INT"}}, {"t": ["k", "s"], "u": ["k", "s"]}),
+])
+def test_a_bare_name_of_an_untyped_column_is_not_typed_by_a_table_read_in_another_select(prover, types, schema):
+    """``s`` is ``t.s``, which no type is declared for; ``u``, read only inside the EXISTS, declares its own ``s`` as text.
+    MySQL returns the rows of an integer ``t.s`` that holds 0 on the left and none on the right."""
+
+    left = "SELECT k FROM t WHERE s = 'x' AND s = 'y' AND EXISTS (SELECT 1 FROM u WHERE u.k = t.k)"
+    right = "SELECT k FROM t WHERE FALSE"
+    assert not prover(left, right, dialect="mysql", types=types, schema=schema).proven

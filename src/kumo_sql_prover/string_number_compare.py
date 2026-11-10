@@ -67,6 +67,19 @@ def _data_type_kind(data_type: object) -> str | None:
     return _type_kind(data_type.sql()) if isinstance(data_type, exp.DataType) else None
 
 
+def _listed_columns(schema: dict | None) -> dict[str, set[str]]:
+    """Table name to the lower-cased column names the schema lists for it (tables it lists no columns for are left out)."""
+
+    listed: dict[str, set[str]] = {}
+    for name, columns in (schema or {}).items():
+        if isinstance(columns, str) or not isinstance(columns, (list, tuple, set, frozenset, dict)):
+            continue
+        names = {column.lower() for column in columns if isinstance(column, str)}
+        if names and len(names) == len(columns):
+            listed[str(name).lower().split(".")[-1]] = names
+    return listed
+
+
 def _column_kinds(types: dict[str, dict[str, str]] | None) -> dict[str, str]:
     """Declared kind of each column name that has one kind in every declared table."""
 
@@ -175,9 +188,10 @@ class _Kinds:
     as an unknown function and needs no help there.
     """
 
-    def __init__(self, tree: exp.Expression, types: dict[str, dict[str, str]] | None):
+    def __init__(self, tree: exp.Expression, types: dict[str, dict[str, str]] | None, schema: dict | None = None):
         self.tree = tree
         self.types = {name.lower().split(".")[-1]: {c.lower(): t for c, t in cols.items()} for name, cols in (types or {}).items()}
+        self.columns = _listed_columns(schema)
         self.by_name = _column_kinds(types)
         self.parent: dict[tuple[str, str], tuple[str, str]] = {}
         self.evidence: dict[tuple[str, str], set[str]] = {}
@@ -232,14 +246,21 @@ class _Kinds:
     def _declared_by_name(self, name: str) -> str | None:
         """The declared kind of a column known by its name alone: the one kind the tables this query reads give it.
 
-        A table the schema does not type may be the one that holds the column, so the name then has no declared kind;
-        a table the query does not read says nothing about it (another table's ``s VARCHAR`` does not type ``t.s``).
+        A table the query does not read says nothing about the name (another table's ``s VARCHAR`` does not type
+        ``t.s``). A table it does read may be the one that holds the column, in this select or in another one of the
+        query, unless the schema lists that table's columns and the name is not among them. So the name has a declared
+        kind only when every table read either declares it, with one kind, or is known not to have it. Types alone do
+        not say a table lacks a column: a caller may declare only some columns (the text columns of a table).
         """
 
         read = {table for tables in self.tables.values() for table in tables if table not in self.derived}
-        if not read or any(table not in self.types for table in read):
-            return None
-        kinds = {_type_kind(self.types[table][name]) for table in read if name in self.types[table]}
+        kinds = set()
+        for table in read:
+            declared = self.types.get(table, {})
+            if name in declared:
+                kinds.add(_type_kind(declared[name]))
+            elif table not in self.columns or name in self.columns[table]:
+                return None
         return kinds.pop() if len(kinds) == 1 else None
 
     def kinds(self, node: exp.Expression, depth: int = 0) -> set[str]:
@@ -443,7 +464,9 @@ class _Kinds:
                         self.union((aliases[0], name), (other, name))
 
 
-def problem(sql: str, dialect: str = "bigquery", types: dict[str, dict[str, str]] | None = None, plain_ok: bool = False) -> str | None:
+def problem(
+    sql: str, dialect: str = "bigquery", types: dict[str, dict[str, str]] | None = None, plain_ok: bool = False, schema: dict | None = None
+) -> str | None:
     """A description of the first string-versus-number comparison in ``sql``, else None.
 
     With ``plain_ok`` a plain two-operand comparison of operands whose kinds the schema or the text settles is not reported:
@@ -456,7 +479,7 @@ def problem(sql: str, dialect: str = "bigquery", types: dict[str, dict[str, str]
     except Exception:  # noqa: BLE001 - the prover reports the parse error itself
         return None
     columns = _column_kinds(types)
-    kinds = _Kinds(tree, types)
+    kinds = _Kinds(tree, types, schema)
     literal_kinds: dict[str, set[str]] = {}
     for left, right in _pairs(tree):
         sides = {_kind(left, columns), _kind(right, columns)}

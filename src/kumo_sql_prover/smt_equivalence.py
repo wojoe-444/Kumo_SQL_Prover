@@ -4856,7 +4856,9 @@ def _prove_core(
     """
 
     assumptions = BASE_ASSUMPTIONS + ((EXACT_ARITHMETIC_ASSUMPTION,) if exact_arithmetic else ())
-    compared = string_number_compare.problem(left_sql, dialect, types, plain_ok=True) or string_number_compare.problem(right_sql, dialect, types, plain_ok=True)
+    compared = string_number_compare.problem(left_sql, dialect, types, plain_ok=True, schema=schema) or string_number_compare.problem(
+        right_sql, dialect, types, plain_ok=True, schema=schema
+    )
     if compared:
         return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, f"unsupported: {compared}", assumptions=assumptions)
     if z3 is None:
