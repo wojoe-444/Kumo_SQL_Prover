@@ -736,7 +736,13 @@ def tpch_instance() -> Path | None:
 
     work = CACHE / f"tpch-parquet.{os.getpid()}"
     work.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["tpchgen-cli", "-s", "0.01", "--format", "parquet", "--output-dir", str(work)], check=True, capture_output=True)
+    # tpchgen-cli 4 takes the format as a subcommand; older releases take it as --format
+    for command in (["tpchgen-cli", "parquet", "-s", "0.01", "--output-dir", str(work)], ["tpchgen-cli", "-s", "0.01", "--format", "parquet", "--output-dir", str(work)]):
+        if subprocess.run(command, capture_output=True).returncode == 0:
+            break
+    else:
+        shutil.rmtree(work)
+        return None
     partial = CACHE / f"tpch-sf0.01.{os.getpid()}.duckdb"
     con = duckdb.connect(str(partial))
     for parquet in sorted(work.glob("*.parquet")):
