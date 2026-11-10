@@ -14,8 +14,8 @@ from kumo_sql_prover.having_count_rules import rewrite_count_tests
 SCHEMA = {"t": ["a", "b", "c"]}
 
 
-def rewritten(sql, dialect="mysql"):
-    out = rewrite_count_tests(canonical_negation(sqlglot.parse_one(sql, read=dialect)))
+def rewritten(sql, dialect="mysql", schema=None):
+    out = rewrite_count_tests(canonical_negation(sqlglot.parse_one(sql, read=dialect)), schema)
     return out.sql(dialect=dialect) if out is not None else None
 
 
@@ -91,6 +91,42 @@ def test_string_literals_in_a_counted_expression_keep_their_case():
     assert rewritten(other) is None
 
 
+def test_other_spellings_of_a_counted_key_test_are_read():
+    """The test is added to one query at a time, so each spelling of ``COUNT(a) > 1`` must get it."""
+
+    added = " AND NOT a IS NULL"
+    for sql in (
+        "SELECT a FROM t GROUP BY a HAVING COUNT(t.a) > 1",  # one source: t.a is a
+        "SELECT a FROM t GROUP BY a HAVING NOT COUNT(a) <= 1",
+        "SELECT a FROM t GROUP BY a HAVING NOT COUNT(a) < 2",
+        "SELECT a FROM t GROUP BY a HAVING COUNT(a) BETWEEN 1 AND 3",
+        "SELECT a FROM t AS x GROUP BY a HAVING 1 < COUNT(x.a)",
+    ):
+        assert rewritten(sql) == sql + added, sql
+    assert rewritten("SELECT t.a FROM t GROUP BY t.a HAVING COUNT(a) > 1") == "SELECT t.a FROM t GROUP BY t.a HAVING COUNT(a) > 1 AND NOT t.a IS NULL"
+    # a select alias of the COUNT, when no table read has a column of that name
+    aliased = "SELECT a, COUNT(a) AS n FROM t GROUP BY a HAVING n > 1"
+    assert rewritten(aliased, schema=SCHEMA) == aliased + added
+    assert rewritten("SELECT a, COUNT(a) AS n FROM t GROUP BY a HAVING n > 1 AND COUNT(*) >= 2", schema=SCHEMA) == aliased + added
+
+
+@pytest.mark.parametrize("sql, schema", [
+    ("SELECT a, COUNT(a) AS n FROM t GROUP BY a HAVING n > 1", None),  # n may be a column of t
+    ("SELECT a, COUNT(a) AS c FROM t GROUP BY a HAVING c > 1", SCHEMA),  # c is a column of t
+    ("SELECT a, COUNT(a) AS n FROM t JOIN u ON t.a = u.a GROUP BY a HAVING n > 1", SCHEMA),  # u's columns are not listed
+    ("SELECT a, COUNT(a) AS n FROM (SELECT a FROM t) AS d GROUP BY a HAVING n > 1", SCHEMA),  # nor a derived table's
+    ("SELECT a, COUNT(b) AS n FROM t GROUP BY a HAVING n > 1", SCHEMA),  # the alias counts another column
+    ("SELECT t.a FROM t JOIN t AS x ON t.b = x.b GROUP BY t.a HAVING COUNT(a) > 1", None),  # two sources: a bare a is not known to be t.a
+    ("SELECT t.a FROM t JOIN t AS x ON t.b = x.b GROUP BY t.a HAVING COUNT(x.a) > 1", None),
+    ("SELECT a FROM t GROUP BY a HAVING NOT COUNT(a) >= 2", None),  # an upper bound
+    ("SELECT a FROM t GROUP BY a HAVING NOT COUNT(a) = 0", None),  # not read
+    ("SELECT a FROM t GROUP BY a HAVING COUNT(a) BETWEEN 0 AND 3", None),  # true for the NULL group
+    ("SELECT a FROM t GROUP BY a HAVING COUNT(a) NOT BETWEEN 1 AND 3", None),
+])
+def test_other_spellings_that_stay(sql, schema):
+    assert rewritten(sql, schema=schema) is None
+
+
 PROOFS = [
     ("SELECT DISTINCT a FROM t GROUP BY c, a HAVING COUNT(DISTINCT b) > 1",
      "SELECT DISTINCT a FROM t GROUP BY c, a HAVING COUNT(*) > 1 AND COUNT(DISTINCT b) > 1"),
@@ -98,6 +134,12 @@ PROOFS = [
     ("SELECT a FROM t GROUP BY a HAVING COUNT(a) > 1", "SELECT a FROM t WHERE a IS NOT NULL GROUP BY a HAVING COUNT(*) > 1"),
     ("SELECT a FROM t GROUP BY a HAVING COUNT(a) > 1", "SELECT a FROM t GROUP BY a HAVING COUNT(a) > 1 AND a IS NOT NULL"),
     ("SELECT a, MIN(b) FROM t GROUP BY a HAVING COUNT(DISTINCT a) = 1", "SELECT a, MIN(b) FROM t WHERE a IS NOT NULL GROUP BY a"),
+    # one test spelled two ways: both sides get the key test, or neither (each was proved before the rule existed)
+    ("SELECT a FROM t GROUP BY a HAVING COUNT(a) > 1", "SELECT t.a FROM t GROUP BY t.a HAVING COUNT(a) > 1"),
+    ("SELECT a FROM t GROUP BY a HAVING COUNT(a) > 1", "SELECT a FROM t GROUP BY a HAVING COUNT(t.a) > 1"),
+    ("SELECT a FROM t GROUP BY a HAVING COUNT(a) > 1", "SELECT a FROM t GROUP BY a HAVING NOT COUNT(a) <= 1"),
+    ("SELECT a, COUNT(a) AS n FROM t GROUP BY a HAVING COUNT(a) > 1", "SELECT a, COUNT(a) AS n FROM t GROUP BY a HAVING n > 1"),
+    ("SELECT a FROM t GROUP BY a HAVING COUNT(a) = 1", "SELECT a FROM t GROUP BY a HAVING COUNT(a) BETWEEN 1 AND 1"),
 ]
 
 
@@ -135,6 +177,9 @@ REWRITES = [
     "SELECT a, COUNT(*) FROM t GROUP BY a HAVING COUNT(a) > 1",
     "SELECT a, b, SUM(c) FROM t GROUP BY a, b HAVING COUNT(DISTINCT b) >= 1 AND COUNT(a) = 2",
     "SELECT a FROM t WHERE c > 1 GROUP BY a HAVING 1 <= COUNT(a) AND COUNT(*) > 0",
+    "SELECT a, COUNT(*) FROM t GROUP BY a HAVING NOT COUNT(t.a) <= 1 AND COUNT(*) >= 2",
+    "SELECT t.a, SUM(b) FROM t GROUP BY t.a HAVING COUNT(DISTINCT a) BETWEEN 1 AND 2",
+    "SELECT a, COUNT(a) AS n FROM t GROUP BY a HAVING n >= 2 AND NOT COUNT(*) < 2",
 ]
 
 
@@ -142,7 +187,7 @@ def test_rewrites_keep_every_result():
     """Original and rewritten select return the same bag on random small tables with NULLs and duplicate rows."""
 
     rng = random.Random(20261110)
-    pairs = [(sql, rewritten(sql)) for sql in REWRITES]
+    pairs = [(sql, rewritten(sql, schema=SCHEMA)) for sql in REWRITES]
     assert all(after is not None and after != before for before, after in pairs)
     for _ in range(60):
         rows = [tuple(rng.choice([None, 1, 2]) for _ in range(3)) for _ in range(rng.randint(0, 7))]

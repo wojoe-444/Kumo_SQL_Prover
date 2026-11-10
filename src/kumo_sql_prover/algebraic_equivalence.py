@@ -4963,7 +4963,7 @@ def normalize(
                     lambda sel: drop_mysql_exists_cast(sel, dialect),
                     lambda sel: rewrite_case_arms(sel, dialect),
                     lambda sel: drop_unmatched_left_join(sel, schema, dialect),
-                    rewrite_count_tests,
+                    lambda sel: rewrite_count_tests(sel, schema),
                     lambda sel: rewrite_semijoin_shapes(sel, schema, types_map),
                     lambda sel: string_spelling_rules(sel, types_map, dialect),
                     wrap_tailed_outer_join_aggregate,
