@@ -7,9 +7,11 @@ This is the prover of [KumoSQL](https://github.com/wojoe-444/KumoSQL), split out
 ## Install
 
 ```sh
-pip install "kumo-sql-prover @ git+https://github.com/wojoe-444/Kumo_SQL_Prover@v0.1.0"
-pip install "kumo-sql-prover[smt,execution] @ git+https://github.com/wojoe-444/Kumo_SQL_Prover@v0.1.0"   # Z3 and DuckDB
+pip install "kumo-sql-prover @ git+https://github.com/wojoe-444/Kumo_SQL_Prover@cf1f74a2a913cfe621031797dc60fe5448ba80de"
+pip install "kumo-sql-prover[smt,execution] @ git+https://github.com/wojoe-444/Kumo_SQL_Prover@cf1f74a2a913cfe621031797dc60fe5448ba80de"   # Z3 and DuckDB
 ```
+
+That commit is release v0.1.0. The `v0.1.0` tag could not be created from the session that merged the first pull request; once the maintainer tags the commit, `@v0.1.0` names the same thing.
 
 `sqlglot==30.21.0` is the only supported version. Python 3.11 or newer.
 
