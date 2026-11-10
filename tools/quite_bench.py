@@ -1245,7 +1245,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--overlap", action="store_true", help="only report which originals other evals also hold "
                         "(fetch them first: python tools/benchmark_corpora.py fetch llm-r2 sqlstorm dsb)")
     args = parser.parse_args(argv)
-    os.environ.setdefault("KUMOSQL_TIMING", "0")
     pairs = load_pairs()
     if args.overlap:
         print(f"{'corpus / benchmark':45} {'QUITE queries':>13} {'same text':>10} {'same shape':>11} {'their queries':>14}")

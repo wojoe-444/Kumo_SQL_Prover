@@ -584,8 +584,17 @@ def generate_cases(seed: int, count: int) -> list[dict]:
     return out
 
 
-if __name__ == "__main__":
-    import sys
+def main(argv: list[str] | None = None) -> int:
+    import argparse
 
-    for case in generate_cases(int(sys.argv[1]) if len(sys.argv) > 1 else 1, int(sys.argv[2]) if len(sys.argv) > 2 else 10):
+    parser = argparse.ArgumentParser(description="Print generated queries for rule fuzzing, one per case.")
+    parser.add_argument("seed", nargs="?", type=int, default=1, help="generator seed (default 1)")
+    parser.add_argument("count", nargs="?", type=int, default=10, help="how many cases (default 10)")
+    args = parser.parse_args(argv)
+    for case in generate_cases(args.seed, args.count):
         print(case["sql"])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

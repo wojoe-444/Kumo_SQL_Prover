@@ -223,8 +223,19 @@ def run(suite: str, prove=sb.prove_result, trials: int = 60) -> dict:
     return out
 
 
+SUITES = ("cosette", "cosette-adapted", "spes")
+
+
 def main(argv: list[str] | None = None) -> int:
-    suites = (argv if argv is not None else sys.argv[1:]) or ["cosette", "spes"]
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Score the Cosette and SPES pairs: proofs, refutations and wrong answers.")
+    parser.add_argument("suites", nargs="*", metavar="SUITE", help="one or more of: " + ", ".join(SUITES) + " (default: cosette spes)")
+    args = parser.parse_args(argv)
+    unknown = [name for name in args.suites if name not in SUITES]
+    if unknown:
+        parser.error(f"unknown suite {unknown[0]!r}; choose from {', '.join(SUITES)}")
+    suites = args.suites or ["cosette", "spes"]
     bad = 0
     for suite in suites:
         r = run(suite)

@@ -129,7 +129,7 @@ def _command_with_current_python(command: str) -> str:
 
 
 def run(tree: Path, command: str, timeout: int) -> RunResult:
-    env = dict(os.environ, PYTHONPATH=str(tree / "src"), KUMOSQL_TIMING="0", PYTHONHASHSEED="0")
+    env = dict(os.environ, PYTHONPATH=str(tree / "src"), PYTHONHASHSEED="0")
     kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     started = time.monotonic()
     proc = subprocess.Popen(

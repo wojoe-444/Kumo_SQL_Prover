@@ -29,7 +29,6 @@ def quiet() -> None:
     Call it from ``main`` rather than at import, so tests that import a bench are unaffected.
     """
 
-    os.environ.setdefault("KUMOSQL_TIMING", "0")
     logging.getLogger("sqlglot").setLevel(logging.CRITICAL)
 
 

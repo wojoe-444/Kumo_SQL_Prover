@@ -476,7 +476,15 @@ def prove_result(left: str, right: str, tables: dict[str, Table], constants: boo
 
 
 def main(argv: list[str] | None = None) -> int:
-    names = (argv if argv is not None else sys.argv[1:]) or list(SUITES)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Prove the SQLSolver pairs of each suite and count proved, unknown and wrong.")
+    parser.add_argument("suites", nargs="*", metavar="SUITE", help="one or more of: " + ", ".join(SUITES) + " (default: all)")
+    args = parser.parse_args(argv)
+    unknown = [name for name in args.suites if name not in SUITES]
+    if unknown:
+        parser.error(f"unknown suite {unknown[0]!r}; choose from {', '.join(SUITES)}")
+    names = args.suites or list(SUITES)
     print(f"{'suite':8} {'pairs':>6} {'scored':>7} {'proved':>7} {'unknown':>8} {'wrong':>6} {'unchecked':>10} {'sec':>6}")
     bad = 0
     for name in names:

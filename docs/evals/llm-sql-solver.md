@@ -41,7 +41,7 @@ Relaxed agreement fell from 22 to 20: relaxed-023 (one output column against two
 
 | Pair | What happened | Now |
 | --- | --- | --- |
-| negatives-124, 125 | `SELECT Name, Population .. ORDER BY Population DESC LIMIT 1` proved equal to `SELECT Name .. ORDER BY Population DESC LIMIT 1`: the order key that is not an output became an extra column of the query without the LIMIT, and took Population's place. A prover bug, fixed in `smt_equivalence.prove_equivalent_smt` (the column counts must match) with a case in `tests/test_soundness_regressions.py` | refuted |
+| negatives-124, 125 | `SELECT Name, Population .. ORDER BY Population DESC LIMIT 1` proved equal to `SELECT Name .. ORDER BY Population DESC LIMIT 1`: the order key that is not an output became an extra column of the query without the LIMIT, and took Population's place. A prover bug, fixed in `smt_equivalence.prove_equivalent_smt` (the column counts must match) with a case in [`tests/test_soundness_regressions.py`](https://github.com/wojoe-444/KumoSQL/blob/master/tests/test_soundness_regressions.py) | refuted |
 | negatives-060 | `visit.visitor_ID` (text) joined to `visitor.ID` (number); one query returns the text column, the other the number | refuted (mixed-type check) |
 | negatives-099, 147 | the same rows in a different order (`ORDER BY .. ASC` against `DESC`, or another sort key) | refuted (list comparison) |
 | negatives-063, 064 | the two queries are the same text up to spaces | proved; label errors |

@@ -1,0 +1,8 @@
+# The sdist carries what the tests, the benchmark runners and the docs read, so a source distribution can run its own suite.
+graft tests
+graft tools
+graft benchmarks
+graft docs
+graft docs_simple
+include CLAUDE.md README.md
+global-exclude __pycache__ *.py[cod] .DS_Store

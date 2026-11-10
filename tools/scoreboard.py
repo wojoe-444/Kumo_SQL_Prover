@@ -106,9 +106,14 @@ def render(text: str) -> str:
 
 
 def main(argv: list[str]) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Regenerate the README benchmark scoreboard from benchmarks/results/*.json.")
+    parser.add_argument("--check", action="store_true", help="change nothing; exit 1 if the README is out of date")
+    args = parser.parse_args(argv)
     old = README.read_text(encoding="utf-8")
     new = render(old)
-    if "--check" in argv:
+    if args.check:
         if old != new:
             print("README scoreboard is out of date: run python tools/scoreboard.py")
             return 1

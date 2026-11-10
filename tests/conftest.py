@@ -120,9 +120,9 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse=True)
 def isolated_state(tmp_path_factory, monkeypatch):
-    """Keep any saved state out of the real user directory."""
+    """A test never finds a SQLSolver installation (Java, jar) of whoever runs the suite: the home it looks in is empty."""
 
-    monkeypatch.setenv("KUMOSQL_HOME", str(tmp_path_factory.mktemp("home") / "kumosql-home"))
+    monkeypatch.setenv("KUMOSQL_SQLSOLVER_HOME", str(tmp_path_factory.mktemp("sqlsolver-home")))
 
 
 def pytest_configure(config):

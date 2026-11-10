@@ -475,7 +475,6 @@ def _worker(case: Case) -> dict:
     import logging
 
     logging.getLogger("sqlglot").setLevel(logging.CRITICAL)
-    os.environ.setdefault("KUMOSQL_TIMING", "0")
     try:
         return run_case(case)
     except Exception as error:  # noqa: BLE001

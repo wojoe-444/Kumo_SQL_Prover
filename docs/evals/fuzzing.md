@@ -10,7 +10,7 @@ python tools/unsafe_fuzz.py unsafe --count 20            # plausible-looking uns
 python tools/unsafe_fuzz.py compose --count 60          # rule chains (tools/compose_fuzz.py)
 ```
 
-`--show` prints every false proof or bad counterexample, `--json FILE` writes the summary. Tests live in `tests/test_unsafe_fuzz.py`; the long runs are marked `slow`.
+`--show` prints every false proof or bad counterexample, `--json FILE` writes the summary. Tests live in [`tests/test_unsafe_fuzz.py`](https://github.com/wojoe-444/KumoSQL/blob/master/tests/test_unsafe_fuzz.py); the long runs are marked `slow`.
 
 ## What is measured
 
@@ -60,7 +60,7 @@ A gap these suites showed: for most non-equivalent unsafe pairs the solver's mod
 
 `python tools/unsafe_fuzz.py unsafe --count 20 --seed 1 --dump-cases tests/fixtures/unsafe_rewrite_cases.jsonl` writes the cases as JSONL (`id`, `family`, `left`, `right`, `expect`, `heldout`). The committed copy is checked against its seed by the tests; other threads can use it as faulty variants. `expect` is `equivalent` (by construction) or `either` (the oracle decides): 220 cases are equivalent by construction and 340 are `either`, of which the oracle separates 339 (all but `union-intersect-5`).
 
-Every discovered failure becomes a regression test in `tests/test_unsafe_fuzz.py`. The pre-fix baseline for the first run: 2 bad counterexamples on `fuzz` seed 1 (count 3) and one non-idempotent canonical pipeline in the first 15 composed queries.
+Every discovered failure becomes a regression test in [`tests/test_unsafe_fuzz.py`](https://github.com/wojoe-444/KumoSQL/blob/master/tests/test_unsafe_fuzz.py). The pre-fix baseline for the first run: 2 bad counterexamples on `fuzz` seed 1 (count 3) and one non-idempotent canonical pipeline in the first 15 composed queries.
 
 Seeds 31 (fuzz, count 40: 850 cases) and 31 (compose, 60 queries) over the richer shapes found no further bugs: 0 false proofs, 0 bad counterexamples, 0 behaviour changes.
 

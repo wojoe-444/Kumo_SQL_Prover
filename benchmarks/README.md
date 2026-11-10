@@ -37,7 +37,7 @@ Rule: report like `X/Y, 0 wrong`; unknown beats wrong. Nonempty `coverage` count
 
 ## Held-out splits
 
-Where an eval has a held-out split, its bench takes `--split dev|held-out|all` and reports the held-out cases on their own; the results file's `held_out` gives that score. Develop on `dev`. `tools/llm_sql_solver_bench.py` defaults to `dev` (its `--write-results` scores every pair), `tools/analytical_coverage.py` to `dev`, and `tools/calcite_mined_bench.py` to `all`, the published command, which prints the held-out pairs (those new to every other corpus) separately.
+Where an eval has a held-out split, its bench takes `--split dev|held-out|all` and reports the held-out cases on their own; the results file's `held_out` gives that score. Develop on `dev`. `tools/llm_sql_solver_bench.py` defaults to `dev` (its `--write-results` scores every pair), [`tools/analytical_coverage.py`](https://github.com/wojoe-444/KumoSQL/blob/master/tools/analytical_coverage.py) to `dev`, and `tools/calcite_mined_bench.py` to `all`, the published command, which prints the held-out pairs (those new to every other corpus) separately.
 
 ## Checking that a change moves no score
 
