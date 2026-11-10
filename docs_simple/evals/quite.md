@@ -24,7 +24,7 @@ The flag comes from running both queries once, on one database. Two queries can 
 - Most pairs that are not proved end as "unknown", which is not a failure: many LLM rewrites need reasoning the prover does not have.
 - Results are compared as bags of rows. Where a query keeps only the first rows by a sort key that has ties, either answer can be correct, and the full reference counts the pairs this applies to.
 - The data has no licence. It is downloaded from a pinned version when the eval runs and is never stored in this repository.
-- One fifth of the queries, chosen by hash, was held out and never inspected case by case. No KumoSQL rule was written or changed for this eval, but two small harness readings were adjusted on development pairs; the full reference lists both.
+- One fifth of the queries, chosen by hash, is held out and never inspected case by case. In November 2026 prover rules were written for the other four fifths, for example one that lets the prover read a report query that counts over an outer join and then keeps the top rows. Those four fifths are therefore tuned on; the held-out fifth improved by about the same share without being read, which is the fairer measure. Two small harness readings were adjusted on development pairs earlier; the full reference lists everything.
 
 The recorded scores, the pinned version and file hashes, the pair counts per benchmark and the overlap with other evals are in the [full reference](../../docs/evals/quite.md) and the two `quite-*` results files.
 

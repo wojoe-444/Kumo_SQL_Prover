@@ -41,23 +41,23 @@ DuckDB runs with MySQL's NULL ordering and case-insensitive string comparison. A
 
 ## Scores
 
-Measured 2026-10-03 over all 2,800 pairs (`python tools/singh_bedathur_bench.py`, about 30 minutes on 4 cores):
+Measured 2026-11-10 over all 2,800 pairs (`python tools/singh_bedathur_bench.py`, about 17 minutes on 4 cores, commit e904d62):
 
-**2735/2800, 0 wrong**: 861 proved equivalent, 1,874 proved different, 65 unknown.
+**2763/2800, 0 wrong**: 889 proved equivalent, 1,874 proved different, 37 unknown.
 
 | Outcome | Pairs |
 | --- | ---: |
-| Proven equivalent | 861 |
+| Proven equivalent | 889 |
 | Refuted (counterexample) | 1,874 |
-| Unknown | 58 |
+| Unknown | 30 |
 | Unsupported (the prover cannot read a query, and no counterexample) | 7 |
 | Timeout | 0 |
 | Error | 0 |
 | Wrong | 0 |
 
-Supported subset: 2735/2793 (three pairs that compare a string with a number are now declined as unsupported, #542, #613 and the SELECT * and set-operation tracking that followed; the second is a dev pair whose `COALESCE(REFEREE_ID, 'SOME BOGUS VALUE') != 2` was proved equal to `REFEREE_ID <> 2 OR REFEREE_ID IS NULL`: right on MySQL only because the string reads as 0, DuckDB rejects the mixed `COALESCE`). Held-out fifth (pairs whose text hash is divisible by 5): **560/580, 0 wrong**. The split was made partway through, after the first rewrite rules, and later full-corpus runs were still read while tuning the counterexample search, so this is a weak check. From now on development runs use `--split dev`.
+Supported subset: 2763/2793 (three pairs that compare a string with a number are now declined as unsupported, #542, #613 and the SELECT * and set-operation tracking that followed; the second is a dev pair whose `COALESCE(REFEREE_ID, 'SOME BOGUS VALUE') != 2` was proved equal to `REFEREE_ID <> 2 OR REFEREE_ID IS NULL`: right on MySQL only because the string reads as 0, DuckDB rejects the mixed `COALESCE`). Held-out fifth (pairs whose text hash is divisible by 5): **565/580, 0 wrong**. The split was made partway through, after the first rewrite rules, and later full-corpus runs were still read while tuning the counterexample search, so this is a weak check. From now on development runs use `--split dev`.
 
-Column types: the pairs carry only column names, so `_text_types` in `tools/singh_bedathur_bench.py` declares every column the queries compare with a string as text, the reading the counterexample search already used. Without it the prover's check on untyped string columns (a column compared with two different strings that MySQL reads as the same number could be an integer column; see `docs/provers.md`) declined 17 proofs, 4 of them held out, all variants of one `NOT IN` query on product names. With the declaration the score and the 861 proofs are unchanged. The held-out pairs were not read; the loss was found from the proof counts.
+Column types: the pairs carry only column names, so `_text_types` in `tools/singh_bedathur_bench.py` declares every column the queries compare with a string as text, the reading the counterexample search already used. Without it the prover's check on untyped string columns (a column compared with two different strings that MySQL reads as the same number could be an integer column; see `docs/provers.md`) declined 17 proofs, 4 of them held out, all variants of one `NOT IN` query on product names. With the declaration the score and the 861 proofs of that time were unchanged. The held-out pairs were not read; the loss was found from the proof counts.
 
 The last step was developed on dev pairs only (the held-out fifth went from 509 to 524 without being looked at). It also fixed two ways the harness could see a difference that is not one: DuckDB returns `DECIMAL` results as Python `Decimal` and `DOUBLE` ones as `float`, and `0.33` never equals `Decimal("0.33")`, so numbers are now compared as floats rounded to six places; and every fraction the generator draws is exact in binary (eighths), because DuckDB averages decimals in floating point and a value like `1.005` lands on the other side of a `ROUND(.., 2)` midpoint from MySQL's exact result. Neither had produced a published refutation. Every dev pair labelled equivalent that this step newly refutes was checked by hand: they hinge on a NULL inside `NOT IN`, duplicate rows, or an inclusive `BETWEEN` against a half-open range.
 
@@ -76,14 +76,37 @@ What moved the score:
 | + structural aggregate rewrites (`aggregate_rules.py`: shared filters into `WHERE`, filters into `HAVING`, expressions lifted out of grouped derived tables), developed on dev pairs only (held-out fifth 542), master 80ac740 | 2,650 |
 | + `DISTINCT` queries split into unions (`set_split_rules.py`: `CASE` join keys, derived unions, `IN`/`EXISTS` over unions), `OR` splits in set containment, self-join symmetry; developed on dev pairs only (held-out fifth 557), master 696c6c8 | 2,728 |
 | + `ABS(x - y)` facts and `x <> y` split into `x < y` and `y < x` in set containment ([provers.md](../provers.md)), developed on dev pairs only; also includes prover PRs merged since 696c6c8 (held-out fifth 560), master 30eb0cb | 2,736 |
+| the same harness on main c384968 on 2026-11-10, before the next step (three pairs declined since as string-number comparisons, one proof not traced; held-out fifth 560) | 2,734 |
+| + six rule modules for the undecided development pairs ([below](#the-undecided-development-pairs)), developed on dev pairs only (held-out fifth 565), commit e904d62 | 2,763 |
+
+### The undecided development pairs
+
+On 2026-11-10 main left 46 development pairs undecided (43 unknown, 3 unsupported). Six rule modules, each an exact rewrite with its own test file of proofs, near misses that DuckDB separates and random replays, prove 24 of them. The held-out fifth gained 5 proofs and lost none.
+
+| Module | What it reads | Example |
+| --- | --- | --- |
+| `case_arm_rules.py` | arithmetic moved into the literal arms of a `CASE`, and an arm that is never taken (a comparison with `NULL`, returning `NULL`) dropped | `salary * CASE WHEN c THEN 0.5 ELSE 1 END` against `CASE WHEN c THEN salary * 0.5 ELSE salary END` |
+| `unmatched_outer_join.py` | a `LEFT JOIN` whose every match the `WHERE` rules out (`NOT IN` or `NOT EXISTS` on the join key) is dropped | `FROM c LEFT JOIN o ON c.id = o.cid WHERE c.id NOT IN (SELECT cid FROM o)` |
+| `having_count_rules.py` | `COUNT(*) >= n` implied by a bound on another `COUNT` of the same group is dropped; a counted group key is not NULL | `GROUP BY email HAVING COUNT(email) > 1` against `WHERE email IS NOT NULL GROUP BY email HAVING COUNT(*) > 1` |
+| `grouped_self_membership.py` | the distinct values of a column that are among its own table's groups are those groups | `SELECT DISTINCT x FROM t WHERE x IN (SELECT x FROM t GROUP BY x HAVING ..)` |
+| `disjoint_union.py` | a `UNION` of one-row branches tagged with different literals is a `UNION ALL` | `SELECT 'low', COUNT(*) .. UNION SELECT 'high', COUNT(*) ..` |
+| `semijoin_shapes.py` | a chain of `IN` tests restructured through a CTE, a derived table, a join or `EXISTS` | `x IN (SELECT d.c FROM (SELECT c FROM t WHERE p) AS d WHERE w)` |
+
+Three things went wrong on the way and are recorded here because each was found by a measurement, not by review:
+
+- Reading a correlated `EXISTS` as `IN` on every query lost a SQLSolver TPC-H proof and three soundness-fuzzer proofs: one side was rewritten and the other was not. The step is now taken only when the subquery holds a membership test for the other rules to work on.
+- The counted-key rule adds `k IS NOT NULL` to one query at a time, and a query that spelled `COUNT(k) > 1` another way was left without it. One held-out proof was lost. It was found from the count, by switching the rule off on that pair (verdict only) and trying made-up spellings; the pair was not read. The rule now reads the bound through `NOT`, `BETWEEN`, a select alias and a qualified key.
+- A stricter reading of bare column names in the string-type check ([provers.md](../provers.md)) declined 49 development proofs, because this harness declares only the text columns. The check now uses the schema's column lists to see that no other table can hold the name.
+
+**Exposure of the held-out fifth.** The rules were developed on development pairs. During the work a subagent ran `tests/test_singh_bedathur_benchmark.py`, which runs every pair, for about 30 minutes; nothing of its output was read. The 19 development pairs still unknown are mostly pairs with no row-preserving mapping (10), a `LIMIT` on one side only (2) and one the prover's own counterexample does not replay.
 
 ### Against the published labels
 
 | Verdict | Label "Equivalent" | Label "Non Equivalent" |
 | --- | ---: | ---: |
-| Proved equivalent | 861 | 0 |
+| Proved equivalent | 889 | 0 |
 | Proved different | 476 | 1,398 |
-| Unknown | 63 | 2 |
+| Unknown | 35 | 2 |
 
 No proof contradicts a label. The 476 pairs labelled equivalent that get a counterexample are equivalent only under LeetCode's constraints, which the files drop: most rely on a key (`UNION` versus `UNION ALL`), a NOT NULL column (`NOT IN` versus an anti-join) or a foreign key. A few differ outright, for example a typo inside a string literal (`'15 OR MORE AS BIN'`). Each comes with its counterexample: `--show-disagreements` prints them.
 

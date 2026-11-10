@@ -1171,12 +1171,16 @@ def results_rows(report: Report, date: str) -> dict[str, dict]:
             "Data downloaded at a pinned commit (no licence; not bundled). Flags come from one PostgreSQL instance, so a "
             "refuted pair is a label disagreement, not an error. Quoted upper-case identifiers are folded to lower case "
             "(the Calcite queries quote tables created in lower case) and FETCH FIRST n ROWS ONLY is read as LIMIT n. "
-            f"{mixed} pairs flagged both ways are not scored. 3 pairs (TPC-H) crash the prover with a z3 error and count as error. "
-            "No KumoSQL rule was changed for this eval. Baseline before the harness read FETCH FIRST as LIMIT (the 100 development "
-            "pairs that use it, 81 flagged equal): 16/67 proved, 0 wrong; after: 7/67, 0 wrong (13 identical-text pairs the prover "
-            "no longer proves once the row cap is visible to its tie check, 4 gained). Tuned on test: no. The held-out pairs were "
-            "run once and never read one by one; the two harness changes (FETCH, and a 30 s limit on replaying a TPC-H instance "
-            "without the optimizer) came from development pairs, and the held-out TPC-H pairs were rerun after the second."
+            f"{mixed} pairs flagged both ways are not scored. "
+            "Until 2026-11-10 no prover rule had been written for this eval; the baseline on that day, before the rules "
+            "(main c384968, this harness): 1354/2608 proved, 0 wrong, held out 279/555. Eight rule modules were then written "
+            "against the unknown development pairs (tailed_grouping_sets.py, tailed_outer_aggregates.py, wrapped_join_filters.py, "
+            "closed_sources.py, listed_output_names.py, one_row_tails.py, string_spelling_rules.py, printed_spelling.py) with an "
+            "interval-arithmetic reading in string_number_compare.py, so the development pairs are tuned on. The held-out "
+            "fifth was not: its pairs were run for scoring only and never read one by one, and no proof was lost on either "
+            "part. Earlier harness history: FETCH FIRST read as LIMIT (the 100 development pairs that use it, 81 flagged "
+            "equal, went from 16/67 to 7/67 proved, 0 wrong, at the time) and a 30 s limit on replaying a TPC-H instance "
+            "without the optimizer, both from development pairs."
         ),
         **common,
     }
@@ -1204,7 +1208,12 @@ def results_rows(report: Report, date: str) -> dict[str, dict]:
             "A flag of unequal is not a semantic label: timeouts and rewrites that failed to run are flagged too, so only "
             "replayed differences count as negatives. Refutations come from KumoSQL's own databases (the authors' instances "
             "are not public; TPC-H also runs on a generated scale-0.01 instance, and a difference there counts only if the unoptimized "
-            "plan finishes in 30 s and agrees). Data downloaded at a pinned commit. Tuned on test: no; the held-out pairs were never read one by one."
+            "plan finishes in 30 s and agrees). Data downloaded at a pinned commit. The rules written on 2026-11-10 for the "
+            "flagged-equal development pairs also prove 5 development pairs flagged only for a timeout (20 to 25 proofs); each "
+            "was read by hand and is equivalent as written (a correlated average decorrelated into a grouped join, comma joins "
+            "written as JOIN). The database search has an 8 s budget per pair, so a refutation near that limit is not found in "
+            "every run (one SQLStorm pair: 135 refuted on main, 134 here; neither tree refutes it when run alone). The held-out "
+            "pairs were never read one by one."
         ),
         **common,
     }

@@ -2,28 +2,28 @@
   "suite": "QUITE LLM rewrites, flagged equal",
   "order": 342,
   "size": 2674,
-  "score": "1352/2609 proved, 0 wrong",
-  "metric": "Distinct (query, rewrite) pairs, from 4,160 rewrites by 13 systems of TPC-H, DSB, Calcite and SQLStorm queries, that the authors' PostgreSQL run flagged equal, proved equivalent as result bags; 65 more are refuted by a replayed database (instance-label disagreements, left out of the denominator).",
+  "score": "1659/2608 proved, 0 wrong",
+  "metric": "Distinct (query, rewrite) pairs, from 4,160 rewrites by 13 systems of TPC-H, DSB, Calcite and SQLStorm queries, that the authors' PostgreSQL run flagged equal, proved equivalent as result bags; 66 more are refuted by a replayed database (instance-label disagreements, left out of the denominator).",
   "evidence": "proof",
   "correctness": "0 wrong: every proof is replayed on the prover's counterexample, KumoSQL's targeted databases and, for TPC-H, a generated scale-0.01 instance; a difference counts only when DuckDB agrees with its optimizer off and, for order-sensitive queries, in three row orders",
   "coverage": {
-    "proven": 1352,
-    "refuted": 65,
-    "unknown": 1232,
-    "timeout": 22,
-    "error": 3
+    "proven": 1659,
+    "refuted": 66,
+    "unknown": 946,
+    "timeout": 3
   },
-  "held_out": "280/555 proved, 0 wrong (a fifth of the queries, by hash, with all their rewrites)",
-  "caveats": "Data downloaded at a pinned commit (no licence; not bundled). Flags come from one PostgreSQL instance, so a refuted pair is a label disagreement, not an error. Quoted upper-case identifiers are folded to lower case (the Calcite queries quote tables created in lower case) and FETCH FIRST n ROWS ONLY is read as LIMIT n. 2 pairs flagged both ways are not scored. 3 pairs (TPC-H) crash the prover with a z3 error and count as error. No KumoSQL rule was changed for this eval. Baseline before the harness read FETCH FIRST as LIMIT (the 100 development pairs that use it, 81 flagged equal): 16/67 proved, 0 wrong; after: 7/67, 0 wrong (13 identical-text pairs the prover no longer proves once the row cap is visible to its tie check, 4 gained). Tuned on test: no. The held-out pairs were run once and never read one by one; the two harness changes (FETCH, and a 30 s limit on replaying a TPC-H instance without the optimizer) came from development pairs, and the held-out TPC-H pairs were rerun after the second.",
+  "held_out": "346/555 proved, 0 wrong (a fifth of the queries, by hash, with all their rewrites)",
+  "caveats": "Data downloaded at a pinned commit (no licence; not bundled). Flags come from one PostgreSQL instance, so a refuted pair is a label disagreement, not an error. Quoted upper-case identifiers are folded to lower case (the Calcite queries quote tables created in lower case) and FETCH FIRST n ROWS ONLY is read as LIMIT n. 2 pairs flagged both ways are not scored. Until 2026-11-10 no prover rule had been written for this eval; the baseline on that day, before the rules (main c384968, this harness): 1354/2608 proved, 0 wrong, held out 279/555. Eight rule modules were then written against the unknown development pairs (tailed_grouping_sets.py, tailed_outer_aggregates.py, wrapped_join_filters.py, closed_sources.py, listed_output_names.py, one_row_tails.py, string_spelling_rules.py, printed_spelling.py) with an interval-arithmetic reading in string_number_compare.py, so the development pairs are tuned on. The held-out fifth was not: its pairs were run for scoring only and never read one by one, and no proof was lost on either part. Earlier harness history: FETCH FIRST read as LIMIT (the 100 development pairs that use it, 81 flagged equal, went from 16/67 to 7/67 proved, 0 wrong, at the time) and a 30 s limit on replaying a TPC-H instance without the optimizer, both from development pairs.",
   "docs": "docs/evals/quite.md",
   "command": "python tools/quite_bench.py --write-results",
-  "date": "2026-10-04",
+  "date": "2026-11-10",
   "environment": {
-    "python": "3.11.15",
+    "python": "3.13.18",
     "sqlglot": "30.21.0",
+    "sqlglotc": "30.21.0",
     "duckdb": "1.5.6",
-    "z3-solver": "5.1.0.0",
-    "sqlfluff": "4.4.0",
-    "commit": "f930f130+changes"
+    "z3-solver": "5.4.0.0",
+    "sqlfluff": "4.5.0",
+    "commit": "e904d62"
   }
 }

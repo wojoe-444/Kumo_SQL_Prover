@@ -3,7 +3,7 @@
 [QUITE](https://github.com/Yuyang-Song/QUITE) (Song et al., "QUITE: A Query Rewrite System Beyond Rules with LLM Agents") compares LLM-based query rewriters on TPC-H, DSB, Calcite and SQLStorm (StackOverflow) queries. Its `experiments_results/` folder publishes every rewrite the systems produced, each with an `equivalence` flag from running the original and the rewrite on the authors' PostgreSQL instance. KumoSQL reads those pairs with no model at run time: the algebraic prover, then databases on which both queries are replayed in DuckDB.
 
 ```
-python tools/quite_bench.py                    # every distinct pair (hours: see Scores)
+python tools/quite_bench.py                    # every distinct pair (about 40 minutes on 4 cores)
 python tools/quite_bench.py --split dev        # the pairs used while developing
 python tools/quite_bench.py --sample 48        # a pinned stratified sample (the test draws it from the development pairs)
 python tools/quite_bench.py --workers 2        # fewer processes on a shared machine
@@ -52,11 +52,11 @@ DuckDB runs with PostgreSQL's integer division and NULL ordering, `now()` and `c
 
 Two harness-side readings, no KumoSQL change: identifiers are folded to lower case, as PostgreSQL folds unquoted ones (the Calcite queries quote `"EMP"` against tables created as `emp`; 330 pairs needed a quoted name folded and are counted apart below), and `FETCH FIRST n ROWS ONLY` is read as `LIMIT n`, which the prover handles.
 
-**Held out.** One query in five, by SHA-1 of `quite/<benchmark>/<query hash>`, is held out with all its rewrites; `--split dev` runs the rest. No KumoSQL rule was written for this eval.
+**Held out.** One query in five, by SHA-1 of `quite/<benchmark>/<query hash>`, is held out with all its rewrites; `--split dev` runs the rest. Rules have been written against the development pairs since 2026-11-10 ([Before and after](#before-and-after)); the held-out queries are run for scoring only.
 
 ## Scores
 
-Measured on 2026-10-04 over the whole corpus (3,174 distinct pairs from 4,160 rewrites), with `tpchgen-cli` installed so the TPC-H pairs also run on the generated instance. **0 wrong** in both parts. The run took a few hours with two worker processes on a shared machine; the development pairs and the held-out pairs were run separately and merged with `--log`.
+Measured on 2026-11-10 over the whole corpus (3,174 distinct pairs from 4,160 rewrites) on commit e904d62, with `tpchgen-cli` installed so the TPC-H pairs also run on the generated instance. **0 wrong** in both parts. One run with four worker processes took 42 minutes on 4 cores.
 
 ### Flagged equal (`quite-rewrites`)
 
@@ -64,31 +64,32 @@ A pair scores proved when the prover shows it equivalent; it leaves the denomina
 
 | Benchmark | Pairs | Proved | Refuted | Unknown | Timeout or error | Score |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| TPC-H | 543 | 378 | 3 | 159 | 3 | 378/540 |
-| DSB | 1,319 | 603 | 0 | 694 | 22 | 603/1,319 |
-| Calcite | 477 | 333 | 29 | 115 | 0 | 333/448 |
-| SQLStorm | 335 | 38 | 33 | 264 | 0 | 38/302 |
-| **All** | **2,674** | **1,352** | **65** | **1,232** | **25** | **1,352/2,609, 0 wrong** |
+| TPC-H | 543 | 403 | 3 | 137 | 0 | 403/540 |
+| DSB | 1,319 | 809 | 1 | 506 | 3 | 809/1,318 |
+| Calcite | 477 | 349 | 29 | 99 | 0 | 349/448 |
+| SQLStorm | 335 | 98 | 33 | 204 | 0 | 98/302 |
+| **All** | **2,674** | **1,659** | **66** | **946** | **3** | **1,659/2,608, 0 wrong** |
 
-* **Held out** (one query in five, 564 pairs, 70 queries): 280/555 proved, 0 wrong, 9 refuted. The development pairs score 1,072/2,054, 0 wrong, 56 refuted, so the held-out fifth behaves like the rest. Two more pairs, flagged equal by one system and unequal by another, are not scored.
-* **Original and adapted apart.** 271 of the pairs needed a quoted name folded to lower case (the Calcite queries): 146 proved, 19 refuted, 104 unknown, 2 timeouts. The other 2,403 are scored as published: 1,206 proved, 46 refuted, 1,128 unknown, 23 timeouts or errors.
-* **Errors.** Three TPC-H pairs (rewrites of one query) make the prover raise a z3 exception (`model is not available`); they count as errors, never as proofs. They are reported on the workstream issue, not worked around.
-* **Why unknown.** Across all 1,530 unknown pairs the commonest reasons are that no row-preserving mapping between the queries was found (827), an aggregate over an outer join (148, declined), a query sqlglot cannot print back faithfully in PostgreSQL (111), and a subquery expression the prover does not support (94). The unknowns were not classified further.
+* **Held out** (one query in five, 564 pairs, 70 queries): 346/555 proved, 0 wrong, 9 refuted. The development pairs score 1,313/2,053, 0 wrong, 57 refuted. The rules of 2026-11-10 were written on the development pairs, which went from 1,075 to 1,313 proved (+22%); the held-out fifth, never read, went from 279 to 346 (+24%), so the rules carry over to queries they were not written for. Two more pairs, flagged equal by one system and unequal by another, are not scored.
+* **Original and adapted apart.** 271 of the pairs needed a quoted name folded to lower case (the Calcite queries): 172 proved, 19 refuted, 80 unknown. The other 2,403 are scored as published: 1,487 proved, 47 refuted, 866 unknown, 3 timeouts.
+* **Errors.** None. The three TPC-H pairs that made the prover raise a z3 exception in October no longer do, on main as well.
+* **Why unknown.** Across all 1,241 unknown pairs (both flags) the commonest reasons are that no row-preserving mapping between the queries was found (876), a derived table that is not joined on all of its columns (43), a subquery expression the prover does not support (36), a column the harness's DSB schema does not list (`c_last_review_date_sk`, 30), a `UNION` whose branches differ in shape (26) and a `LIMIT` on one side only (23). The reasons of October (an aggregate over an outer join, 148; a query that could not be printed back faithfully, 111) are gone. The unknowns were not classified further.
 
 ### Flagged unequal (`quite-negatives`)
 
 | Why it was flagged | Pairs | Refuted | Proved | Unknown | Unsupported or timeout |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| rows differed | 214 | 108 | 14 | 92 | 0 |
-| rewrite failed to run | 197 | 5 | 1 | 153 | 38 |
-| a query timed out | 85 | 20 | 7 | 52 | 6 |
+| rows differed | 214 | 107 | 14 | 91 | 2 |
+| rewrite failed to run | 197 | 5 | 1 | 154 | 37 |
+| a query timed out | 85 | 20 | 10 | 49 | 6 |
 | documented TPC-H Q2 | 2 | 2 | 0 | 0 | 0 |
-| **All** | **498** | **135** | **22** | **297** | **44** |
+| **All** | **498** | **134** | **25** | **294** | **45** |
 
-135 of 498 are refuted by a replayed database; held out, 31 of 106 (8 proved, 0 wrong). **No pair is proved on grounds that a replayed database contradicts.** The 22 proofs are not errors, and each is accounted for:
+134 of 498 are refuted by a replayed database; held out, 31 of 106 (8 proved, 0 wrong). **No pair is proved on grounds that a replayed database contradicts.** The 25 proofs are not errors, and each is accounted for:
 
 * 14 pairs flagged for different rows are `ORDER BY ... LIMIT` queries whose sort key has ties (Calcite's `ORDER BY SAL`), so the authors' PostgreSQL happened to cut the tied rows differently for the two queries. The prover proves them equal on the stated assumption that tied rows are cut alike ([ORDER BY, LIMIT and OFFSET](sqlsolver.md#order-by-limit-and-offset)); no replayed database separates them.
-* 8 pairs were flagged only because a query timed out (7) or the rewrite failed to run (1): a rewrite that fails on PostgreSQL (one has an output alias spelled `0`) can still be equivalent as written.
+* 11 pairs were flagged only because a query timed out (10) or the rewrite failed to run (1): a rewrite that fails on PostgreSQL (one has an output alias spelled `0`) can still be equivalent as written. Five of the ten are development pairs the rules of 2026-11-10 newly prove (rewrites of two DSB queries). Each was read by hand and is equivalent as written: a correlated `AVG` turned into a join with the grouped average, comma joins written as `JOIN`, `75 * 0.01` written as `0.75` (exact decimals in PostgreSQL), and a date plus 90 days written as the date it is.
+* The database search has a budget of 8 seconds per pair, so a refutation near that limit is not found in every run. One SQLStorm pair is refuted in the whole-corpus run on main (135) and not in this one (134); run alone, neither tree refutes it.
 
 The two documented TPC-H Q2 rewrites are refuted on the database the authors describe for the case (a supplier outside EUROPE that ties the EUROPE minimum cost). The same rewrite from a third system (DeepSeek R1), flagged equal, is refuted there too: one of the 65 refuted flagged-equal pairs.
 
@@ -96,9 +97,24 @@ The two documented TPC-H Q2 rewrites are refuted on the database the authors des
 
 The first run of this harness was the baseline; nothing was tuned on it. One harness reading was then changed, on development pairs only: `FETCH FIRST n ROWS ONLY` is read as `LIMIT n`, because DuckDB cannot replay `FETCH` and the prover's tie check cannot see it. On the 100 development pairs that use `FETCH` (81 flagged equal) the baseline proved 16/67 and the final harness proves 7/67, both 0 wrong: 13 identical-text pairs are no longer proved because the prover declines an aggregate over an outer join under a row cap, and 4 pairs are gained. The lower number is the honest one. A second change bounds the unoptimized replay of a TPC-H instance to 30 seconds, because a six-table comma join becomes a cross product with DuckDB's optimizer off; a difference there is counted only when that run finishes and agrees, so a timeout is an unknown, never a refutation.
 
-**Exposure.** The held-out pairs were run once and never read one by one; the two changes above came from development pairs, and the held-out TPC-H pairs were rerun after the second. No KumoSQL rule was changed for this eval, so the score is not tuned on test.
+**Rules for the unknown pairs (2026-11-10).** Until then no prover rule had been written for this eval, and the harness on main (c384968) measured 1,354/2,608 proved, 0 wrong (held out 279/555). The largest groups of unknown development pairs were then read and eight modules written, each an exact rewrite with its own test file of proofs, near misses that DuckDB separates and random replays:
 
-Results files: `benchmarks/results/quite-rewrites.json` and `benchmarks/results/quite-negatives.json`. The pinned-sample test (`tests/test_quite_bench.py`) runs 51 stratified development pairs without the generated instance: 26 proved, 2 refuted, 0 wrong, with floors of 24 and 2.
+| Module | What was declined before | What it does |
+| --- | --- | --- |
+| `tailed_outer_aggregates.py` | an aggregate over an outer join with `ORDER BY` / `LIMIT` ("aggregate over an outer join") | reads the join as one derived relation and keeps the tail on the select |
+| `tailed_grouping_sets.py` | `GROUP BY ROLLUP / CUBE / GROUPING SETS` with a row tail | moves the tail onto a select around the grouped one |
+| `printed_spelling.py` | a query whose normal form did not print back to itself (`a \|\| b \|\| c`, a grouping set of one column) | spells both the way they are printed |
+| `closed_sources.py` | a correlated scalar aggregate over a `WITH` table | treats a derived table that reads nothing from outside as a relation, so the aggregate becomes a grouped join |
+| `wrapped_join_filters.py` | a filter above an outer join against the same filter pushed below it | evaluates the filter inside the derived table that wraps the join |
+| `listed_output_names.py` | a column list on a derived table with an unnamed aggregate (TPC-H Q13) | names the output before the list is expanded |
+| `one_row_tails.py` | a one-row report with a pointless `ORDER BY` / `LIMIT` (TPC-DS style) against the same without | drops the tail of a global aggregate |
+| `string_spelling_rules.py` | `CAST(c AS CHAR(n))` of a column declared `CHAR(n)`, `LEFT(x, n)` against `SUBSTRING(x, 1, n)` | reads both as the value itself |
+
+`string_number_compare.py` also stopped reading a date plus an interval as a number. Together: 1,354 to 1,659 proved of 2,608 (+305), by benchmark TPC-H 378 to 403, DSB 592 to 809, Calcite 345 to 349, SQLStorm 39 to 98. No pair proved on main is lost, development or held out.
+
+**Exposure.** The development pairs are tuned on: the rules were written while reading them. The held-out queries were run for scoring only and never read one by one; their share of the gain is given above. The two harness changes of October came from development pairs.
+
+Results files: `benchmarks/results/quite-rewrites.json` and `benchmarks/results/quite-negatives.json`. The pinned-sample test (`tests/test_quite_bench.py`) runs 51 stratified development pairs without the generated instance: SAMPLE_PROVED proved, SAMPLE_REFUTED refuted, 0 wrong, with floors of SAMPLE_FLOOR and 2.
 
 ## Overlap with other evals
 
