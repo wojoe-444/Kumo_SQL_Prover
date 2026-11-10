@@ -80,7 +80,7 @@ from .parse_check import refuse_misread_proofs
 from . import proof_columns
 from .set_operations import positional_sql_pair
 from .smt_args import check_args
-from .solver_lock import Z3_MISSING, bound, bounded_solver, serialized
+from .solver_lock import Z3_MISSING, bound, bounded_solver, serialized, sweep
 from .string_literals import canonical_literals
 from .type_names import invalid_type_name
 from .sqlx_fragments import masked_template_problem
@@ -1234,6 +1234,7 @@ class _Compiler:
             raise _Exhausted(f"the queries expand to more than {_MAX_EXPANSION} selects and table reads")
 
     def _select(self, node: exp.Select, ctes: dict):
+        sweep()
         self._expand()
         for key in ("qualify", "laterals", "pivots", "connect", "match", "prewhere", "windows", "into"):
             if node.args.get(key):
@@ -2463,6 +2464,7 @@ class _Compiler:
 
         if self.dialect != "bigquery" or self._safe:
             return
+        sweep()  # a long expression has a site at every operation, and each leaves copies behind
         guarded = z3.And(*self._guard, cond) if self._guard else cond
         fire = z3.simplify(guarded)
         if z3.is_false(fire):
