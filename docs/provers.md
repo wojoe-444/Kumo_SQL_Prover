@@ -277,6 +277,18 @@ SQL-IQ's SQL Equivalence Judge, SQL Judge and Error Classification tasks are sco
 
 `kumo_sql_prover.bounded_equivalence` is a third level between a proof and executed datasets: a z3 check that two queries agree on every database with at most N rows per table, written from the VeriEQL paper (OOPSLA 2024) and sharing none of its code. Its answer reads "bounded, N rows" and is never called a proof; every counterexample is replayed on DuckDB. See [bounded-verification.md](evals/bounded-verification.md).
 
+## A second attempt without the shape rules
+
+Every normalization rule is an identity, so applying one can never make a proof wrong. It can still lose one. The prover compares two normal forms, and a rule that fires on one query of a pair and not on the other moves that side away from a form the two shared. The comparison of every eval against `main` for the 2026-11-10 batch found four proofs lost this way among several hundred gained: three engine test pairs (a filter above a `FULL JOIN`, against the same rows written as a `UNION ALL` of the two one-sided joins, where `wrapped_join_filters` pushed the filter on one side only) and one DLBench pair whose two texts are identical (`disjoint_union` wrote its `UNION` of two constants as `UNION ALL`, and a later step declines that derived table for its unnamed columns).
+
+`src/kumo_sql_prover/shape_fallback.py` closes the class instead of the four cases. The batch's rules are *shape rules*: the normalizer applies them on the first attempt, and when that attempt ends without a verdict the pair is tried again with all of them off, which is the normalizer as it was before the batch. A proof or a refutation from the second attempt stands; otherwise the first answer is returned. This is the arrangement the keyed-`DISTINCT` levels and the semi-join reading already use. The module's docstring lists the shape rules. Two modules of the batch are not in the list because each only reads a query that was declined before it (`listed_output_names`, `printed_spelling`).
+
+- What it guarantees: with the rules off, the steps taken are the ones taken before the batch, so a verdict that was reachable then is reachable now, up to the solver's time limit. It guarantees nothing about rules added outside the list: a new rule that rewrites queries the prover already read should be guarded with `shape_fallback.enabled()` in `normalize`.
+- What it costs: the second attempt runs only for a pair with no verdict. Each of its steps first normalizes both queries with the rules off, and is skipped without a solver call when both texts are the ones the first attempt compared.
+- What it does not change: a refutation from the first attempt is final, and a proof from either attempt passes the same safeguards.
+
+`tests/test_shape_fallback.py` holds made-up pairs of both lost shapes, and shows each is unproven when the second attempt is switched off.
+
 ## Proof search performance
 
 Algebraic fallback levels reuse normalization within a single query pair and fixed proof context. The cached value includes normalization assumptions. Recursive and conditional proofs create separate caches, so different constraints, schemas, types and dialects never reuse a result from another proof. Solver calls and proof safeguards still run.

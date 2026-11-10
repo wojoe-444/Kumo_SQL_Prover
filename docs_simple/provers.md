@@ -148,6 +148,16 @@ A database that compares a whole number with a decimal column first converts the
 
 A query that removes duplicates inside a subquery, then joins it to a table on whole-number key columns, can have its duplicate removal moved to the outside when the join already makes every output row unique. KumoSQL's prover applies that move only when the columns are declared whole numbers and the joined tables' keys are fully pinned down; any grouping, limit, outer join or other twist makes it decline and leave the pair unproven. The evidence is a handful of textbook query pairs, so treat it as a narrow rule. The reference page has the exact conditions and the recorded scores: [Full reference](../docs/provers.md).
 
+## Trying again without the newest rules
+
+The prover rewrites both queries into a standard form and then compares the two. Every rewrite keeps the query's meaning, so a rewrite can never make the prover call two different queries equal. But a rewrite can get in the way. If it changes one query and has nothing to change in the other, two forms that used to match can stop matching, and a proof that worked before is lost.
+
+Example: one query filters the rows of a `FULL JOIN`. The other builds the same rows from two one-sided joins glued with `UNION ALL` and filters those. A new rule moved the filter inside on the second query only, and the prover stopped recognizing the pair.
+
+So the newest group of rules is now tried first, and if the prover reaches no answer, it tries the pair once more with that whole group switched off, exactly as it worked before those rules existed. Whichever attempt finds an answer wins. An answer of "not equal" from the first attempt is never overridden.
+
+The limit: this protects only against the rules in that group. A rule added later needs to be put in the group to get the same protection. The second attempt also takes extra time on pairs the prover cannot decide. The evidence is the comparison of every benchmark before and after the group was added (four proofs had been lost, all four are back) and a small set of made-up test pairs. Details: [Full reference](../docs/provers.md#a-second-attempt-without-the-shape-rules).
+
 ## Avoiding repeated work
 
 When a proof tries several fallback rules, it keeps the earlier normalization result for that same proof. It also keeps the assumptions attached to it. A different proof, such as one with different declared keys, starts fresh.

@@ -145,7 +145,10 @@ def fetch_tpch_data(scale: float = 0.1) -> Path:
         return target
     out = BENCH_DIR / f"tpch{suffix}-parquet"
     out.mkdir(parents=True, exist_ok=True)
-    _run(["tpchgen-cli", "-s", str(scale), "--format", "parquet", "--output-dir", str(out)])
+    try:  # tpchgen-cli 4 takes the format as a subcommand; older releases take it as --format
+        _run(["tpchgen-cli", "parquet", "-s", str(scale), "--output-dir", str(out)])
+    except subprocess.CalledProcessError:
+        _run(["tpchgen-cli", "-s", str(scale), "--format", "parquet", "--output-dir", str(out)])
     con = duckdb.connect(str(target))
     for parquet in sorted(out.glob("*.parquet")):
         con.execute(f"CREATE TABLE {parquet.stem} AS SELECT * FROM '{parquet}'")
