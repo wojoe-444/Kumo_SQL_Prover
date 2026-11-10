@@ -156,7 +156,7 @@ Example: one query filters the rows of a `FULL JOIN`. The other builds the same 
 
 So the newest group of rules is now tried first, and if the prover reaches no answer, it tries the pair once more with that whole group switched off, exactly as it worked before those rules existed. Whichever attempt finds an answer wins. An answer of "not equal" from the first attempt is never overridden.
 
-The limit: this protects only against the rules in that group. A rule added later needs to be put in the group to get the same protection. The second attempt also takes extra time on pairs the prover cannot decide. The evidence is the comparison of every benchmark before and after the group was added (four proofs had been lost, all four are back) and a small set of made-up test pairs. Details: [Full reference](../docs/provers.md#a-second-attempt-without-the-shape-rules).
+The limit: this protects only against the rules in that group. A rule added later needs to be put in the group to get the same protection. The second attempt also takes extra time on pairs the prover cannot decide, so it is only made when the two queries together are at most 4,000 characters long; a very large pair gets the first attempt only. The evidence is the comparison of every benchmark before and after the group was added (four proofs had been lost, all four are back) and a small set of made-up test pairs. Details: [Full reference](../docs/provers.md#a-second-attempt-without-the-shape-rules).
 
 ## Avoiding repeated work
 

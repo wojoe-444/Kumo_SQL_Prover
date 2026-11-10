@@ -18,10 +18,16 @@ it was before them. A proof or a refutation from the second attempt stands; anyt
 answer. This is the arrangement ``algebraic_equivalence.normalize`` already uses for its keyed-``DISTINCT``
 levels and for ``semijoin_rules.semijoin_reading``.
 
-What the second attempt costs: it runs only for a pair with no verdict, and each of its steps is skipped when
-both queries normalize to the same text with the rules off as with them on (nothing to try). What it guarantees:
-with the rules off the normalizer takes exactly the steps it took before the batch, so a verdict that was
-reachable then is reachable now, up to the solver's time limit.
+What the second attempt costs: it runs only for a pair with no verdict, and it normalizes both queries again,
+which is most of the time an unproven pair takes (the solver is skipped when both normalize to the same text with
+the rules off as with them on). Normalization grows faster than the query: measured on undecided QUITE development
+pairs, the second attempt adds 0.1 to 0.5 s to a pair of under 1,000 characters, 1 to 2 s at 2,000 to 4,000,
+5 to 25 s at 12,000 and up, and on a 36,000-character pair it added about 20 s and 1.7 GB. So it is made only for a
+pair whose two texts together are at most ``MAX_CHARS`` characters. The lost proofs above were all under 700.
+
+What it guarantees, for a pair within that size: with the rules off the normalizer takes exactly the steps it
+took before the batch, so a verdict that was reachable then is reachable now, up to the solver's time limit.
+A larger pair gets the first attempt only.
 
 The shape rules: ``single_source_columns``, ``grouped_self_membership``, ``disjoint_union``,
 ``tailed_grouping_sets``, ``mysql_exists_casts``, ``case_arm_rules``, ``unmatched_outer_join``,
@@ -45,6 +51,14 @@ from contextvars import ContextVar
 _ENABLED: ContextVar[bool] = ContextVar("kumo_sql_prover_shape_rules", default=True)
 
 SKIPPED = "the shape rules change neither query (nothing to retry)"
+# The two query texts together; see the module docstring for the measurements behind the number.
+MAX_CHARS = 4000
+
+
+def worth_retrying(left_sql: str, right_sql: str) -> bool:
+    """Whether a pair the first attempt left without a verdict gets the attempt without the shape rules."""
+
+    return enabled() and len(left_sql) + len(right_sql) <= MAX_CHARS
 
 
 def enabled() -> bool:

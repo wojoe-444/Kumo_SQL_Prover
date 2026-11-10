@@ -5133,7 +5133,7 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
         return result
 
     result = attempt()
-    if result.status is SmtStatus.NOT_PROVEN and shape_fallback.enabled():
+    if result.status is SmtStatus.NOT_PROVEN and shape_fallback.worth_retrying(left_sql, right_sql):
         # A shape rule that fires on one query only can hide a match: try the pair as it was read before them.
         with shape_fallback.disabled():
             plain = attempt()

@@ -130,3 +130,14 @@ def test_one_attempt_inside_a_second_attempt(monkeypatch):
     with shape_fallback.disabled():
         prove(NEEDS_SHAPE_RULES["counted key test"])
     assert seen and not any(seen)
+
+
+def test_no_second_attempt_for_a_very_large_pair(monkeypatch):
+    """Normalizing twice costs seconds on a very large query: such a pair gets the first attempt only."""
+
+    left, right, options = LOST_WITHOUT_FALLBACK["filter above a full join"]
+    assert len(left) + len(right) <= shape_fallback.MAX_CHARS
+    monkeypatch.setattr(shape_fallback, "MAX_CHARS", len(left) + len(right) - 1)
+    assert not prove_equivalent_algebraic(left, right, compare_names=False, **options).proven
+    monkeypatch.setattr(shape_fallback, "MAX_CHARS", len(left) + len(right))
+    assert prove_equivalent_algebraic(left, right, compare_names=False, **options).proven
