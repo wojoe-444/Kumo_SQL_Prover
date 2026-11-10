@@ -672,7 +672,8 @@
   "tests/test_eager_sum_readback.py::test_witness_separates_the_pair[reduced-grouped-nullable-sal]": 0.0,
   "tests/test_eager_sum_readback.py::test_witness_separates_the_pair[case-missing]": 0.0,
   "tests/test_eager_sum_readback.py::test_witness_separates_the_pair[reduced-nullable-sal]": 0.0,
-  "tests/test_eager_sum_readback.py::test_witness_separates_the_pair[reduced-count-of-another-column]": 0.0
+  "tests/test_eager_sum_readback.py::test_witness_separates_the_pair[reduced-count-of-another-column]": 0.0,
+  "tests/test_odd_input.py::test_depth_does_not_end_the_process_on_a_small_stack[four-dialects]": 3.1
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,

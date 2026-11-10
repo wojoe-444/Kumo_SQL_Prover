@@ -18,8 +18,12 @@ subclasses of its expressions, so SQL sqlglot rejects is parsed again with the d
 
 from __future__ import annotations
 
+import threading
+
 from sqlglot import exp
+from sqlglot import parser as sqlglot_parser
 from sqlglot.dialects.bigquery import BigQuery
+from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import ParseError
 from sqlglot.generator import Generator
 from sqlglot.tokens import Token, TokenType
@@ -663,7 +667,292 @@ def _resolve_with_expressions(tree: exp.Expression) -> exp.Expression:
 
 
 class TooDeeplyNested(ParseError):
-    """The query nests further than the parser can follow on the interpreter's stack."""
+    """The query nests further than ``MAX_NESTING`` or ``MAX_TREE_DEPTH``, or than the interpreter's stack allows."""
+
+
+# sqlglot's parser and its SQL writer recurse once per level of nesting. Pure-Python sqlglot ends the interpreter's stack
+# at some fifty nested parentheses (a ``RecursionError``, turned into ``TooDeeplyNested`` below). The compiled build
+# (sqlglotc) has no such check: it overflows the C stack and the process dies. Measured with sqlglotc 30.21.0 on a
+# 512 KB stack: reading 400 nested parentheses, subqueries or CASEs, or 400 of ``@``, ``ANY`` or ``INTERVAL`` in a row;
+# writing a chain of 300 ``a->'k'->'k'..`` or lambdas (250 of each of 88 constructs in four dialects are written). A
+# 1 MB stack, the smallest a CPython thread gets unasked, takes about twice that. Three things keep it from happening,
+# the same on every build, for any stack of 1 MB or more:
+#
+# - what opens a level is counted in the tokens and refused past ``MAX_NESTING`` (``nesting_weight``);
+# - a statement that could take the parser deep some other way is read on a thread with a stack sized for it
+#   (``_with_room``), because no list of tokens covers every construct of every dialect that sqlglot reads by recursing;
+# - the tree that comes back is measured and refused past ``MAX_TREE_DEPTH`` (``_too_deep``), so what reaches the
+#   writer, the optimizer and the provers fits the stack they run on.
+MAX_NESTING = 100  # brackets, CASEs, nested ARRAY<..> types and prefix operators inside each other
+MAX_TREE_DEPTH = 200  # nodes below each other in the parsed tree; a chain of + - * / || AND OR or set operations counts once
+# A different cost of depth, on every build: sqlglot reads what is inside ``DATE(..)``, ``STRING(..)``, ``STRUCT(..)`` or any
+# other call of a type's name twice, once as a type's parameters and once as arguments, so each such call inside
+# another doubles the time. Sixteen take half a second with one column inside and seven with fifty; twenty-four take
+# ninety seconds; forty do not finish.
+MAX_TYPE_CALLS = 10  # calls of a type's name inside each other
+# The same doubling for a join with no ON or USING (and not CROSS or NATURAL): sqlglot tries the joins after it as
+# nested inside it, and reads them again when no ON follows. Each such join doubles the time, and with the compiled build
+# the memory: twenty ``JOIN t`` in a row take six seconds and 1.1 GB, twenty-four more memory than most machines have.
+MAX_OPEN_JOINS = 10  # joins still waiting for their ON
+
+_PREFIX_OPERATORS = frozenset({TokenType.NOT, TokenType.DASH, TokenType.PLUS, TokenType.TILDE})
+_ANGLE_TYPES = frozenset({TokenType.ARRAY, TokenType.STRUCT, TokenType.MAP, TokenType.RANGE, TokenType.LIST, TokenType.NESTED, TokenType.OBJECT, TokenType.UNION})
+_TYPE_NAMES = frozenset(sqlglot_parser.Parser.TYPE_TOKENS)
+_JOINS = frozenset(kind for kind in (TokenType.JOIN, getattr(TokenType, "STRAIGHT_JOIN", None)) if kind is not None)
+_JOINS_WITHOUT_ON = frozenset({TokenType.CROSS, TokenType.NATURAL})
+# Chains sqlglot reads and writes in a loop, however long (checked to 30,000 operands on a 512 KB stack): a sum of 3,000
+# columns or 1,000 UNION ALL branches is one level. Other operators (``%``, ``IN``, ``a.b``, ``::``) recurse per operand.
+_FLAT_CHAINS = (exp.Connector, exp.Add, exp.Sub, exp.Mul, exp.Div, exp.DPipe, exp.SetOperation)
+_TOO_DEEP = f"the query is nested too deeply to read (more than {MAX_NESTING} brackets inside each other, or {MAX_TREE_DEPTH} levels of operators)"
+_TOO_MANY_TYPE_CALLS = (
+    f"the query is nested too deeply to read (more than {MAX_TYPE_CALLS} calls of a type's name, such as DATE(..) or STRUCT(..), "
+    "inside each other: each one doubles the time it takes to read)"
+)
+_TOO_MANY_OPEN_JOINS = (
+    f"the query cannot be read (more than {MAX_OPEN_JOINS} joins in a row with no ON or USING: each one doubles the time "
+    "and the memory it takes to read)"
+)
+
+# What a token does to the count, for the few kinds that do anything.
+_OPEN, _CLOSE, _BLOCK, _END, _LESS, _GREATER, _PREFIX, _COMMA, _JOIN, _ON, _SEMICOLON, _NOT_IN_A_TYPE = range(1, 13)
+_ROLES = {
+    TokenType.L_PAREN: _OPEN, TokenType.L_BRACKET: _OPEN, TokenType.L_BRACE: _OPEN,
+    TokenType.R_PAREN: _CLOSE, TokenType.R_BRACKET: _CLOSE, TokenType.R_BRACE: _CLOSE,
+    TokenType.CASE: _BLOCK, TokenType.BEGIN: _BLOCK, TokenType.END: _END,
+    TokenType.LT: _LESS, TokenType.GT: _GREATER, TokenType.COMMA: _COMMA,
+    TokenType.ON: _ON, TokenType.USING: _ON, **{kind: _JOIN for kind in _JOINS}, TokenType.SEMICOLON: _SEMICOLON,
+    # ``list < map AND ..`` is a comparison, not the start of ``LIST<MAP..>``: these end a type that was never one
+    **{kind: _NOT_IN_A_TYPE for kind in (TokenType.AND, TokenType.OR, TokenType.SELECT, TokenType.FROM, TokenType.WHERE, TokenType.THEN, TokenType.WHEN, TokenType.ELSE)},
+    **{kind: _PREFIX for kind in _PREFIX_OPERATORS},
+}
+
+# The compiled parser's worst measured appetite is 1.3 KB of stack for a token (a run of ``@`` or ``ANY``). A statement
+# whose weight (``nesting_weight``) is ``_DIRECT_WEIGHT`` or less is read where the caller stands: it cannot take the
+# parser more than 104 KB deep, nor make a tree deeper than ``MAX_TREE_DEPTH`` (a node and a half below each other per
+# token at the most, measured over 101 constructs in five dialects). A heavier one gets ``_STACK_PER_TOKEN`` for each token, between the
+# two bounds (Windows allows no thread stack of 256 MiB or more), and its tree is measured. Stack is address space until
+# it is touched, so the size costs nothing; the thread costs a third of a millisecond, which is why not every statement
+# gets one.
+_COMPILED = not (getattr(sqlglot_parser, "__file__", None) or "").endswith(".py")
+_DIRECT_WEIGHT = 80
+_STACK_PER_TOKEN = 4096
+_SMALLEST_STACK, _LARGEST_STACK = 16 << 20, 255 << 20
+_stack_size_lock = threading.Lock()
+_reading = threading.local()
+
+
+def nesting_weight(sql: str, tokens: list[Token]) -> int:
+    """How deep ``tokens`` could take a parser that recurses, at the most; ``TooDeeplyNested`` past the fixed limits.
+
+    A parser goes a level deeper only by reading a token, and a comma or a semicolon ends whatever was begun since the
+    last one at its own bracket level (a list is read in a loop). So the weight is the largest number of tokens that can be open
+    at once: for each bracket, CASE, block or ``ARRAY<`` still open, the tokens read directly inside it since its last
+    comma. ``f(a, g(b, c))`` weighs 5 however long the lists are; ``NOT NOT NOT a``, ``((a))`` and ``a[0][0]`` weigh
+    what they are long.
+
+    The fixed limits are counted on the way: ``MAX_NESTING`` brackets, CASEs, ``ARRAY<`` types and prefix operators
+    inside each other, ``MAX_TREE_DEPTH`` subscripts in a row, ``MAX_TYPE_CALLS`` calls of a type's name inside each
+    other, ``MAX_OPEN_JOINS`` joins waiting for their ON.
+    """
+
+    count = len(tokens)
+    if (
+        count <= _DIRECT_WEIGHT
+        and (sql.count("(") <= MAX_TYPE_CALLS or sum(1 for token in tokens if token.token_type in _TYPE_NAMES) <= MAX_TYPE_CALLS)
+        and (count <= 2 * MAX_OPEN_JOINS or sum(1 for token in tokens if token.token_type in _JOINS) <= MAX_OPEN_JOINS)
+    ):
+        return count  # too short to weigh more, and without enough calls or joins to trip the other limits
+    roles = _ROLES.get
+    # per open level: tokens since its last comma, joins waiting for their ON, and what opened it (0 for the statement)
+    runs, waiting, openers = [0], [0], [0]
+    total = peak = nested = prefix = subscripts = type_calls = open_joins = 0
+    previous = None
+    for index, token in enumerate(tokens):
+        kind = token.token_type
+        role = roles(kind)
+        if role is None:
+            runs[-1] += 1
+            total += 1
+            if total > peak:
+                peak = total
+            prefix = 0
+            previous = kind
+            continue
+        if role == _COMMA or role == _SEMICOLON:
+            total -= runs[-1]
+            runs[-1] = 0
+            if role == _SEMICOLON:  # the next statement's joins are its own
+                open_joins -= waiting[-1]
+                waiting[-1] = 0
+            prefix = 0
+            previous = kind
+            continue
+        runs[-1] += 1
+        total += 1
+        if total > peak:
+            peak = total
+        if role == _PREFIX:
+            prefix += 1
+            if nested + prefix > MAX_NESTING:
+                raise TooDeeplyNested(_TOO_DEEP)
+            previous = kind
+            continue
+        prefix = 0
+        if role == _NOT_IN_A_TYPE or role == _JOIN or role == _ON:
+            while openers[-1] == _LESS:
+                openers.pop()
+                total -= runs.pop()
+                open_joins -= waiting.pop()
+                nested -= 1
+            if role == _NOT_IN_A_TYPE:
+                previous = kind
+                continue
+        if role == _JOIN:
+            if previous not in _JOINS_WITHOUT_ON:
+                waiting[-1] += 1
+                open_joins += 1
+                if open_joins > MAX_OPEN_JOINS:
+                    raise TooDeeplyNested(_TOO_MANY_OPEN_JOINS)
+            previous = kind
+            continue
+        if role == _ON:
+            if waiting[-1]:
+                waiting[-1] -= 1
+                open_joins -= 1
+            previous = kind
+            continue
+        if role == _OPEN:
+            if kind is TokenType.L_BRACKET:
+                # ``a[0][0]..``: each subscript is a level of the tree, and DuckDB's parser takes time quadratic in the chain
+                subscripts = subscripts + 1 if previous is TokenType.R_BRACKET else 1
+                if subscripts > MAX_TREE_DEPTH:
+                    raise TooDeeplyNested(_TOO_DEEP)
+            opener = _OPEN
+            if kind is TokenType.L_PAREN and previous in _TYPE_NAMES:
+                opener = -_OPEN  # the call of a type's name
+                type_calls += 1
+                if type_calls > MAX_TYPE_CALLS:
+                    raise TooDeeplyNested(_TOO_MANY_TYPE_CALLS)
+        elif role == _BLOCK:
+            opener = _BLOCK
+        elif role == _LESS and previous in _ANGLE_TYPES and any(after.token_type in _TYPE_NAMES for after in tokens[index + 1 : index + 3]):
+            opener = _LESS  # ``ARRAY<INT64>`` or ``STRUCT<x INT64>``; ``range < 5`` is a comparison
+        else:
+            opener = 0
+            if role == _CLOSE:
+                # A closing bracket also ends the ``ARRAY<`` types and CASEs opened inside it and never closed.
+                if _OPEN in openers or -_OPEN in openers:
+                    while True:
+                        closed = openers.pop()
+                        total -= runs.pop()
+                        open_joins -= waiting.pop()
+                        nested -= 1
+                        if closed == -_OPEN:
+                            type_calls -= 1
+                        if closed == _OPEN or closed == -_OPEN:
+                            break
+            elif (role == _END and openers[-1] == _BLOCK) or (role == _GREATER and openers[-1] == _LESS):
+                openers.pop()
+                total -= runs.pop()
+                open_joins -= waiting.pop()
+                nested -= 1
+        if opener:
+            openers.append(opener)
+            runs.append(0)
+            waiting.append(0)
+            nested += 1
+            if nested > MAX_NESTING:
+                raise TooDeeplyNested(_TOO_DEEP)
+        previous = kind
+    return peak
+
+
+def check_nesting(sql: str, tokens: list[Token]) -> None:
+    """Raise ``TooDeeplyNested`` when ``tokens`` pass one of the fixed limits: before the parser recurses into them."""
+
+    nesting_weight(sql, tokens)
+
+
+def _too_deep(trees) -> bool:
+    """Whether a parsed tree is deeper than ``MAX_TREE_DEPTH``, found without recursing.
+
+    Reading ``a::INT::INT..`` or ``a % a % a..`` is a loop, so no bracket count sees them, but writing the tree recurses."""
+
+    level = [tree for tree in trees if tree is not None]
+    depth = 1
+    while level:
+        if depth > MAX_TREE_DEPTH:
+            return True
+        below = []
+        for node in level:  # ``level`` grows as it is read: the left operand of a flat chain is on its parent's level
+            if isinstance(node, _FLAT_CHAINS):
+                left = node.args.get("this")
+                if isinstance(left, _FLAT_CHAINS):
+                    level.append(left)
+                    below.extend(child for child in node.iter_expressions() if child is not left)
+                    continue
+            below.extend(node.iter_expressions())
+        level = below
+        depth += 1
+    return False
+
+
+def _with_room(work, token_count: int):
+    """``work()``, on a thread whose stack is sized for ``token_count`` tokens when the compiled parser could need it.
+
+    Pure-Python sqlglot stops at the interpreter's recursion limit on any stack, so it never needs the thread. Where a
+    thread of that size cannot be had, the work is done in place, as it was before."""
+
+    if not _COMPILED or getattr(_reading, "has_room", False):
+        return work()
+    outcome = []
+
+    def run():
+        _reading.has_room = True  # a parse started from inside this one is already where it needs to be
+        try:
+            outcome.append((work(), None))
+        except BaseException as error:  # handed to the caller, whatever it is
+            outcome.append((None, error))
+
+    size = min(_LARGEST_STACK, max(_SMALLEST_STACK, token_count * _STACK_PER_TOKEN))
+    try:
+        with _stack_size_lock:  # the size is one setting for the whole process: set, start, put back
+            previous = threading.stack_size(size)
+            try:
+                thread = threading.Thread(target=run, name="deep-sql-parse", daemon=True)
+                thread.start()
+            finally:
+                threading.stack_size(previous)
+    except (ValueError, RuntimeError, OSError):
+        return work()
+    thread.join()
+    result, error = outcome[0]
+    if error is not None:
+        raise error
+    return result
+
+
+_REFUSED = object()
+
+
+def read_within_limits(sql: str, tokens: list[Token], parse):
+    """The statements ``parse()`` returns for ``tokens``, or ``TooDeeplyNested``: never a process that ran out of stack."""
+
+    light = nesting_weight(sql, tokens) <= _DIRECT_WEIGHT
+
+    def work():
+        try:
+            trees = parse()
+        except RecursionError:
+            # Pure-Python sqlglot recurses about twenty frames per nesting level, so some fifty nested parentheses end
+            # the interpreter's stack. Callers handle text that cannot be read (ParseError); few expect this.
+            raise TooDeeplyNested("the query is nested too deeply to read") from None
+        return _REFUSED if not light and _too_deep(trees) else trees  # a tree that deep is also let go of here
+
+    trees = work() if light else _with_room(work, len(tokens))
+    if trees is _REFUSED:
+        raise TooDeeplyNested(_TOO_DEEP)
+    return trees
 
 
 class UnclosedLiteral(ParseError):
@@ -692,6 +981,26 @@ def _check_literals(sql: str, tokens: list) -> None:
                 raise UnclosedLiteral(f"Unclosed literal: a quoted string or name that is not triple-quoted runs past the end of line {token.line}")
 
 
+def _limit_depth_in_every_dialect() -> None:
+    """The same two limits for the dialects sqlglot reads without this module's help (MySQL, PostgreSQL, DuckDB, ..):
+    the provers read those too, and the compiled parser ends the process on them just the same."""
+
+    if getattr(Dialect.parse, "limits_depth", False):
+        return  # a second package with this module has been imported
+
+    def parse(self, sql, **opts):
+        tokens = self.tokenize(sql)
+        return read_within_limits(sql, tokens, lambda: self.parser(**opts).parse(tokens, sql))  # the dialect's own parse
+
+    def parse_into(self, expression_type, sql, **opts):
+        tokens = self.tokenize(sql)
+        return read_within_limits(sql, tokens, lambda: self.parser(**opts).parse_into(expression_type, tokens, sql))
+
+    parse.limits_depth = parse_into.limits_depth = True
+    Dialect.parse = parse
+    Dialect.parse_into = parse_into
+
+
 def install() -> None:
     global _installed
     if _installed:
@@ -703,16 +1012,15 @@ def install() -> None:
     def parse_with_table_arguments(self, sql, **opts):
         # Whatever sqlglot reads on its own is left alone; only SQL it rejects is retried with the table arguments marked.
         tokens = self.tokenize(sql)
+        return read_within_limits(sql, tokens, lambda: parse_tokens(self, sql, tokens, opts))
+
+    def parse_tokens(self, sql, tokens, opts):
         try:
             _check_literals(sql, tokens)
             _check_empty_struct(sql, tokens)
             return self.parser(**opts).parse(tokens, sql)  # what the dialect's own parse does
         except UnclosedLiteral:
             raise
-        except RecursionError:
-            # sqlglot's parser recurses about twenty frames per nesting level, so some fifty nested parentheses end
-            # the interpreter's stack. Callers handle text that cannot be read (ParseError); few expect this.
-            raise TooDeeplyNested("the query is nested too deeply to read") from None
         except ParseError as error:
             rewritten = sql
             for rewrite in (
@@ -733,6 +1041,7 @@ def install() -> None:
             return list(_resolve_markers(_resolve_table_arguments(self.parser(**opts).parse(marked, sql))))
 
     BigQuery.parse = parse_with_table_arguments
+    _limit_depth_in_every_dialect()
     # Releases differ in how a generator finds its handler (a method named after the class, a per-class table, a cache of both),
     # so every generator that exists gets the handler in its own table and any cache is dropped.
     pending = [Generator]
