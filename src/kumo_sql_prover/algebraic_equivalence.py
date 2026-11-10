@@ -39,7 +39,7 @@ from .ast_utils import FROM_KEY, UnmodeledConstruct, canonical_negation, check_m
 from .set_operations import positional_sql_pair
 from .literal_fold_rules import distribute_over_constant_union, fold_string_literals
 from .parse_check import refuse_misread_proofs
-from .solver_lock import Z3_MISSING, serialized
+from .solver_lock import Z3_MISSING, serialized, sweep
 from . import solver_lock
 from .string_literals import canonical_literals, invalid_literal
 from .type_names import invalid_type_name
@@ -4957,6 +4957,7 @@ def normalize(
         if isinstance(node, exp.SetOperation):
             return merge_same_source(node) or set_operation_to_exists(node) or node
         if isinstance(node, exp.Select):
+            sweep()  # every rule below works on copies, which only a collection frees
             # a derived table's output names are how the query around it reads it, so a rule that renames
             # them would silently redirect those reads (to another column of the same name, say)
             names = _derived_output_names(node) if isinstance(node.parent, (exp.Subquery, exp.CTE)) else None
