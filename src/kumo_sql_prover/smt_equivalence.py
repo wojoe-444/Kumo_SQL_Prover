@@ -963,6 +963,10 @@ def _output_kinds(node: exp.Expression, dialect: str) -> list | None:
     return None
 
 
+_NOT_KEPT = object()  # no type is kept for this node (``None`` is a type that can be kept: "not visible")
+_VERIFY_KEPT_CLASSES = False  # work every kept type out again and compare; for tests
+
+
 class _AggCtx:
     def __init__(self, compiler: "_Compiler"):
         self.compiler = compiler
@@ -1033,6 +1037,9 @@ class _Compiler:
         # source it has seen, to compare a bare column's owner with the one the text names.
         self.column_reader = None
         self.source_tags: dict[int, tuple] = {}
+        # The type found for each arithmetic node below the one whose operands are being compiled (``_operands``).
+        self._kept_classes: dict[tuple, tuple] = {}
+        self._operand_depth = 0
 
     def fresh(self, prefix: str) -> str:
         return f"{prefix}{next(self.counter)}"
@@ -1465,6 +1472,7 @@ class _Compiler:
                 for name, val in _star_columns(star, [pair for source in sources for pair in source.star()]):
                     if isinstance(val, exp.Expression):
                         aliases[name] = val  # ``* REPLACE (e AS a)`` names ``e`` as ``e AS a`` does
+                        self._kept_classes.clear()
                         val = self._val(val, env, agg_ctx, None)
                     names.append(name)
                     outputs.append(val)
@@ -1473,6 +1481,7 @@ class _Compiler:
             name = item.alias_or_name.lower() if isinstance(item, (exp.Alias, exp.Column)) else ""
             if name:
                 aliases[name] = expr
+                self._kept_classes.clear()
             names.append(name)
             outputs.append(self._val(expr, env, agg_ctx, None))
 
@@ -2081,7 +2090,8 @@ class _Compiler:
             # x * 1e0, nor BigQuery's x * 1.0: a FLOAT64 factor converts an INT64 x, rounding it past 2**53.
             for side, other in ((e.this, e.expression), (e.expression, e.this)):
                 if isinstance(e, exp.Mul) and _literal_arithmetic(side, self.dialect) == 1 and _exact_literals(side, self.dialect):
-                    value = self._val(other, env, agg, aliases)
+                    with self._operands():
+                        value = self._val(other, env, agg, aliases)
                     self._numeric(value)
                     return value
         if isinstance(e, exp.Round) and isinstance(e.args.get("decimals"), exp.Literal) and e.args["decimals"].this == "0" and not e.args.get("truncate"):
@@ -2092,7 +2102,8 @@ class _Compiler:
             and self.exact
             and not any(isinstance(side, exp.Interval) for side in (e.this, e.expression))
         ):
-            a, b = self._val(e.this, env, agg, aliases), self._val(e.expression, env, agg, aliases)
+            with self._operands():
+                a, b = self._val(e.this, env, agg, aliases), self._val(e.expression, env, agg, aliases)
             self._numeric(a)
             self._numeric(b)
             self._arithmetic_site(e, a, b, env, agg, aliases)
@@ -2100,12 +2111,14 @@ class _Compiler:
             r = x + y if isinstance(e, exp.Add) else x - y if isinstance(e, exp.Sub) else x * y
             return _Val(z3.Or(a.null, b.null), V.Num(r))
         if isinstance(e, exp.Neg) and self.exact:
-            a = self._val(e.this, env, agg, aliases)
+            with self._operands():
+                a = self._val(e.this, env, agg, aliases)
             self._numeric(a)
             self._negation_site(e, a, e.this, env, agg, aliases)
             return _Val(a.null, V.Num(-V.num(a.val)))
         if isinstance(e, (exp.Add, exp.Mul)):
-            a, b = self._val(e.this, env, agg, aliases), self._val(e.expression, env, agg, aliases)
+            with self._operands():
+                a, b = self._val(e.this, env, agg, aliases), self._val(e.expression, env, agg, aliases)
             self._arithmetic_site(e, a, b, env, agg, aliases)
             # Commutative: apply the function to the arguments in a canonical order.
             self.ordered = True
@@ -2121,7 +2134,8 @@ class _Compiler:
             if isinstance(e, exp.Div) and isinstance(e.expression, exp.Nullif) and e.expression.expression.sql() == "0":
                 # x / NULLIF(y, 0) is the quotient with the zero divisor read as NULL (the mean of no values).
                 parts = [e.this, e.expression.this]
-            vals = [self._val(p, env, agg, aliases) for p in parts]
+            with self._operands():
+                vals = [self._val(p, env, agg, aliases) for p in parts]
             if isinstance(e, exp.Sub):
                 self._arithmetic_site(e, vals[0], vals[1], env, agg, aliases)
             elif isinstance(e, exp.Neg):
@@ -2327,6 +2341,58 @@ class _Compiler:
         declared = self.types.get(self.occ_tables.get(uid, ""), {}).get(name)
         return smt_values.type_class(declared) if declared else None
 
+    @contextlib.contextmanager
+    def _operands(self):
+        """Compile the operands of an arithmetic node.
+
+        A sum of n terms is n nodes inside each other, and every one of them asks for the type of all that is below
+        it (``_class_of`` for its overflow, ``smt_numeric.exact_class`` for its scale). Compiling the sum was
+        therefore quadratic in n, and cubic where each answer walked the chain again: four hundred columns took twenty
+        seconds before the solver, and with it the time limit, had started. While operands are compiled, the type
+        found for an arithmetic node is kept and given again for the same node read in the same scope. Everything
+        kept is dropped when the outermost node's operands are done and when a select names a new alias, so no
+        answer outlives the scope it was found in."""
+
+        self._operand_depth += 1
+        try:
+            yield
+        finally:
+            self._operand_depth -= 1
+            if not self._operand_depth:
+                self._kept_classes.clear()
+
+    def _kept_class(self, kind: str, e, env, agg, aliases):
+        """The type kept for arithmetic node ``e`` in this scope, or ``_NOT_KEPT``."""
+
+        if not self._operand_depth:
+            return _NOT_KEPT
+        kept = self._kept_classes.get((kind, id(e), id(env), id(agg), id(aliases)))
+        if kept is None:
+            return _NOT_KEPT
+        if _VERIFY_KEPT_CLASSES:
+            self._verify_kept(kind, e, env, agg, aliases, kept[-1])
+        return kept[-1]
+
+    def _keep_class(self, kind: str, e, env, agg, aliases, cls):
+        """Keep ``cls`` for ``e`` while operands are being compiled. The entry holds the node and its scope, so
+        none of their ``id``s can be given to another object while it is kept."""
+
+        if self._operand_depth:
+            self._kept_classes[(kind, id(e), id(env), id(agg), id(aliases))] = (e, env, agg, aliases, cls)
+        return cls
+
+    def _verify_kept(self, kind: str, e, env, agg, aliases, kept) -> None:
+        """Work the type out again and compare (tests turn this on with ``_VERIFY_KEPT_CLASSES``)."""
+
+        depth, classes = self._operand_depth, self._kept_classes
+        self._operand_depth, self._kept_classes = 0, {}
+        try:
+            fresh = self._class_of(e, env, agg, aliases) if kind == "class" else smt_numeric.exact_class(self, e, env, agg, aliases)
+        finally:
+            self._operand_depth, self._kept_classes = depth, classes
+        if fresh != kept:
+            raise AssertionError(f"kept {kind} {kept!r} of {e.sql(dialect='bigquery')[:80]} is now {fresh!r}")
+
     def _class_of(self, e, env, agg, aliases) -> str | None:
         """The type of expression ``e`` where it is visible (a declared column, a literal, a cast, arithmetic over
         those), ``None`` when it is not."""
@@ -2347,10 +2413,14 @@ class _Compiler:
                 return None
         if isinstance(e, exp.Neg):
             return self._class_of(e.this, env, agg, aliases)
-        if isinstance(e, (exp.Add, exp.Sub, exp.Mul, exp.Mod)):
-            return S.arithmetic_class(*self._operand_classes([e.this, e.expression], env, agg, aliases))
-        if isinstance(e, exp.Div):
-            return S.division_class(*self._operand_classes([e.this, e.expression], env, agg, aliases))
+        if isinstance(e, (exp.Add, exp.Sub, exp.Mul, exp.Mod, exp.Div)):
+            kept = self._kept_class("class", e, env, agg, aliases)
+            if kept is not _NOT_KEPT:
+                return kept
+            operands = self._operand_classes([e.this, e.expression], env, agg, aliases)
+            # ``/`` after the others, as before: no operator here is a subclass of another.
+            cls = S.arithmetic_class(*operands) if isinstance(e, (exp.Add, exp.Sub, exp.Mul, exp.Mod)) else S.division_class(*operands)
+            return self._keep_class("class", e, env, agg, aliases, cls)
         if isinstance(e, (exp.IntDiv, exp.Count, exp.CountIf)):
             return S.INT64
         if isinstance(e, (exp.Abs, exp.Sum, exp.Min, exp.Max)) and isinstance(e.this, exp.Expression):
@@ -2416,9 +2486,13 @@ class _Compiler:
             if conditions:
                 del self._guard[-len(conditions):]
 
-    def _may_fail(self, name: str, vals: list[_Val]):
+    def _may_fail(self, name: str, vals: list[_Val], operands: list[_Val] | None = None):
         """The condition ``fails:name(args)``: an operation that may raise an error for these arguments, as one
-        uninterpreted Boolean, equal for equal calls."""
+        uninterpreted Boolean, equal for equal calls.
+
+        ``operands`` are ``vals`` before they were put in a canonical order. They are the same values, so all of them
+        are known exactly when all of ``vals`` are, and saying it of them keeps the order test (a comparison of the
+        two operands, as deep as they are) out of the question whether the operation runs at all."""
 
         self.uses_uf = True  # a model of an unknown failing condition is not a counterexample
         V = _value_sort()
@@ -2426,7 +2500,7 @@ class _Compiler:
         if key not in self.functions:
             self.functions[key] = z3.Function(f"fails:{name}/{len(vals)}", *([z3.BoolSort(), V] * len(vals)), z3.BoolSort()) if vals else z3.Bool(f"fails:{name}")
         function = self.functions[key]
-        known = z3.And(*[z3.Not(v.null) for v in vals]) if vals else z3.BoolVal(True)
+        known = z3.And(*[z3.Not(v.null) for v in operands or vals]) if vals else z3.BoolVal(True)
         return z3.And(known, function(*self._uf_args(vals))) if vals else function
 
     def _arithmetic_site(self, e, a: _Val, b: _Val, env, agg, aliases) -> None:
@@ -2448,7 +2522,7 @@ class _Compiler:
         if isinstance(e, (exp.Add, exp.Mul)):  # commutative: one canonical argument order
             swap = _pair_lt(b, a)
             pair = [_Val(z3.If(swap, b.null, a.null), z3.If(swap, b.val, a.val)), _Val(z3.If(swap, a.null, b.null), z3.If(swap, a.val, b.val))]
-        self._site(kind, e, self._may_fail(f"{type(e).__name__}:{cls}", pair))
+        self._site(kind, e, self._may_fail(f"{type(e).__name__}:{cls}", pair, operands=[a, b]))
 
     def _negation_site(self, e, a: _Val, operand, env, agg, aliases) -> None:
         """``-x`` and ``ABS(x)`` overflow at the smallest INT64."""
