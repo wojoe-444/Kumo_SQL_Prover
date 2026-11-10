@@ -11,7 +11,7 @@ For each pair this checks:
 * the prover's verdict (with the executed counterexample search on), so a pair is proved,
   refuted or left unknown;
 * a proved pair returns the same rows on ``--databases`` random databases (DuckDB, with
-  the optimizer off whenever the plain run disagrees, as ``kumosql.duckdb_load.run_unoptimized``);
+  the optimizer off whenever the plain run disagrees, as ``kumo_sql_prover.duckdb_load.run_unoptimized``);
 * the stored counterexample of a non-equivalent pair still separates the queries.
 
 ``wrong`` counts proofs of non-equivalent pairs, refutations of equivalent ones and proofs
@@ -34,8 +34,8 @@ import sqlglot
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.smt_equivalence import SmtStatus, TableConstraints  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.smt_equivalence import SmtStatus, TableConstraints  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "join_rewrites"
 SCHEMA = {"a": ["id", "k", "x"], "b": ["id", "k", "y"], "c": ["id", "k", "z"]}
@@ -89,9 +89,9 @@ def random_database(rng: random.Random, constraints: str) -> dict[str, list[list
 def _connect(db: dict[str, list[list]]):
     import duckdb
 
-    from kumosql.duckdb_load import insert_rows
+    from kumo_sql_prover.duckdb_load import insert_rows
 
-    from kumosql.duckdb_load import small_database
+    from kumo_sql_prover.duckdb_load import small_database
     con = small_database()
     for table, columns in SCHEMA.items():
         con.execute(f"CREATE TABLE {table} ({', '.join(c + ' BIGINT' for c in columns)})")
@@ -102,7 +102,7 @@ def _connect(db: dict[str, list[list]]):
 def differ(con, left: str, right: str) -> bool:
     """The two queries return different bags of rows (confirmed with DuckDB's optimizer off)."""
 
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     if Counter(con.execute(left).fetchall()) == Counter(con.execute(right).fetchall()):
         return False

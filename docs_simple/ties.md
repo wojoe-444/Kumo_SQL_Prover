@@ -14,7 +14,7 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY ts DESC) = 1
 If `events` has a unique `id`, adding `id` to the `ORDER BY` makes the choice the same every time. KumoSQL reports exactly that suggestion. If the result only uses `user_id` and `ts`, the query is already safe: either tied row gives the same output.
 
 ```python
-from kumosql.tie_determinism import analyze
+from kumo_sql_prover.tie_determinism import analyze
 
 report = analyze("SELECT a FROM t ORDER BY b LIMIT 1")
 for site in report.sites:
@@ -25,10 +25,10 @@ Each place that can depend on ties (a window function, `LIMIT`, `ANY_VALUE`, `AR
 
 ## Showing the surprise: tie witnesses
 
-`unknown` is a warning, not proof. `kumosql.tie_witness.find_tie_witness` goes further: it builds a tiny database (usually two rows that tie) and two ways of storing those rows, and shows the query returning different answers for the two. In the example above that is two events of one user with the same timestamp but different values: store them one way and you get one value, store them the other way and you get the other.
+`unknown` is a warning, not proof. `kumo_sql_prover.tie_witness.find_tie_witness` goes further: it builds a tiny database (usually two rows that tie) and two ways of storing those rows, and shows the query returning different answers for the two. In the example above that is two events of one user with the same timestamp but different values: store them one way and you get one value, store them the other way and you get the other.
 
 ```python
-from kumosql.tie_witness import find_tie_witness, replay
+from kumo_sql_prover.tie_witness import find_tie_witness, replay
 
 witness = find_tie_witness(sql, schema, rules)   # a small JSON document, or None
 replay(witness)                                   # True when it still shows the difference

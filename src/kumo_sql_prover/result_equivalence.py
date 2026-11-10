@@ -1,6 +1,6 @@
 """Execution-based equivalence checks for BigQuery SQL rewrites.
 
-This module complements the static prover in :mod:`kumosql.equivalence`.
+This module complements the static prover in :mod:`kumo_sql_prover.equivalence`.
 Instead of comparing ASTs, it runs the original and the rewritten SQL against
 the same deterministic synthetic tables in a local DuckDB engine and compares
 the result sets. Agreement on synthetic data is evidence, not a proof; a
@@ -112,7 +112,7 @@ class QueryTimeout(ExecutionError):
 
 
 class BigQueryWouldFail(ExecutionError):
-    """BigQuery fails on this database (see :mod:`kumosql.bigquery_on_duckdb`): try the next one."""
+    """BigQuery fails on this database (see :mod:`kumo_sql_prover.bigquery_on_duckdb`): try the next one."""
 
 
 def _execution_error(message: str, exc: BaseException) -> ExecutionError:
@@ -122,7 +122,7 @@ def _execution_error(message: str, exc: BaseException) -> ExecutionError:
 
 
 def _bigquery_rows(rows, dialect: str) -> tuple:
-    """BigQuery-dialect results read as BigQuery returns them (:func:`kumosql.bigquery_on_duckdb.bigquery_rows`)."""
+    """BigQuery-dialect results read as BigQuery returns them (:func:`kumo_sql_prover.bigquery_on_duckdb.bigquery_rows`)."""
 
     if dialect != "bigquery":
         return rows
@@ -833,7 +833,7 @@ def check_result_equivalence(
     """Run both queries over several synthetic datasets and compare results.
 
     With ``targeted`` the random databases are followed by the targeted suite built
-    around the left query (:func:`kumosql.targeted_data.database_suite`: corner cases,
+    around the left query (:func:`kumo_sql_prover.targeted_data.database_suite`: corner cases,
     rows at each comparison's boundary, each table empty in turn); it only adds
     databases, so it can only turn "equivalent" into "different".
 

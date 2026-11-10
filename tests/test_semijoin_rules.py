@@ -1,8 +1,8 @@
-"""A filtering inner join under DISTINCT read as EXISTS (``kumosql.semijoin_rules``)."""
+"""A filtering inner join under DISTINCT read as EXISTS (``kumo_sql_prover.semijoin_rules``)."""
 
 import pytest
 
-from kumosql.semijoin_rules import semijoin_reading
+from kumo_sql_prover.semijoin_rules import semijoin_reading
 
 
 def test_filtering_join_becomes_exists_with_its_where_conjuncts():
@@ -41,7 +41,7 @@ def test_chained_filtering_joins_nest():
 
 def test_proves_distinct_join_against_in():
     pytest.importorskip("z3")
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 
     schema = {"t": ["a", "b", "c"], "u": ["a", "b", "c"]}
     proven = prove_equivalent_algebraic(

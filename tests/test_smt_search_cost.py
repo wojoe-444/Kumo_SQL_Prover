@@ -1,5 +1,5 @@
 """The SMT prover's work per proof: its OR-split case search makes each check once, a counterexample
-model is worked out only when one is read, and ``_subst`` is z3's substitution (src/kumosql/smt_equivalence.py)."""
+model is worked out only when one is read, and ``_subst`` is z3's substitution (src/kumo_sql_prover/smt_equivalence.py)."""
 
 import collections
 
@@ -7,9 +7,9 @@ import pytest
 
 z3 = pytest.importorskip("z3")
 
-from kumosql import smt_equivalence  # noqa: E402
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt  # noqa: E402
+from kumo_sql_prover import smt_equivalence  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt  # noqa: E402
 
 SCHEMA = {"visits": ["guest", "door", "arrive", "leave"]}
 # Guests seen at a different door while one of their own visits was open: the right side is proven

@@ -17,10 +17,10 @@ duckdb = pytest.importorskip("duckdb")
 
 from sqlglot_support import skip_if_unparseable
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.ast_utils import merge_wrapper_tails
-from kumosql.duckdb_load import run_unoptimized
-from kumosql.smt_equivalence import prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.ast_utils import merge_wrapper_tails
+from kumo_sql_prover.duckdb_load import run_unoptimized
+from kumo_sql_prover.smt_equivalence import prove_equivalent_smt
 
 SCHEMA = {"t": {"k": "INT64"}, "u": {"k": "INT64"}}
 ROWS = {"t": [(3,), (3,), (3,), (4,), (None,)], "u": [(3,), (4,), (None,)]}

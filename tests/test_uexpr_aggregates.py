@@ -1,4 +1,4 @@
-"""Aggregate decomposition in the bag-equivalence backend (``kumosql.uexpr``).
+"""Aggregate decomposition in the bag-equivalence backend (``kumo_sql_prover.uexpr``).
 
 Provable pairs are also run on random databases (duckdb) so a wrong rule cannot hide behind the
 prover; each must-not-prove pair is a near miss that really differs on some database, and the
@@ -12,8 +12,8 @@ import pytest
 
 duckdb = pytest.importorskip("duckdb")
 
-from kumosql.smt_equivalence import TableConstraints  # noqa: E402
-from kumosql.uexpr import prove_bag_equivalent  # noqa: E402
+from kumo_sql_prover.smt_equivalence import TableConstraints  # noqa: E402
+from kumo_sql_prover.uexpr import prove_bag_equivalent  # noqa: E402
 
 SCHEMA = {
     "emp": ["empno", "ename", "mgr", "sal", "comm", "deptno"],

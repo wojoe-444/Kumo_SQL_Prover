@@ -8,10 +8,10 @@ import sqlglot
 pytest.importorskip("z3")
 duckdb = pytest.importorskip("duckdb")
 
-from kumosql.ast_utils import spell_for_duckdb  # noqa: E402
-from kumosql import bounded_equivalence as be  # noqa: E402
-from kumosql.bounded_equivalence import BColumn, BoundedSchema, BoundedStatus, BTable, check_bounded  # noqa: E402
-from kumosql.duckdb_load import insert_rows  # noqa: E402
+from kumo_sql_prover.ast_utils import spell_for_duckdb  # noqa: E402
+from kumo_sql_prover import bounded_equivalence as be  # noqa: E402
+from kumo_sql_prover.bounded_equivalence import BColumn, BoundedSchema, BoundedStatus, BTable, check_bounded  # noqa: E402
+from kumo_sql_prover.duckdb_load import insert_rows  # noqa: E402
 
 
 def schema(**overrides):

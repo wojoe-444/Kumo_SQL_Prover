@@ -13,9 +13,9 @@ import sqlglot
 pytest.importorskip("z3")
 duckdb = pytest.importorskip("duckdb")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.duckdb_load import insert_rows
-from kumosql.outer_join_flatten import null_when_inputs_null
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import insert_rows
+from kumo_sql_prover.outer_join_flatten import null_when_inputs_null
 
 SCHEMA = {"a": ["k", "x"], "b": ["k", "y"], "c": ["k", "z"]}
 

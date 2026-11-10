@@ -5,9 +5,9 @@ import duckdb
 import pytest
 import sqlglot
 from sqlglot import exp
-from kumosql.mysql_boolean_outputs import canonical_mysql_boolean_outputs
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.mysql_boolean_outputs import canonical_mysql_boolean_outputs
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 
 @pytest.mark.parametrize(

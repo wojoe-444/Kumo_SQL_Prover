@@ -8,7 +8,7 @@ ahead of a filter, a ``SUM`` over a group that ``HAVING`` or ``WHERE`` keeps or 
 
 Labels follow BigQuery's documented rules (``source`` names the GoogleSQL page; ``unverified`` says what
 the author could not confirm), not DuckDB's. A case that DuckDB can run faithfully
-(:mod:`kumosql.bigquery_on_duckdb`) also carries a ``witness`` database with the rows each side returns, and
+(:mod:`kumo_sql_prover.bigquery_on_duckdb`) also carries a ``witness`` database with the rows each side returns, and
 the test suite replays it. The label says what holds on every database:
 
 * ``equivalent``: the same rows, and neither query can raise an error the other cannot;
@@ -99,7 +99,7 @@ def run_witness(case: Case, sql: str):
     import duckdb
     import sqlglot
 
-    from kumosql.bigquery_on_duckdb import bigquery_rows, configure, faithful, is_bigquery_failure
+    from kumo_sql_prover.bigquery_on_duckdb import bigquery_rows, configure, faithful, is_bigquery_failure
 
     witness = case.witness
     db = duckdb.connect()
@@ -140,7 +140,7 @@ def witness_problems(case: Case) -> list[str]:
 
 
 def decide(case: Case) -> dict:
-    from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+    from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
     result = prove_equivalent_smt(case.left, case.right, schema=SCHEMA, types=TYPES, timeout_ms=TIMEOUT_MS)
     report = getattr(result, "errors", None)

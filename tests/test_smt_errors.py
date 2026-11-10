@@ -8,8 +8,8 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql import smt_errors
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+from kumo_sql_prover import smt_errors
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
 SCHEMA = {"t": ["x", "y", "f"]}
 TYPES = {"t": {"x": "INT64", "y": "INT64", "f": "FLOAT64"}}

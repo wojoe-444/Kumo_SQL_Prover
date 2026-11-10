@@ -2,9 +2,9 @@ from collections import Counter
 import duckdb
 import pytest
 import sqlglot
-from kumosql.singleton_aggregate_rules import COLLATION_ASSUMPTION, singleton_count_sum
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.singleton_aggregate_rules import COLLATION_ASSUMPTION, singleton_count_sum
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 SCHEMA={"e":["id","job","sal"],"d":["name","extra"]}
 KEYS={"e":[("id",)]};TYPES={"e":{"id":"INT64","job":"STRING","sal":"INT64"},"d":{"name":"STRING","extra":"INT64"}}
@@ -67,7 +67,7 @@ def test_group_key_coercion_can_fan_out_a_singleton():
 
 def test_string_bridge_refuses_missing_assumption_channel():
     assert singleton_count_sum(sqlglot.parse_one(QUERY),KEYS,TYPES) is None
-    from kumosql.algebraic_equivalence import normalize
+    from kumo_sql_prover.algebraic_equivalence import normalize
     normalized=sqlglot.parse_one(normalize(QUERY,schema=SCHEMA,keys=KEYS,types=TYPES,dialect="duckdb"))
     assert normalized.args.get("group") is None
     assert not any(s.find_ancestor(sqlglot.exp.Select) is normalized for s in normalized.find_all(sqlglot.exp.Sum))

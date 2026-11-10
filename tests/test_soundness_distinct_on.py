@@ -20,11 +20,11 @@ duckdb = pytest.importorskip("duckdb")
 
 from sqlglot_support import skip_if_unparseable
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.canonical_rules import canonicalize
-from kumosql.duckdb_load import run_unoptimized
-from kumosql.equivalence import prove_equivalent
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.canonical_rules import canonicalize
+from kumo_sql_prover.duckdb_load import run_unoptimized
+from kumo_sql_prover.equivalence import prove_equivalent
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 SCHEMA = {"t": ["x", "y"], "u": ["k"]}
 X_NOT_NULL = {"t": TableConstraints(not_null=frozenset({"x"}))}

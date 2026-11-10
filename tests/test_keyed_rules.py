@@ -1,6 +1,6 @@
 import sqlglot
 
-from kumosql.keyed_rules import drop_keyed_distinct, exists_over_aggregate, remove_keyed_grouping
+from kumo_sql_prover.keyed_rules import drop_keyed_distinct, exists_over_aggregate, remove_keyed_grouping
 
 KEYS = {"emp": [("empno",)], "u": [("x",)]}
 NOT_NULL = {"emp": frozenset({"empno"})}

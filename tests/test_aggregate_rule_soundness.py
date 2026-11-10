@@ -16,10 +16,10 @@ duckdb = pytest.importorskip("duckdb")
 
 import sqlglot  # noqa: E402
 
-from kumosql.algebraic_equivalence import normalize, prove_equivalent_algebraic  # noqa: E402
-from kumosql.ast_utils import extended_grouping  # noqa: E402
-from kumosql.duckdb_load import run_unoptimized  # noqa: E402
-from kumosql.smt_equivalence import TableConstraints, prove_equivalent_smt  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import normalize, prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.ast_utils import extended_grouping  # noqa: E402
+from kumo_sql_prover.duckdb_load import run_unoptimized  # noqa: E402
+from kumo_sql_prover.smt_equivalence import TableConstraints, prove_equivalent_smt  # noqa: E402
 
 DDL = {
     "t": "x BIGINT",

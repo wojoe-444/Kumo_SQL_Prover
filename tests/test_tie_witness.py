@@ -7,10 +7,10 @@ import pytest
 
 pytest.importorskip("duckdb")
 
-from kumosql.result_equivalence import DataRules
-from kumosql.smt_equivalence import TableConstraints
-from kumosql.tie_determinism import UNKNOWN, analyze
-from kumosql.tie_witness import find_tie_witness, replay
+from kumo_sql_prover.result_equivalence import DataRules
+from kumo_sql_prover.smt_equivalence import TableConstraints
+from kumo_sql_prover.tie_determinism import UNKNOWN, analyze
+from kumo_sql_prover.tie_witness import find_tie_witness, replay
 
 SCHEMA = {"events": {"id": "INT64", "user_id": "INT64", "ts": "TIMESTAMP", "value": "INT64"}}
 RULES = {"events": DataRules(frozenset({"id"}), (("id",),))}

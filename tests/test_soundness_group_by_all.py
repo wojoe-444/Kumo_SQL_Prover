@@ -11,10 +11,10 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.ast_utils import UnmodeledConstruct, expand_group_by_all
-from kumosql.bounded_equivalence import BoundedStatus, check_bounded, schema_from_prover
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.ast_utils import UnmodeledConstruct, expand_group_by_all
+from kumo_sql_prover.bounded_equivalence import BoundedStatus, check_bounded, schema_from_prover
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
 SCHEMA = {"t": ["a", "b", "c"]}
 PROVERS = (prove_equivalent_smt, prove_equivalent_algebraic)

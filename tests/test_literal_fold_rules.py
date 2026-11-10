@@ -1,7 +1,7 @@
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.literal_fold_rules import distribute_over_constant_union, fold_string_literals
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.literal_fold_rules import distribute_over_constant_union, fold_string_literals
 
 
 def _fold(sql):

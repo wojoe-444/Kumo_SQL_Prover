@@ -3,8 +3,8 @@
 On master the provers proved each ``WITNESSES`` pair equivalent although MySQL returns different rows (a string column
 holding ``'abc'`` joins a number column holding ``0``, since MySQL reads ``'abc'`` as 0; ``COALESCE(n, 'abc') = 0`` is true for a
 NULL ``n``). DuckDB raises a conversion or binder error on the same SQL and BigQuery rejects it as a type error, so no engine
-returns the rows the proofs claimed. The inference in ``kumosql.string_number_compare`` declines them; the near misses that
-compare one kind with itself stay proven. ``kumosql.string_number_literals`` reads small integer strings as numbers where MySQL, DuckDB and
+returns the rows the proofs claimed. The inference in ``kumo_sql_prover.string_number_compare`` declines them; the near misses that
+compare one kind with itself stay proven. ``kumo_sql_prover.string_number_literals`` reads small integer strings as numbers where MySQL, DuckDB and
 PostgreSQL agree.
 """
 
@@ -14,9 +14,9 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql import string_number_compare, string_number_literals
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+from kumo_sql_prover import string_number_compare, string_number_literals
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
 DIALECTS = ("mysql", "duckdb", "bigquery", "postgres")
 PROVERS = (prove_equivalent_algebraic, prove_equivalent_smt)
@@ -198,7 +198,7 @@ def test_the_rewrite_agrees_with_duckdb():
     """The rewritten comparison returns the rows the original returns on DuckDB, which casts the string."""
 
     duckdb = pytest.importorskip("duckdb")
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     db = duckdb.connect()
     db.execute("CREATE TABLE a (n INTEGER, k INTEGER)")

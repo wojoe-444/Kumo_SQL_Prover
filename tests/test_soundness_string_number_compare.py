@@ -3,7 +3,7 @@
 ``WHERE '2' <> 2`` was proven equal to the query without the filter because the provers call values of different kinds
 unequal. MySQL compares a string with a number as numbers, DuckDB and PostgreSQL cast the string, and BigQuery rejects the
 comparison, so no engine returns every row. The provers decline such pairs; near misses that compare two numbers or two
-strings stay proven. See ``kumosql.string_number_compare``.
+strings stay proven. See ``kumo_sql_prover.string_number_compare``.
 """
 
 from collections import Counter
@@ -12,9 +12,9 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql import string_number_compare
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import prove_equivalent_smt, SmtStatus
+from kumo_sql_prover import string_number_compare
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import prove_equivalent_smt, SmtStatus
 
 DIALECTS = ("mysql", "duckdb", "bigquery", "postgres")
 PROVERS = (prove_equivalent_algebraic, prove_equivalent_smt)
@@ -137,7 +137,7 @@ def test_witness_differs_on_duckdb():
     """The witness returns no rows on DuckDB, which casts the string, so the proof was wrong there too."""
 
     duckdb = pytest.importorskip("duckdb")
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     db = duckdb.connect()
     db.execute("CREATE TABLE t (a INTEGER)")

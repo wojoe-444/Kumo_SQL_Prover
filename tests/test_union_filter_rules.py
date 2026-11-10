@@ -1,7 +1,7 @@
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.union_filter_rules import push_filter_into_set_operation
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.union_filter_rules import push_filter_into_set_operation
 
 SCHEMA = {"products": ["pid", "store1", "store2"], "t": ["a", "b"], "u": ["c", "d"]}
 

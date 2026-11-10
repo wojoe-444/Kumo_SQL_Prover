@@ -2,9 +2,9 @@
 
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.equivalence import prove_equivalent
-from kumosql.named_windows import inline_named_windows
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.equivalence import prove_equivalent
+from kumo_sql_prover.named_windows import inline_named_windows
 
 SCHEMA = {"t": ["a", "b", "x"]}
 

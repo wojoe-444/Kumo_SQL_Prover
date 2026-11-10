@@ -1,11 +1,11 @@
-"""Work-in-progress sweep: every SQL string in tests/fixtures/<dir> read under a dialect through kumosql.parse_check.
+"""Work-in-progress sweep: every SQL string in tests/fixtures/<dir> read under a dialect through kumo_sql_prover.parse_check.
 
 Usage: python tools/parse_check_sweep.py spider2:bigquery googlesql:bigquery qed:postgres  (SHOW=n prints n disagreements).
 Held-out files and rows (new/held_out/split markers) are skipped and never printed.
 """
 import gzip, json, sys, re, collections, glob, os, time
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src"))
-from kumosql import parse_check as pc
+from kumo_sql_prover import parse_check as pc
 
 ROOT = str(__import__("pathlib").Path(__file__).resolve().parent.parent / "tests" / "fixtures")
 SQLISH = re.compile(r"^\s*\(*\s*(SELECT|WITH)\b", re.I)

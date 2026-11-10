@@ -2,7 +2,7 @@
 
 [All simple guides](README.md) · [Full reference](../docs/provers.md)
 
-None of these checks uses the network. Calling a prover or a rewrite from Python makes no request; the one optional lookup (the columns of tables the project does not define) is off unless you turn it on. See [pipeline analysis](pipeline-analysis.md).
+None of these checks uses the network. Calling a prover or a rewrite from Python makes no request; the one optional lookup (the columns of tables the project does not define) is off unless you turn it on. See [pipeline analysis](https://github.com/wojoe-444/KumoSQL/blob/master/docs_simple/pipeline-analysis.md).
 
 Two queries are equivalent when they return the same results under the comparison's rules. Usually that means the same rows with the same duplicate counts, ignoring unspecified row order. Column names, types, ordering, and declared data guarantees can also matter; read the check's assumptions.
 
@@ -33,7 +33,7 @@ python -m pip install ".[smt,execution]"
 A small Python example:
 
 ```python
-from kumosql import prove_equivalent
+from kumo_sql_prover import prove_equivalent
 
 result = prove_equivalent(
     "SELECT id FROM orders WHERE 1 = 1",

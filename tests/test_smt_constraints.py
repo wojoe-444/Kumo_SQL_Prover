@@ -2,7 +2,7 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql.smt_equivalence import SmtStatus, TableConstraints, prove_equivalent_smt
+from kumo_sql_prover.smt_equivalence import SmtStatus, TableConstraints, prove_equivalent_smt
 
 SCHEMA = {"t": ["id", "a"], "u": ["id", "b"]}
 NOT_NULL = {"t": TableConstraints(not_null=frozenset({"id", "a"}), keys=(("id",),))}

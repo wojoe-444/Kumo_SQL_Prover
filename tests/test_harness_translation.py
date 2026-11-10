@@ -19,7 +19,7 @@ from bench_sql_repairs import (  # noqa: E402
     uniquify_star_columns,
 )
 
-from kumosql import counterexample as cx  # noqa: E402
+from kumo_sql_prover import counterexample as cx  # noqa: E402
 
 EMP = ["EMPNO", "DEPTNO", "SAL"]
 
@@ -138,7 +138,7 @@ COUNT_SQL = "SELECT t.a FROM t WHERE (SELECT COUNT(*) FROM u WHERE u.d <> t.a AN
 def test_optimizer_bugs_are_not_counterexamples():
     """DuckDB 1.5's optimizer drops rows of this correlated EXISTS when the tables hold NULLs."""
 
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     db = duckdb.connect(":memory:")
     db.execute("CREATE TABLE t (a BIGINT, b BIGINT)")

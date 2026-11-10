@@ -63,9 +63,9 @@ def _with_conditions(bare, conditions):
 
 def decide_sqlsolver(job: tuple[int, str, str]) -> Outcome:
     import sqlsolver_bench as sol
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.conditional_equivalence import with_conditions
-    from kumosql.smt_equivalence import SmtStatus
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.conditional_equivalence import with_conditions
+    from kumo_sql_prover.smt_equivalence import SmtStatus
 
     index, left, right = job
     start = time.time()

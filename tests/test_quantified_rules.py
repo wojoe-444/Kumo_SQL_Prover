@@ -10,8 +10,8 @@ pytest.importorskip("z3")
 duckdb = pytest.importorskip("duckdb")
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.quantified_rules import fold_expansions, lower_quantified
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.quantified_rules import fold_expansions, lower_quantified
 
 SCHEMA = {"t": ["a", "b"], "u": ["c", "d"]}
 
@@ -267,7 +267,7 @@ def test_a_volatile_operand_is_not_copied_into_two_tests():
 
 
 def test_row_identity_keeps_table_arguments_and_deeper_readers():
-    from kumosql.quantified_rules import _canonical
+    from kumo_sql_prover.quantified_rules import _canonical
 
     sampled = _canonical(sqlglot.parse_one("SELECT r.b FROM (SELECT u.c AS b FROM u TABLESAMPLE SYSTEM (10 PERCENT)) AS r WHERE r.b > 0", read="bigquery"))
     assert "TABLESAMPLE" in sampled
@@ -282,7 +282,7 @@ def test_a_stored_model_settles_a_fold_check_as_the_solver_would(monkeypatch):
 
     import z3
 
-    from kumosql import quantified_rules
+    from kumo_sql_prover import quantified_rules
 
     encoder = quantified_rules._Encoder({}, set())
     x = (z3.Bool("x_null"), z3.Real("x"))

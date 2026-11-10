@@ -12,8 +12,8 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import prove_equivalent_smt
 
 ROWS = [(0, 1, 5), (1, 1, 6), (2, 2, None)]
 
@@ -43,7 +43,7 @@ WRONG_PROOFS = [
 
 def _bags(left: str, right: str) -> tuple[Counter, Counter]:
     duckdb = pytest.importorskip("duckdb")
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     db = duckdb.connect()
     db.execute("CREATE TABLE t (id INTEGER, x INTEGER, y INTEGER)")

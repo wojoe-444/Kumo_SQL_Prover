@@ -1,4 +1,4 @@
-"""Score ``kumosql.output_properties`` against executed ground truth.
+"""Score ``kumo_sql_prover.output_properties`` against executed ground truth.
 
 Two tracks, kept apart in the results:
 
@@ -38,8 +38,8 @@ import sqlglot
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from kumosql.output_properties import infer_properties  # noqa: E402
-from kumosql.smt_equivalence import TableConstraints  # noqa: E402
+from kumo_sql_prover.output_properties import infer_properties  # noqa: E402
+from kumo_sql_prover.smt_equivalence import TableConstraints  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "output_properties"
 
@@ -95,7 +95,7 @@ def random_database(schema: dict, rng: random.Random) -> dict[str, list[tuple]]:
 def new_connection(schema: dict):
     import duckdb
 
-    from kumosql.duckdb_load import small_database
+    from kumo_sql_prover.duckdb_load import small_database
     db = small_database()
     for table, spec in schema["tables"].items():
         columns = ", ".join(f'"{c}" {DUCK[t]}' for c, t in spec["columns"].items())

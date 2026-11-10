@@ -2,10 +2,10 @@ import duckdb
 import pytest
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.duckdb_load import run_unoptimized
-from kumosql.smt_equivalence import TableConstraints
-from kumosql.sum_of_counts import sum_of_grouped_counts
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import run_unoptimized
+from kumo_sql_prover.smt_equivalence import TableConstraints
+from kumo_sql_prover.sum_of_counts import sum_of_grouped_counts
 
 SCHEMA = {"emp": ["empno", "deptno", "mgr", "comm"]}
 CONSTRAINTS = {"emp": TableConstraints(not_null=frozenset({"empno", "deptno"}), keys=(("empno",),))}

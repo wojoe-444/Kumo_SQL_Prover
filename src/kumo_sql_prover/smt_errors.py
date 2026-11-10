@@ -27,7 +27,7 @@ the covering site's: if the rewrite fails on a row tuple, the original fails on 
 same database. A map needs every table of the original's ``FROM`` to appear in the rewrite site's ``FROM``,
 since the original only fails where every one of its tables has a row.
 
-A ``SUM`` fails on a group of rows, not on one row tuple: it is a site with a :class:`~kumosql.smt_group_sums.GroupSum`,
+A ``SUM`` fails on a group of rows, not on one row tuple: it is a site with a :class:`~kumo_sql_prover.smt_group_sums.GroupSum`,
 matched with another by the groups' rows and values (``smt_group_sums``), never by a map of single rows.
 """
 

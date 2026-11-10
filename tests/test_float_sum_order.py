@@ -4,8 +4,8 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql.float_sum_order import SAME_PLAN_ASSUMPTION  # noqa: E402
-from kumosql.smt_equivalence import BASE_ASSUMPTIONS, SmtStatus, prove_equivalent_smt  # noqa: E402
+from kumo_sql_prover.float_sum_order import SAME_PLAN_ASSUMPTION  # noqa: E402
+from kumo_sql_prover.smt_equivalence import BASE_ASSUMPTIONS, SmtStatus, prove_equivalent_smt  # noqa: E402
 
 ORDER = BASE_ASSUMPTIONS[2]
 TYPES = {"t": {"x": "INT64", "y": "INT64", "f": "FLOAT64", "g": "FLOAT64", "n": "NUMERIC", "c": "BOOL"}}

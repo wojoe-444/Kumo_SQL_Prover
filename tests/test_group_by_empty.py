@@ -14,9 +14,9 @@ duckdb = pytest.importorskip("duckdb")
 
 import sqlglot  # noqa: E402
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.ast_utils import extended_grouping  # noqa: E402
-from kumosql.duckdb_load import run_unoptimized  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.ast_utils import extended_grouping  # noqa: E402
+from kumo_sql_prover.duckdb_load import run_unoptimized  # noqa: E402
 
 SCHEMA = {"t": ["id", "x"], "u": ["k", "w"]}
 

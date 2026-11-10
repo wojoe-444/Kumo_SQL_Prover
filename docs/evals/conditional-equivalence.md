@@ -18,7 +18,7 @@ Nothing reads the published labels while deciding; they are compared afterwards.
 Every conditional proof is checked three ways, and a failure of the first or the second makes the pair **wrong** (the count must stay 0):
 
 1. The pair is re-run on 900 random DuckDB databases repaired to meet the conditions (NULLs filled in, duplicate keys dropped, orphaned foreign keys pointed at a parent or dropped). Both queries must return the same bag on all of them.
-2. For VeriEQL, the executed counterexample search of `kumosql.counterexample` runs with the conditions added to the spec; it must find nothing.
+2. For VeriEQL, the executed counterexample search of `kumo_sql_prover.counterexample` runs with the conditions added to the spec; it must find nothing.
 3. The prover loses the proof when any one condition is dropped (reported as the minimal count). The share of pairs for which a random database that breaks the conditions separates the queries is reported too ("separated without the conditions"); agreement on sampled databases is evidence, never the ground truth.
 
 ## Singh and Bedathur LeetCode pairs

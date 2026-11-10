@@ -14,10 +14,10 @@ duckdb = pytest.importorskip("duckdb")
 
 import sqlglot  # noqa: E402
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.duckdb_load import insert_rows, run_unoptimized  # noqa: E402
-from kumosql.smt_equivalence import TableConstraints  # noqa: E402
-from kumosql.sqlsolver_backend import SqlSolverRuntime, prove_equivalent_sqlsolver  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.duckdb_load import insert_rows, run_unoptimized  # noqa: E402
+from kumo_sql_prover.smt_equivalence import TableConstraints  # noqa: E402
+from kumo_sql_prover.sqlsolver_backend import SqlSolverRuntime, prove_equivalent_sqlsolver  # noqa: E402
 
 SCHEMA = {"events": ["user_id", "ts", "value"]}
 TYPED = {"events": [("user_id", "INT64"), ("ts", "INT64"), ("value", "INT64")]}

@@ -2,7 +2,7 @@ from collections import Counter
 import duckdb
 import pytest
 import sqlglot
-from kumosql.nonnull_any import rewrite_nonnull_any
+from kumo_sql_prover.nonnull_any import rewrite_nonnull_any
 
 SCHEMA = {"a": ["x", "g"], "b": ["y", "g"]}
 NN = {"a": {"x"}, "b": {"y"}}

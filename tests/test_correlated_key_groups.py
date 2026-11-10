@@ -3,9 +3,9 @@ from collections import Counter
 import pytest
 import sqlglot
 from sqlglot import exp
-from kumosql.correlated_key_groups import expose_correlated_key_groups
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.correlated_key_groups import expose_correlated_key_groups
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 SCHEMA = {"t": ["id","k","x"], "o": ["mgr"]}
 TYPES = {"t": {"id":"BIGINT","k":"INTEGER","x":"INTEGER"}, "o":{"mgr":"BIGINT"}}

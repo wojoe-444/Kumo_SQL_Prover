@@ -10,7 +10,7 @@ tool checks the rewrites one at a time, on the inputs they actually fire on:
 2. it runs both whole queries on DuckDB databases built for the query's typed schema and declared constraints
    (seeded random ones, NULL-heavy, duplicate-heavy, empty, one-row, tie-heavy and large-integer ones, using the
    query's own constants); a difference counts only when DuckDB's unoptimized run agrees
-   (``kumosql.duckdb_load.run_unoptimized``, see #347) and both sides give the same bag with every table's rows
+   (``kumo_sql_prover.duckdb_load.run_unoptimized``, see #347) and both sides give the same bag with every table's rows
    reversed (no dependence on row order or ties);
 3. it reduces each confirmed difference to a small witness (query, then rows) while the same rule still fires
    and still changes the result.
@@ -490,7 +490,7 @@ class Oracle:
         self.connection.close()
 
     def _load(self, index: int, reverse: bool = False) -> str:
-        from kumosql.duckdb_load import insert_rows
+        from kumo_sql_prover.duckdb_load import insert_rows
 
         name = f"db{index}{'r' if reverse else ''}"
         if name in self.loaded:
@@ -680,7 +680,7 @@ def rule_names() -> dict[str, str]:
 
     import types
 
-    from kumosql import algebraic_equivalence as ae
+    from kumo_sql_prover import algebraic_equivalence as ae
 
     names: set = set()
 
@@ -721,7 +721,7 @@ class Tracer:
     """
 
     def __init__(self, only: set | None = None, mode: str = "record", targets: set | None = None):
-        from kumosql import algebraic_equivalence as ae
+        from kumo_sql_prover import algebraic_equivalence as ae
 
         self.ae = ae
         self.only = only
@@ -853,7 +853,7 @@ def _not_null_as_prover(case: dict) -> dict:
 def trace_case(case: dict, only: set | None = None) -> tuple[list[Fire], list[str]]:
     """Every rule firing ``normalize`` makes on ``case`` (keyed_distinct 0, 1 and 2), and any crashes."""
 
-    from kumosql import algebraic_equivalence as ae
+    from kumo_sql_prover import algebraic_equivalence as ae
 
     fires: list[Fire] = []
     crashes = []

@@ -27,9 +27,9 @@ Each pair goes through two checks that do not trust each other.
 1. **Proof.** `prove_equivalent_algebraic` runs on the pair converted from PostgreSQL to BigQuery, then on the pair converted to MySQL (the route `tools/rbot_bench.py` takes for R-Bot's Calcite pairs). Output names are ignored, arithmetic is exact, and the NOT NULL columns and primary keys of the workload's `create_tables.sql` are used. R-Bot's TPC-H schema declares no keys, so those proofs hold over every database that has its NOT NULL columns. Calcite names a derived table's columns in its alias (`AS t (a, b)`), which neither BigQuery nor MySQL can express. KumoSQL's `expand_alias_columns` therefore moves the names into the derived table before conversion. Each route has a 120-second wall-clock limit.
 2. **Data.** Both queries run in DuckDB:
    - on the generated TPC-H or TPC-DS database;
-   - on small databases built for the pair from the declared schema by `kumosql.counterexample.find_counterexample`: 150 random databases, then the targeted suite.
+   - on small databases built for the pair from the declared schema by `kumo_sql_prover.counterexample.find_counterexample`: 150 random databases, then the targeted suite.
 
-   A difference counts only when DuckDB returns the same rows with its optimizer off (`kumosql.duckdb_load.run_unoptimized`). A difference on a small database must also survive row shuffles. Under a root `LIMIT`, the rows must differ with the `LIMIT` removed too, so a different pick among ties is not a difference. If the unoptimized run cannot finish on the generated data, the difference is reported as `unconfirmed` and counted nowhere.
+   A difference counts only when DuckDB returns the same rows with its optimizer off (`kumo_sql_prover.duckdb_load.run_unoptimized`). A difference on a small database must also survive row shuffles. Under a root `LIMIT`, the rows must differ with the `LIMIT` removed too, so a different pick among ties is not a difference. If the unoptimized run cannot finish on the generated data, the difference is reported as `unconfirmed` and counted nowhere.
 
 Outcomes:
 
@@ -110,7 +110,7 @@ Checked by text with `python tools/logos_bench.py overlap`. Whitespace, quotes a
 | --- | ---: | --- | --- |
 | `verieql/calcite` | 236 | [VeriEQL Calcite](verieql.md) (397) | 236/236 |
 | `verieql/literature` | 30 | [VeriEQL Literature](verieql.md) (64) | 22/30 |
-| `wetune/issues` | 50 | [WeTune issues](rewrite-benchmarks.md#wetunes-50-github-performance-issues) (WeTune-code `f99ee9e`) | 50/50 |
+| `wetune/issues` | 50 | [WeTune issues](https://github.com/wojoe-444/KumoSQL/blob/master/docs/evals/rewrite-benchmarks.md#wetunes-50-github-performance-issues) (WeTune-code `f99ee9e`) | 50/50 |
 
 The 8 literature pairs that differ are Logos' rewordings of VeriEQL pairs 4, 7, 13, 28, 30, 32, 48 and 49:
 
@@ -125,5 +125,5 @@ The 73 scored pairs overlap no existing eval:
 
 - **R-Bot's Calcite pairs** (`rbot-calcite`, 45 pairs on Calcite's test schema): none of them.
 - **SQLSolver's TPC-H pairs** (`sqlsolver-tpch`): none, even with constants ignored.
-- **Same templates, different instances.** The R-Bot TPC-H sources are TPC-H's 22 queries, and 5 match the transformation bench's TPC-H queries once constants are ignored. 33 of the 37 R-Bot DSB sources match one of the DSB template instances in [analytical coverage](analytical-sql-coverage.md) once constants are ignored, and none matches as text. 13 of the 14 TPC-DS variant base queries match a TPC-DS stream-0 query of the [transformation bench](transformation-bench.md) once constants are ignored.
+- **Same templates, different instances.** The R-Bot TPC-H sources are TPC-H's 22 queries, and 5 match the transformation bench's TPC-H queries once constants are ignored. 33 of the 37 R-Bot DSB sources match one of the DSB template instances in [analytical coverage](https://github.com/wojoe-444/KumoSQL/blob/master/docs/evals/analytical-sql-coverage.md) once constants are ignored, and none matches as text. 13 of the 14 TPC-DS variant base queries match a TPC-DS stream-0 query of the [transformation bench](https://github.com/wojoe-444/KumoSQL/blob/master/docs/evals/transformation-bench.md) once constants are ignored.
 - **Rewrite targets.** No Calcite output or TPC-DS variant appears in any other corpus. Those benches transform single queries; none of them scores these pairs.

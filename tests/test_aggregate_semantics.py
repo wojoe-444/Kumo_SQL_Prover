@@ -9,9 +9,9 @@ pytest.importorskip("z3")
 
 from sqlglot import exp
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.duckdb_load import insert_rows
-from kumosql.set_aggregates import reduce
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import insert_rows
+from kumo_sql_prover.set_aggregates import reduce
 
 SCHEMA = {"t": ["k", "x", "y"], "u": ["num"]}
 # sqlglot 26 parses BIT_AND as an unknown function, so the provers refuse a query that calls it there

@@ -5,7 +5,7 @@ from collections import Counter
 
 import pytest
 
-from kumosql.canonical_rules import canonicalize
+from kumo_sql_prover.canonical_rules import canonicalize
 
 duckdb = pytest.importorskip("duckdb")
 import sqlglot  # noqa: E402

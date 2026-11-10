@@ -1,13 +1,13 @@
-"""TLP-style partition recombination (src/kumosql/partition_rules.py)."""
+"""TLP-style partition recombination (src/kumo_sql_prover/partition_rules.py)."""
 
 import pytest
 import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.partition_rules import recombine_partitions  # noqa: E402
-from kumosql.smt_equivalence import SmtStatus  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.partition_rules import recombine_partitions  # noqa: E402
+from kumo_sql_prover.smt_equivalence import SmtStatus  # noqa: E402
 
 SCHEMA = {"t": ["a", "b", "c"], "u": ["a", "b", "c"]}
 
@@ -142,11 +142,11 @@ def test_normalization_preserves_results_on_random_databases(sql):
     from collections import Counter
 
     duckdb = pytest.importorskip("duckdb")
-    from kumosql.algebraic_equivalence import normalize
+    from kumo_sql_prover.algebraic_equivalence import normalize
 
     rewritten = normalize(sql, schema=SCHEMA)
     assert rewritten != sqlglot.parse_one(sql, read="bigquery").sql(dialect="bigquery")
-    from kumosql.duckdb_load import insert_rows
+    from kumo_sql_prover.duckdb_load import insert_rows
 
     rng = random.Random(5)
     db = duckdb.connect()  # one connection, new tables each trial

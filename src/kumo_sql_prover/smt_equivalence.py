@@ -116,9 +116,9 @@ class SmtEquivalenceResult:
     reason: str
     counterexample: Counterexample | None = None
     assumptions: tuple[str, ...] = ()
-    # ``kumosql.conditional_equivalence.Condition`` items of a PROVEN_CONDITIONALLY result.
+    # ``kumo_sql_prover.conditional_equivalence.Condition`` items of a PROVEN_CONDITIONALLY result.
     conditions: tuple = ()
-    # ``kumosql.smt_errors.ErrorReport`` of a proof in the BigQuery dialect: what the rewrite does to runtime errors.
+    # ``kumo_sql_prover.smt_errors.ErrorReport`` of a proof in the BigQuery dialect: what the rewrite does to runtime errors.
     errors: object = None
 
     @property
@@ -4822,7 +4822,7 @@ def prove_equivalent_smt(left_sql: str, right_sql: str, **kwargs) -> SmtEquivale
     """Prove two BigQuery queries return the same result bag, or refute them.
 
     On MySQL a proof that needs different strings compared with an untyped column to differ must also hold with the strings
-    read as the numbers they convert to (``kumosql.numeric_column_reading``).
+    read as the numbers they convert to (``kumo_sql_prover.numeric_column_reading``).
     See ``_prove_equivalent_smt`` for the rest.
     """
 
@@ -4838,7 +4838,7 @@ def _prove_equivalent_smt(left_sql: str, right_sql: str, **kwargs) -> SmtEquival
     ``not_proven``, never an exception; an option passed wrongly raises ``TypeError``/``ValueError``.
     With ``conditional=True`` a pair that is not proven is retried under facts taken from the
     queries (NOT NULL columns, unique keys, foreign keys); a proof that needs some of them comes back
-    as ``PROVEN_CONDITIONALLY`` with the minimal ``conditions`` (see ``kumosql.conditional_equivalence``).
+    as ``PROVEN_CONDITIONALLY`` with the minimal ``conditions`` (see ``kumo_sql_prover.conditional_equivalence``).
     See ``_prove_with_limit`` for the rest.
     """
 

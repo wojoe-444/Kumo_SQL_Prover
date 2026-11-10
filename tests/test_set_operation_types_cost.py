@@ -4,8 +4,8 @@ Each column of a derived table asks for the outputs of the whole query under it,
 wide selects once repeated that work per column per level: a pair of the mined Calcite suite took 1,050 s here.
 """
 
-from kumosql import set_operation_types
-from kumosql.set_operation_types import mixed_types, unchecked_types
+from kumo_sql_prover import set_operation_types
+from kumo_sql_prover.set_operation_types import mixed_types, unchecked_types
 
 COLUMNS = [f"c{i}" for i in range(9)]
 TYPES = {"t": {name: "INT64" for name in COLUMNS}}

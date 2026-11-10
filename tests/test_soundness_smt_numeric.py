@@ -14,9 +14,9 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.duckdb_load import run_unoptimized
-from kumosql.smt_equivalence import EXACT_ARITHMETIC_ASSUMPTION, MIXED_NUMERIC_ASSUMPTION, prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import run_unoptimized
+from kumo_sql_prover.smt_equivalence import EXACT_ARITHMETIC_ASSUMPTION, MIXED_NUMERIC_ASSUMPTION, prove_equivalent_smt
 
 SCHEMA = {"t": ["x", "y"]}
 DDL = "CREATE TABLE t (x BIGINT, y BIGINT)"

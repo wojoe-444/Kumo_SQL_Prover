@@ -18,7 +18,7 @@ Some queries may return any one value from a group (`ANY_VALUE`) or any one of s
 
 ## Checked against Google's expected rows
 
-Google's GoogleSQL compliance tests list the rows each query must return. [One eval](evals/googlesql-expected-results.md) runs those queries through this layer and compares. The differences it found are now fixed (a millisecond count that included whole seconds, a backslash in a `LIKE` pattern, `SPLIT` with a NULL delimiter) or refused: when the layer cannot tell what BigQuery would return, for example a string escape or a time zone written as an offset, the query fails and the pair stays unknown.
+Google's GoogleSQL compliance tests list the rows each query must return. [One eval](https://github.com/wojoe-444/KumoSQL/blob/master/docs_simple/evals/googlesql-expected-results.md) runs those queries through this layer and compares. The differences it found are now fixed (a millisecond count that included whole seconds, a backslash in a `LIKE` pattern, `SPLIT` with a NULL delimiter) or refused: when the layer cannot tell what BigQuery would return, for example a string escape or a time zone written as an offset, the query fails and the pair stays unknown.
 
 ## Keeping the guards fast
 

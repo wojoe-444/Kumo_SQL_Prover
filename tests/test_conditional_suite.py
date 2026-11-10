@@ -23,9 +23,9 @@ import pytest
 pytest.importorskip("z3")
 duckdb = pytest.importorskip("duckdb")
 
-from kumosql import conditional_equivalence as ce
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import SmtStatus
+from kumo_sql_prover import conditional_equivalence as ce
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import SmtStatus
 
 
 @dataclass
@@ -271,7 +271,7 @@ def test_a_set_no_database_satisfies_is_refused():
     fine = [ce.Condition("foreign_key", "child", ("a", "b"), "parent", ("x", "y")), ce.Condition("unique", "parent", ("x", "y")), ce.Condition("not_null", "child", ("a",))]
     assert ce.jointly_satisfiable(fine)
     # facts that would be contradictory are never offered: the gate runs before any verdict
-    assert ce.jointly_satisfiable([], {"t": __import__("kumosql.smt_equivalence", fromlist=["TableConstraints"]).TableConstraints(not_null=frozenset({"a"}), keys=(("a",),))})
+    assert ce.jointly_satisfiable([], {"t": __import__("kumo_sql_prover.smt_equivalence", fromlist=["TableConstraints"]).TableConstraints(not_null=frozenset({"a"}), keys=(("a",),))})
 
 
 def test_a_set_that_empties_the_query_is_passed_over():

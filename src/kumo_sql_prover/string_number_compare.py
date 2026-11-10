@@ -359,7 +359,7 @@ def problem(sql: str, dialect: str = "bigquery", types: dict[str, dict[str, str]
     """A description of the first string-versus-number comparison in ``sql``, else None.
 
     With ``plain_ok`` a plain two-operand comparison of operands whose kinds the schema or the text settles is not reported:
-    the SMT prover reads it as an opaque predicate of its operands (:meth:`kumosql.smt_equivalence._Compiler._compare`),
+    the SMT prover reads it as an opaque predicate of its operands (:meth:`kumo_sql_prover.smt_equivalence._Compiler._compare`),
     which is right for any conversion rule.
     """
 

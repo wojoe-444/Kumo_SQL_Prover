@@ -9,8 +9,8 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql.smt_equivalence import TableConstraints  # noqa: E402
-from kumosql.uexpr import prove_bag_equivalent  # noqa: E402
+from kumo_sql_prover.smt_equivalence import TableConstraints  # noqa: E402
+from kumo_sql_prover.uexpr import prove_bag_equivalent  # noqa: E402
 
 SCHEMA = {"t": ["id", "d", "x"], "u": ["id", "x"]}
 CONSTRAINTS = {"t": TableConstraints(keys=(("id",),)), "u": TableConstraints(keys=(("id",),))}

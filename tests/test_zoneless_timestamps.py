@@ -8,7 +8,7 @@ ever compared on empty tables (VeriEQL Calcite 43 and 256 read as 'agrees' thoug
 import duckdb
 import pytest
 
-from kumosql import counterexample as cx
+from kumo_sql_prover import counterexample as cx
 
 
 def _emp_dept() -> cx.Spec:

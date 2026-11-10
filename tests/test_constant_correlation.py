@@ -1,9 +1,9 @@
 import duckdb
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.constant_correlation import propagate_constant_correlations
-from kumosql.duckdb_load import run_unoptimized
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.constant_correlation import propagate_constant_correlations
+from kumo_sql_prover.duckdb_load import run_unoptimized
 
 TYPES = {"t": {"a": "int", "k": "int", "s": "varchar(20)"}, "u": {"k": "int", "x": "int", "s": "varchar(20)"}, "o": {"a": "int"}}
 SCHEMA = {name: list(columns) for name, columns in TYPES.items()}

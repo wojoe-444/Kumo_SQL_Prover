@@ -13,8 +13,8 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import prove_equivalent_smt
 
 DDL = {"t": "CREATE TABLE t (x INTEGER, y INTEGER)", "u": "CREATE TABLE u (k INTEGER)"}
 ROWS = {"t": [(2, 4), (2, 5)], "u": [(1,)]}

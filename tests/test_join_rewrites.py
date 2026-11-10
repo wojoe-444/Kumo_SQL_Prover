@@ -3,7 +3,7 @@
 import pytest
 import sqlglot
 
-from kumosql.join_rewrites import _fk_left_join_to_inner, _having_left_join_to_inner, _map_equalities_into_left_join, _nested_join_to_derived
+from kumo_sql_prover.join_rewrites import _fk_left_join_to_inner, _having_left_join_to_inner, _map_equalities_into_left_join, _nested_join_to_derived
 
 SCHEMA = {"a": ["id", "k", "x"], "b": ["id", "k", "y"], "c": ["id", "k", "z"]}
 FK = {"a": [(("k",), "b", ("id",))]}

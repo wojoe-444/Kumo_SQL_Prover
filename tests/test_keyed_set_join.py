@@ -6,9 +6,9 @@ import duckdb
 import pytest
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.keyed_set_join import lift_keyed_set_join
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.keyed_set_join import lift_keyed_set_join
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 LEFT = "SELECT d.x,d.v,b.y FROM (SELECT DISTINCT f.x,f.v FROM f) d JOIN b ON d.x=b.k"
 RIGHT = "SELECT DISTINCT f.x,f.v,b.y FROM f JOIN b ON f.x=b.k"
@@ -209,7 +209,7 @@ NEAR_MISSES = {
 
 @pytest.mark.parametrize("name", sorted(NEAR_MISSES))
 def test_reviewed_near_misses_differ_and_are_not_proved(name):
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     left, right, rows = NEAR_MISSES[name]
     with duckdb.connect(":memory:") as db:

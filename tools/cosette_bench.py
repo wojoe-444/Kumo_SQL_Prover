@@ -88,7 +88,7 @@ def replay(counterexample, tables: dict, db, left: str, right: str, constants: b
 
     from collections import Counter
 
-    from kumosql.duckdb_load import insert_rows
+    from kumo_sql_prover.duckdb_load import insert_rows
 
     by_lower = {name.lower(): name for name in tables}
     data: dict[str, list[tuple]] = {name: [] for name in tables}
@@ -135,7 +135,7 @@ def replay(counterexample, tables: dict, db, left: str, right: str, constants: b
 
 
 def search(left: str, right: str, tables: dict, constants: bool):
-    """A second, stronger executed search (``kumosql.counterexample``: values seeded from the queries'
+    """A second, stronger executed search (``kumo_sql_prover.counterexample``: values seeded from the queries'
     literals, repeated values, keys honoured) for pairs the plain random search does not separate.
 
     Skipped for Calcite pairs with a literal in GROUP BY or a VALUES source, which the shared harness
@@ -145,7 +145,7 @@ def search(left: str, right: str, tables: dict, constants: bool):
     import sqlglot
     from sqlglot import exp
 
-    from kumosql import counterexample as cx
+    from kumo_sql_prover import counterexample as cx
 
     if constants:
         for sql in (left, right):

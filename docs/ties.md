@@ -2,11 +2,11 @@
 
 A window's `ORDER BY` sorts each partition into groups of tied rows. BigQuery leaves the order inside such a group unspecified, and without `ORDER BY` the whole partition is one group. So `QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY ts DESC) = 1` keeps *some* latest row per user: when two rows share the latest `ts`, which one comes back can change from run to run. The same goes for the rows an `ORDER BY .. LIMIT` keeps, for `LIMIT` without `ORDER BY`, and for aggregates that pick or collect rows in an order.
 
-`kumosql.tie_determinism` finds every place in a query where that can happen and says whether the result depends on it. It is a pass over the syntax tree (no solver, no data), cheap enough to run on every model.
+`kumo_sql_prover.tie_determinism` finds every place in a query where that can happen and says whether the result depends on it. It is a pass over the syntax tree (no solver, no data), cheap enough to run on every model.
 
 ```python
-from kumosql.smt_equivalence import TableConstraints
-from kumosql.tie_determinism import analyze, tie_dependence
+from kumo_sql_prover.smt_equivalence import TableConstraints
+from kumo_sql_prover.tie_determinism import analyze, tie_dependence
 
 constraints = {"events": TableConstraints(not_null=frozenset({"id"}), keys=(("id",),))}
 report = analyze(
@@ -50,11 +50,11 @@ A window nobody reads (a column a reader never uses) is not a site, and neither 
 
 ## Witnesses
 
-`unknown` says the result may depend on ties; a *tie witness* shows it. `kumosql.tie_witness.find_tie_witness` looks for a small database and two physical orders of its rows on which DuckDB (one thread, BigQuery SQL through `bigquery_on_duckdb`) returns two different bags. DuckDB with `SET threads=1` breaks ties in windows, `LIMIT` and `ARRAY_AGG` by storage order, so the difference replays.
+`unknown` says the result may depend on ties; a *tie witness* shows it. `kumo_sql_prover.tie_witness.find_tie_witness` looks for a small database and two physical orders of its rows on which DuckDB (one thread, BigQuery SQL through `bigquery_on_duckdb`) returns two different bags. DuckDB with `SET threads=1` breaks ties in windows, `LIMIT` and `ARRAY_AGG` by storage order, so the difference replays.
 
 ```python
-from kumosql.result_equivalence import DataRules
-from kumosql.tie_witness import find_tie_witness, replay
+from kumo_sql_prover.result_equivalence import DataRules
+from kumo_sql_prover.tie_witness import find_tie_witness, replay
 
 schema = {"events": {"id": "INT64", "user_id": "INT64", "ts": "TIMESTAMP", "value": "INT64"}}
 rules = {"events": DataRules(frozenset({"id"}), (("id",),))}  # id is a NOT NULL key

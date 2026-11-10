@@ -20,7 +20,7 @@ Three rewrites, each tried by :func:`join_rewrites`:
   WHERE keeps has ``a.k = 2``, so its matches have ``b.k = 2``, and the rows it drops are dropped
   either way. Only a comparison, ``BETWEEN`` or ``IN`` list of one such column with literals is copied.
 
-A LEFT JOIN that a WHERE filter makes inner is :mod:`kumosql.null_rejecting_joins`.
+A LEFT JOIN that a WHERE filter makes inner is :mod:`kumo_sql_prover.null_rejecting_joins`.
 """
 
 from __future__ import annotations

@@ -3,16 +3,16 @@
 One entry point for the equivalence evals: given the queries (in the dialect they
 were written in), the declared tables, keys, NOT NULL columns and foreign keys,
 ``find_targeted_difference`` runs both queries over the databases of
-:func:`kumosql.targeted_data.database_suite` built around each of them, and
+:func:`kumo_sql_prover.targeted_data.database_suite` built around each of them, and
 returns the first database where the results differ, after confirming that the
 difference repeats. The databases respect the declared facts: NOT NULL, keys and
 foreign keys (a child value with no parent is pointed at a parent row, set to
 NULL where allowed, or its row dropped).
 
 ``engine="duckdb"`` runs SQL written in ``dialect`` (BigQuery by default; ``settings`` are DuckDB ``SET`` statements) through the shared
-:class:`~kumosql.result_equivalence.DatasetRunner`; ``engine="sqlite"`` runs the
+:class:`~kumo_sql_prover.result_equivalence.DatasetRunner`; ``engine="sqlite"`` runs the
 SQL as written in SQLite, for evals whose labels come from SQLite semantics.
-A refutation can be shrunk with :func:`kumosql.minimize.minimize_failure` and
+A refutation can be shrunk with :func:`kumo_sql_prover.minimize.minimize_failure` and
 replayed from JSON.
 """
 
@@ -425,7 +425,7 @@ def counterexample_from_search(
     ``foreign_keys``, and both queries are run on it as written. A query that may pick rows
     freely (:func:`order_dependence`) gets no database, and neither does a pair whose output
     changes with the order rows are stored in. BigQuery SQL runs on DuckDB through
-    :mod:`kumosql.bigquery_on_duckdb`.
+    :mod:`kumo_sql_prover.bigquery_on_duckdb`.
     """
 
     from .minimize import minimize_failure

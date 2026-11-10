@@ -17,7 +17,7 @@ without their own ``ORDER BY``, and ``ARRAY(SELECT ..)``.
 * ``deterministic``: the result is the same whichever way ties fall. Either the function gives tied
   rows the same value, or the rows cannot tie: the ``PARTITION BY`` and ``ORDER BY`` columns cover a
   unique key of the window's input (a declared key, ``GROUP BY`` keys, ...; inferred by
-  :mod:`kumosql.output_properties`), or rows that tie show the same values to everything that reads
+  :mod:`kumo_sql_prover.output_properties`), or rows that tie show the same values to everything that reads
   them afterwards (``SELECT k, MAX(ts)``-style dedups that only output the tie columns, or a
   ``COUNT(*)`` over the deduplicated rows). ``facts`` lists the declared facts the verdict rests on.
 * ``unknown``: no such reason was found. With ties in the data the result may change from run to

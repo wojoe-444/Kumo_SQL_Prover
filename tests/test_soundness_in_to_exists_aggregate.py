@@ -11,8 +11,8 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 CONSTRAINTS = {"t": TableConstraints(not_null=frozenset({"x"})), "u": TableConstraints(not_null=frozenset({"y"}))}
 EXISTS_FORM = "SELECT COUNT(*) AS c, EXISTS(SELECT 1 FROM u WHERE u.y = t.x) AS d FROM t"

@@ -7,8 +7,8 @@ is not the integer-cast quotient of ``SUM`` and ``COUNT``.
 
 import duckdb
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import SmtStatus, TableConstraints
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import SmtStatus, TableConstraints
 
 SCHEMA = {"emp": ["empno", "sal", "deptno"]}
 CONSTRAINTS = {"emp": TableConstraints(not_null=frozenset({"empno", "sal", "deptno"}), keys=(("empno",),))}

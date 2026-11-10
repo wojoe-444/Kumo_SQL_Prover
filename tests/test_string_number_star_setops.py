@@ -9,9 +9,9 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql import string_number_compare
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+from kumo_sql_prover import string_number_compare
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
 PROVERS = (prove_equivalent_algebraic, prove_equivalent_smt)
 DIALECTS = ("mysql", "duckdb", "bigquery")

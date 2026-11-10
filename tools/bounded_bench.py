@@ -8,7 +8,7 @@ random concrete one, and compares the result with what DuckDB returns for the sa
 is a bug in the encoding (a bounded verdict could then be wrong), so ``wrong`` must stay 0 before the
 ``run`` numbers mean anything.
 
-``run`` checks each pair with ``kumosql.bounded_equivalence``. Evidence levels are kept apart:
+``run`` checks each pair with ``kumo_sql_prover.bounded_equivalence``. Evidence levels are kept apart:
 ``different`` is a counterexample replayed on DuckDB, ``bounded`` is "no counterexample within N rows per
 table" (not a proof), ``unknown`` is anything else (unsupported SQL, timeout, unconfirmed model).
 """
@@ -31,8 +31,8 @@ import sqlglot  # noqa: E402
 import z3  # noqa: E402
 
 import verieql_bench as vb  # noqa: E402
-from kumosql import bounded_equivalence as be  # noqa: E402
-from kumosql import counterexample as cx  # noqa: E402
+from kumo_sql_prover import bounded_equivalence as be  # noqa: E402
+from kumo_sql_prover import counterexample as cx  # noqa: E402
 
 # --- VeriEQL cases -> bounded schema -------------------------------------------------------------
 
@@ -311,7 +311,7 @@ def published_size(case: dict, record: dict) -> tuple[bool | None, int]:
     script = record.get("counterexample")
     if not script:
         return None, 0
-    from kumosql.duckdb_load import small_database
+    from kumo_sql_prover.duckdb_load import small_database
     db = small_database()
     results = []
     try:

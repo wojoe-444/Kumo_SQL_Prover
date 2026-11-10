@@ -1,6 +1,6 @@
 """Read an exact integer written as a string the way MySQL, DuckDB and PostgreSQL read it, where that is safe.
 
-:mod:`kumosql.string_number_compare` declines a string compared with a number, because the engines convert the string and
+:mod:`kumo_sql_prover.string_number_compare` declines a string compared with a number, because the engines convert the string and
 the provers do not model the conversion. A string that spells a small integer converts the same way on every engine that
 converts at all, so these two forms are rewritten before the provers look at the query:
 

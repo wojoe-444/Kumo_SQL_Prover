@@ -13,8 +13,8 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
 # Final sigma, dotted capital I, sharp s, a titlecase digraph, the Kelvin sign and plain ASCII.
 TRICKY = ["ς", "σ", "İ", "ı", "ß", "ǅ", "K", "Ab"]

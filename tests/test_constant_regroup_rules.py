@@ -6,8 +6,8 @@ pytest.importorskip("z3")
 
 import sqlglot  # noqa: E402
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.constant_regroup_rules import collapse_constant_regroup  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.constant_regroup_rules import collapse_constant_regroup  # noqa: E402
 
 SCHEMA = {"emp": ["empno", "deptno"], "t": ["a", "x"]}
 
@@ -32,7 +32,7 @@ def _prove(left: str, right: str, dialect: str = "bigquery") -> bool:
 
 def _differ_on_empty_t(left: str, right: str) -> bool:
     duckdb = pytest.importorskip("duckdb")
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     db = duckdb.connect()
     db.execute("CREATE TABLE t (a INTEGER, x INTEGER)")

@@ -2,7 +2,7 @@
 
 ``prove_equivalent_algebraic(..., conditional=True)`` retries a pair it cannot prove under facts
 taken from the queries (NOT NULL columns, unique keys, foreign keys) and reports the minimal set
-that proves it (``kumosql.conditional_equivalence``). This harness counts those verdicts on two
+that proves it (``kumo_sql_prover.conditional_equivalence``). This harness counts those verdicts on two
 corpora whose "equivalent" labels assume keys and constraints their files drop or only partly keep,
 and checks every one of them for soundness.
 
@@ -53,8 +53,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 import sqlglot  # noqa: E402
 
 import singh_bedathur_bench as singh  # noqa: E402
-from kumosql.conditional_equivalence import Condition, broken_by, with_conditions  # noqa: E402
-from kumosql.smt_equivalence import SmtStatus  # noqa: E402
+from kumo_sql_prover.conditional_equivalence import Condition, broken_by, with_conditions  # noqa: E402
+from kumo_sql_prover.smt_equivalence import SmtStatus  # noqa: E402
 
 VALIDATION_DATABASES = 900  # random databases per conditional proof (the Singh eval re-checks its proofs on 900)
 WITHOUT_DATABASES = 300  # random databases without the conditions, to show they are needed
@@ -148,8 +148,8 @@ def _prove_options(pair: singh.Pair) -> dict:
 
 
 def _singh_prove(pair: singh.Pair):
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.canonical_rules import canonicalize
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.canonical_rules import canonicalize
 
     options = _prove_options(pair)
     first = prove_equivalent_algebraic(pair.left, pair.right, conditional=True, **options)
@@ -170,7 +170,7 @@ def _singh_search(pair: singh.Pair, trees, conditions: list[Condition], trials: 
 
     import duckdb
 
-    from kumosql.duckdb_load import insert_rows, run_unoptimized
+    from kumo_sql_prover.duckdb_load import insert_rows, run_unoptimized
 
     kinds = singh.column_kinds(trees, pair.tables)
     domains = singh.literal_domains(trees)
@@ -213,7 +213,7 @@ def _conditions_of(result) -> list[Condition]:
 def _each_needed(pair: singh.Pair, conditions: list[Condition], options: dict) -> bool:
     """Dropping any one condition makes the prover fail (the set is minimal)."""
 
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 
     for dropped in conditions:
         rest = [c for c in conditions if c is not dropped]
@@ -227,7 +227,7 @@ def _refuted_or_unknown(pair: singh.Pair, trees, texts, result, start: float, ba
     """Not proved, even under conditions: ``refuted`` when a database that meets *every* candidate condition separates
     the queries (no set of conditions can help), otherwise ``unknown``."""
 
-    from kumosql.conditional_equivalence import candidate_conditions
+    from kumo_sql_prover.conditional_equivalence import candidate_conditions
 
     checked = singh.Pair(pair.index, texts[0], texts[1], pair.tables, pair.gold)
     if singh.unsafe_to_refute(*trees):
@@ -288,9 +288,9 @@ def decide_verieql(case: dict, declared: bool = True) -> Outcome:
     constraints, so the verdict names the facts a proof needs instead of taking them as given."""
 
     import verieql_bench as veri
-    from kumosql import counterexample as cx
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.smt_equivalence import TableConstraints
+    from kumo_sql_prover import counterexample as cx
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.smt_equivalence import TableConstraints
 
     start = time.time()
     index = case["index"]

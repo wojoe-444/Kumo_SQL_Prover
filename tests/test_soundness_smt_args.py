@@ -12,10 +12,10 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.ast_utils import UnmodeledConstruct
-from kumosql.smt_args import ALLOWED, check_args
-from kumosql.smt_equivalence import prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.ast_utils import UnmodeledConstruct
+from kumo_sql_prover.smt_args import ALLOWED, check_args
+from kumo_sql_prover.smt_equivalence import prove_equivalent_smt
 
 PROVERS = pytest.mark.parametrize("prove", [prove_equivalent_smt, prove_equivalent_algebraic], ids=["smt", "algebraic"])
 

@@ -7,8 +7,8 @@ import random
 import pytest
 import sqlglot
 
-from kumosql.smt_equivalence import TableConstraints
-from kumosql.tie_determinism import DETERMINISTIC, UNKNOWN, analyze, tie_dependence
+from kumo_sql_prover.smt_equivalence import TableConstraints
+from kumo_sql_prover.tie_determinism import DETERMINISTIC, UNKNOWN, analyze, tie_dependence
 
 KEYED = {"events": TableConstraints(not_null=frozenset({"id"}), keys=(("id",),))}
 
@@ -145,7 +145,7 @@ def test_deterministic_verdicts_hold_for_every_row_order_on_duckdb():
     """A query judged deterministic returns the same rows whatever order its table's rows are stored in."""
 
     duckdb = pytest.importorskip("duckdb")
-    from kumosql.bigquery_on_duckdb import configure
+    from kumo_sql_prover.bigquery_on_duckdb import configure
 
     rng = random.Random(7)
     con = duckdb.connect()

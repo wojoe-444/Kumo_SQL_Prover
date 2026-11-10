@@ -4,8 +4,8 @@ import sys
 
 import pytest
 
-from kumosql import sqlsolver_backend as backend
-from kumosql.smt_equivalence import SmtStatus
+from kumo_sql_prover import sqlsolver_backend as backend
+from kumo_sql_prover.smt_equivalence import SmtStatus
 
 SCHEMA = {"proj.ds.orders": [("id", "INT64"), ("status", "STRING"), ("amount", "FLOAT64")]}
 LEFT = "SELECT id FROM `proj.ds.orders` WHERE amount > 5"

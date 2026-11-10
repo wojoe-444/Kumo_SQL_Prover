@@ -2,8 +2,8 @@
 from collections import Counter
 import pytest
 import sqlglot
-from kumosql.grouped_join_facts import propagate_grouped_join_facts
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.grouped_join_facts import propagate_grouped_join_facts
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 
 TYPES = {"t": {"k": "INTEGER", "v": "INTEGER"}, "u": {"k": "INTEGER"}, "v": {"k": "INTEGER"}}
 SCHEMA = {name: list(columns) for name, columns in TYPES.items()}

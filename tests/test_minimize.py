@@ -6,8 +6,8 @@ import pytest
 
 pytest.importorskip("duckdb")
 
-from kumosql.minimize import minimize_failure, replay, to_json
-from kumosql.result_equivalence import DataRules, generate_synthetic_dataset
+from kumo_sql_prover.minimize import minimize_failure, replay, to_json
+from kumo_sql_prover.result_equivalence import DataRules, generate_synthetic_dataset
 
 SCHEMA = {
     "emp": {"id": "INT64", "dept": "INT64", "sal": "INT64", "name": "STRING"},
@@ -21,8 +21,8 @@ RIGHT = "SELECT name, sal FROM emp WHERE sal >= 1 AND dept <> 4 AND name <> 'zz'
 def _failing_dataset():
     for seed in range(1, 60):
         dataset = generate_synthetic_dataset(SCHEMA, seed=seed, rows_per_table=25, rules=RULES)
-        from kumosql.minimize import _differs
-        from kumosql.result_equivalence import DatasetRunner
+        from kumo_sql_prover.minimize import _differs
+        from kumo_sql_prover.result_equivalence import DatasetRunner
 
         with DatasetRunner(SCHEMA) as runner:
             if _differs(runner, LEFT, RIGHT, dataset, check_column_names=False):

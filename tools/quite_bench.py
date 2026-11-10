@@ -17,11 +17,11 @@ published schema (``dataset/schemas``: types, primary keys, NOT NULL, foreign ke
 * ``proven``: KumoSQL's algebraic prover proved the pair equivalent (as result bags). Every
   proof is replayed on the databases below; one that separates the queries makes it ``wrong``.
 * ``refuted``: a database that respects the schema on which DuckDB returns different bags,
-  confirmed with DuckDB's optimizer off (``kumosql.duckdb_load.run_unoptimized``).
+  confirmed with DuckDB's optimizer off (``kumo_sql_prover.duckdb_load.run_unoptimized``).
 * ``unknown``, ``unsupported`` (the SQL does not parse), ``timeout`` and ``error`` (a crash).
 
 Databases come from the prover's own counterexample, KumoSQL's targeted suite
-(``kumosql.refute``) and, for TPC-H when ``tpchgen-cli`` is installed, a generated TPC-H
+(``kumo_sql_prover.refute``) and, for TPC-H when ``tpchgen-cli`` is installed, a generated TPC-H
 instance at scale factor 0.01. Queries are PostgreSQL; DuckDB runs them with PostgreSQL's
 integer division and NULL ordering, and ``now()``/``current_date`` read one fixed instant on
 both sides. A difference is only counted when it cannot come from tie-breaking: queries with
@@ -655,7 +655,7 @@ class Replayer:
         self.db.close()
 
     def _load(self, data: Data) -> None:
-        from kumosql.duckdb_load import insert_rows
+        from kumo_sql_prover.duckdb_load import insert_rows
 
         for name in self.tables:
             self.db.execute(f'DELETE FROM "{name}"')
@@ -674,7 +674,7 @@ class Replayer:
 
         import duckdb
 
-        from kumosql.duckdb_load import run_unoptimized
+        from kumo_sql_prover.duckdb_load import run_unoptimized
 
         if kind == "random":
             return None
@@ -752,7 +752,7 @@ def instance_differs(path: Path, left: str, right: str) -> dict | None:
 
     import duckdb
 
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     con = duckdb.connect(str(path), read_only=True)
     try:
@@ -806,7 +806,7 @@ def _alarm(signum, frame):
 
 
 def _constraints(tables: dict[str, Table]):
-    from kumosql.smt_equivalence import TableConstraints
+    from kumo_sql_prover.smt_equivalence import TableConstraints
 
     return {
         t.name: TableConstraints(not_null=frozenset(t.not_null), keys=tuple(t.keys), foreign_keys=tuple(t.foreign))
@@ -815,7 +815,7 @@ def _constraints(tables: dict[str, Table]):
 
 
 def prove(left: str, right: str, tables: dict[str, Table]):
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 
     return prove_equivalent_algebraic(
         left, right,
@@ -849,8 +849,8 @@ def search(left: str, right: str, tables: dict[str, Table], replayer: Replayer, 
             return found, "TPC-H instance"
     if os.environ.get("KUMOSQL_TARGETED", "1") == "0":
         return None, ""
-    from kumosql.refute import find_targeted_difference
-    from kumosql.result_equivalence import DataRules
+    from kumo_sql_prover.refute import find_targeted_difference
+    from kumo_sql_prover.result_equivalence import DataRules
 
     trees = [sqlglot.parse_one(sql, read="postgres") for sql in (left, right)]
     used = _used(trees, tables)

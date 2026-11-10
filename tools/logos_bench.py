@@ -16,15 +16,15 @@ already scores (``python tools/logos_bench.py overlap`` checks that by text).
 
 Every pair goes through two checks that do not trust each other:
 
-* **proof**: the algebraic prover (``kumosql.algebraic_equivalence``) on the pair converted to
+* **proof**: the algebraic prover (``kumo_sql_prover.algebraic_equivalence``) on the pair converted to
   BigQuery, then on the pair converted to MySQL (the route ``tools/rbot_bench.py`` takes), with
   the NOT NULL columns and primary keys of the workload's ``create_tables.sql``;
 * **data**: both queries run in DuckDB on generated data (TPC-H at scale 0.1 from
   ``tpchgen-cli``; TPC-DS at scale 1 from DSB's ``dsdgen``; see ``tools/benchmark_corpora.py``)
   and on small constraint-respecting databases built for the pair
-  (``kumosql.counterexample.find_counterexample``: random ones, then the targeted suite). A
+  (``kumo_sql_prover.counterexample.find_counterexample``: random ones, then the targeted suite). A
   difference counts only when DuckDB returns the same rows with its optimizer off
-  (``kumosql.duckdb_load.run_unoptimized``); under a root ``LIMIT`` the rows must differ with the
+  (``kumo_sql_prover.duckdb_load.run_unoptimized``); under a root ``LIMIT`` the rows must differ with the
   ``LIMIT`` removed too, so a different pick among ties is not a difference.
 
 Outcomes: ``proven``; ``refuted`` (not proved, and a database separates the two queries: a label
@@ -210,13 +210,13 @@ def load_workload(path: Path) -> Workload:
 
 
 def prover_constraints(workload: Workload) -> dict:
-    from kumosql.smt_equivalence import TableConstraints
+    from kumo_sql_prover.smt_equivalence import TableConstraints
 
     return {t: TableConstraints(not_null=frozenset(workload.not_null[t]), keys=tuple(workload.keys[t])) for t in workload.columns}
 
 
 def counterexample_spec(workload: Workload):
-    from kumosql import counterexample as cx
+    from kumo_sql_prover import counterexample as cx
 
     def kind(declared: str) -> str:
         base = declared.split("(")[0].strip()
@@ -250,7 +250,7 @@ def _converted(sql: str, route: str, columns: dict[str, list[str]] | None = None
     cannot say; KumoSQL's ``expand_alias_columns`` moves the names into the derived table first.
     """
 
-    from kumosql.ast_utils import UnmodeledConstruct, expand_alias_columns
+    from kumo_sql_prover.ast_utils import UnmodeledConstruct, expand_alias_columns
 
     tree = sqlglot.parse_one(sql, read="postgres")
     if any(a.args.get("columns") for a in tree.find_all(exp.TableAlias)):
@@ -274,7 +274,7 @@ def _alarm(signum, frame):  # noqa: ARG001
 def prove(left: str, right: str, workload: Workload) -> dict:
     """``{"status": proven | unknown | unsupported | timeout | error, "route", "reason"}`` for one statement pair."""
 
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 
     constraints = prover_constraints(workload)
     reasons, statuses = [], []
@@ -318,7 +318,7 @@ DATA_RENAMES = {"tpcds": {"c_last_review_date_sk": "c_last_review_date"}}
 
 
 def _duck(sql: str, database: str | None = None) -> str:
-    from kumosql.counterexample import to_duckdb
+    from kumo_sql_prover.counterexample import to_duckdb
 
     text = to_duckdb(sql, "postgres")
     renames = DATA_RENAMES.get(database or "", {})
@@ -332,7 +332,7 @@ def _duck(sql: str, database: str | None = None) -> str:
 
 
 def _bag(rows) -> Counter:
-    from kumosql.counterexample import _bag as bag
+    from kumo_sql_prover.counterexample import _bag as bag
 
     return bag(rows)
 
@@ -365,7 +365,7 @@ def real_data(left: str, right: str, database: str) -> dict:
     path = corpora.BENCH_DIR / f"{database}.duckdb"
     if not path.exists():
         return {"status": "no_data"}
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     try:
         left_sql, right_sql = _duck(left, database), _duck(right, database)
@@ -415,7 +415,7 @@ def real_data(left: str, right: str, database: str) -> dict:
 def small_databases(left: str, right: str, workload: Workload) -> dict:
     """Small databases built for the pair: ``different`` (with the database), ``none`` or ``rejected``."""
 
-    from kumosql import counterexample as cx
+    from kumo_sql_prover import counterexample as cx
 
     spec = counterexample_spec(workload)
     found = cx.find_counterexample(spec, left, right, dialect="postgres", trials=TRIALS)

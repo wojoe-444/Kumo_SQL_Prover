@@ -2,7 +2,7 @@
 
 [Plain-language version](../docs_simple/parser-checks.md)
 
-Every prover starts from sqlglot's reading of the text. When sqlglot groups operators differently from the engine, drops a `NOT`, or reads code as a comment, the provers reason about a query nobody wrote, and the proof is wrong although no rule is. `kumosql.parse_check` reads each query a proof depends on a second time, with its own tokenizer and its own precedence tables, and compares the two readings. Any difference turns the proof into `not_proven` with the reason `parser disagreement: ...`. The check can only remove a proof; it never adds one.
+Every prover starts from sqlglot's reading of the text. When sqlglot groups operators differently from the engine, drops a `NOT`, or reads code as a comment, the provers reason about a query nobody wrote, and the proof is wrong although no rule is. `kumo_sql_prover.parse_check` reads each query a proof depends on a second time, with its own tokenizer and its own precedence tables, and compares the two readings. Any difference turns the proof into `not_proven` with the reason `parser disagreement: ...`. The check can only remove a proof; it never adds one.
 
 ## Where it runs
 

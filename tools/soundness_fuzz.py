@@ -3,9 +3,9 @@
 Each generated case is a query pair over a small typed schema (nullable INT64 and ASCII STRING columns, an
 optional third table, declared keys, NOT NULL columns and foreign keys). The pair is run in DuckDB on six or more
 legal databases (seeded random ones, a NULL-heavy one, a duplicate-heavy one and an empty one) and handed to the
-public prover, ``kumosql.algebraic_equivalence.prove_equivalent_algebraic``, with the same schema, types and
+public prover, ``kumo_sql_prover.algebraic_equivalence.prove_equivalent_algebraic``, with the same schema, types and
 constraints. A **false proof** is a pair the prover proves while some database separates the results; the count
-must be 0. Every difference is re-run with DuckDB's optimizer off (``kumosql.duckdb_load.run_unoptimized``, see
+must be 0. Every difference is re-run with DuckDB's optimizer off (``kumo_sql_prover.duckdb_load.run_unoptimized``, see
 #347) and counts only when both runs show it.
 
 Pairs come from three generators, mixed per seed:
@@ -21,7 +21,7 @@ Pairs come from three generators, mixed per seed:
     The 24 construct families of Sol's S015 fuzzer (sound identity, wrapper and duplicated-filter mutations, and on
     alternate passes deliberate semantic changes).
 ``mutant``
-    A template query against one of its single-site mutants (``kumosql.query_mutants``).
+    A template query against one of its single-site mutants (``kumo_sql_prover.query_mutants``).
 
 Every evaluation runs in a long-lived child process with a wall timeout (a hung prover is killed and the child is
 restarted); ``--jobs`` children run in parallel. False proofs are reduced (SQL on both sides, then the witness
@@ -399,7 +399,7 @@ def _quote(name: str) -> str:
 def load_fixture(connection, case: dict) -> None:
     """Create and fill the tables; DuckDB enforces the same constraints the prover is given."""
 
-    from kumosql.duckdb_load import insert_rows
+    from kumo_sql_prover.duckdb_load import insert_rows
 
     pending = dict(case["schema"])
     loaded: set = set()
@@ -429,7 +429,7 @@ def execute(case: dict, options: dict) -> dict:
 
     import duckdb
 
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     errors = fixture_errors(case)
     if errors:
@@ -492,7 +492,7 @@ def execute(case: dict, options: dict) -> dict:
 
 
 def prover_kwargs(case: dict, options: dict) -> dict:
-    from kumosql.smt_equivalence import TableConstraints
+    from kumo_sql_prover.smt_equivalence import TableConstraints
 
     kwargs = {"dialect": case.get("dialect", "bigquery"), "timeout_ms": options["solver_timeout_ms"], "search_counterexample": False}
     if case.get("pass_schema", True):
@@ -526,7 +526,7 @@ def worker_evaluate(case: dict, options: dict) -> dict:
     result = execute(case, options)
     if result["execution"] != "ok" or options.get("oracle_only"):
         return result
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 
     started = time.monotonic()
     try:
@@ -1450,7 +1450,7 @@ def template_case(rng: random.Random, template=None) -> dict:
 
 
 def mutant_case(rng: random.Random) -> dict | None:
-    from kumosql.query_mutants import mutate
+    from kumo_sql_prover.query_mutants import mutate
 
     case = template_case(rng)
     try:
@@ -1579,7 +1579,7 @@ def _sql_edits(sql: str, dialect: str):
 def _paired_edits(left: str, right: str, dialect: str):
     """The same removal (a conjunct, a set-operation branch, WHERE, HAVING, ...) made on both queries."""
 
-    from kumosql.minimize import _edits
+    from kumo_sql_prover.minimize import _edits
 
     try:
         lt, rt = sqlglot.parse_one(left, read=dialect), sqlglot.parse_one(right, read=dialect)

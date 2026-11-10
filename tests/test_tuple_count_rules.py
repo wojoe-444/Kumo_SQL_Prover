@@ -10,10 +10,10 @@ import pytest
 pytest.importorskip("z3")
 duckdb = pytest.importorskip("duckdb")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.counterexample import to_duckdb  # noqa: E402
-from kumosql.duckdb_load import insert_rows, run_unoptimized  # noqa: E402
-from kumosql.smt_equivalence import TableConstraints  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.counterexample import to_duckdb  # noqa: E402
+from kumo_sql_prover.duckdb_load import insert_rows, run_unoptimized  # noqa: E402
+from kumo_sql_prover.smt_equivalence import TableConstraints  # noqa: E402
 
 SCHEMA = {"emp": ["empno", "deptno", "sal", "comm", "job"]}
 KEYS = {"emp": TableConstraints(not_null=frozenset({"empno"}), keys=(("empno",),))}

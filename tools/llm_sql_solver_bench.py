@@ -247,8 +247,8 @@ def same_query(sql1: str, sql2: str) -> bool:
 def prove(sql1: str, sql2: str, tables: dict[str, dict[str, str]]) -> str:
     """"proven", "not_equivalent" (the prover's own counterexample, a hint only) or "unknown"."""
 
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.smt_equivalence import SmtStatus
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.smt_equivalence import SmtStatus
 
     try:
         result = prove_equivalent_algebraic(

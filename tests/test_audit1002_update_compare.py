@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("duckdb")
 
-from kumosql.result_equivalence import (
+from kumo_sql_prover.result_equivalence import (
     ExecutionError,
     ResultEquivalenceStatus,
     check_result_equivalence,

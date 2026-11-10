@@ -211,7 +211,7 @@ def test_errors_and_row_caps_are_never_evidence():
 
 
 def test_a_difference_counts_only_when_the_unoptimized_run_agrees(monkeypatch):
-    import kumosql.duckdb_load as duckdb_load
+    import kumo_sql_prover.duckdb_load as duckdb_load
 
     case = basic_case("SELECT x FROM t", "SELECT DISTINCT x FROM t", None)
     assert fuzz.execute(case, fuzz.default_options())["equal_bags"] is False
@@ -266,7 +266,7 @@ def test_known_false_proofs_name_their_cause_and_owner():
 
 
 def test_published_false_proofs_stay_unproved():
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 
     for case in fuzz.historical_cases():
         observed = fuzz.execute(case, fuzz.default_options())

@@ -305,7 +305,7 @@ def normalise(rows: list[tuple]) -> Counter:
 def new_database(tables: dict[str, list[str]], kinds: dict[tuple[str, str], str]):
     import duckdb
 
-    from kumosql.duckdb_load import small_database
+    from kumo_sql_prover.duckdb_load import small_database
     db = small_database()
     db.execute("SET default_null_order = 'nulls_first_on_asc_last_on_desc'")  # MySQL sorts NULL as the smallest value
     db.execute("SET default_collation = 'nocase'")  # and compares strings without case
@@ -369,7 +369,7 @@ def search_difference(pair: Pair, trees, trials: int, seed: int, extra: list[dic
 
     import duckdb
 
-    from kumosql.duckdb_load import TableLoader, rows_key, run_unoptimized
+    from kumo_sql_prover.duckdb_load import TableLoader, rows_key, run_unoptimized
 
     kinds = column_kinds(trees, pair.tables)
     domains = literal_domains(trees)
@@ -423,7 +423,7 @@ DUCKDB_SETTINGS = ("SET default_null_order = 'nulls_first_on_asc_last_on_desc'",
 def _targeted_witness(pair: Pair, left_sql: str, right_sql: str, kinds, used: list[str]):
     """A database from the targeted suite on which the (DuckDB) queries differ, in the witness format."""
 
-    from kumosql.refute import find_targeted_difference
+    from kumo_sql_prover.refute import find_targeted_difference
 
     if os.environ.get("KUMOSQL_TARGETED", "1") == "0":
         return None
@@ -474,9 +474,9 @@ def _text_types(pair: Pair) -> dict[str, dict[str, str]]:
 def prove(pair: Pair):
     """``(proved, proposed databases, reason)``: the prover's verdict, any counterexample it proposed, and why not."""
 
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 
-    from kumosql.canonical_rules import canonicalize
+    from kumo_sql_prover.canonical_rules import canonicalize
 
     options = dict(schema=pair.tables, compare_names=False, dialect="mysql", timeout_ms=4000)
     text = _text_types(pair)

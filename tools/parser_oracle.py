@@ -8,10 +8,10 @@ parentheses) are run on the engine in three spellings:
 
 * the text itself;
 * sqlglot's reading of it, printed with every operation parenthesized;
-* ``kumosql.parse_check.reading``, the independent reading, printed the same way.
+* ``kumo_sql_prover.parse_check.reading``, the independent reading, printed the same way.
 
 Three things are counted. When the text and sqlglot's reading give different answers (or the engine rejects
-the text sqlglot accepts), sqlglot read a query nobody wrote; ``kumosql.parse_check`` must disagree with
+the text sqlglot accepts), sqlglot read a query nobody wrote; ``kumo_sql_prover.parse_check`` must disagree with
 sqlglot on every such text ("recall"). When the text and the independent reading give different answers, the
 precedence table is wrong ("table errors", must be 0). When the parse check disagrees and both readings give
 the same answer, the disagreement is harmless on these constants (a text the engine accepts, read two ways that
@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import sqlglot  # noqa: E402
 from sqlglot import exp  # noqa: E402
 
-from kumosql import parse_check  # noqa: E402
+from kumo_sql_prover import parse_check  # noqa: E402
 
 BINARY = {
     "mysql": [

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from kumosql.uexpr import prove_bag_equivalent
-from kumosql.uexpr.ir import fresh_id, id_scope, rkey
+from kumo_sql_prover.uexpr import prove_bag_equivalent
+from kumo_sql_prover.uexpr.ir import fresh_id, id_scope, rkey
 
 SCHEMA = {"t": ["a", "b", "c"], "u": ["a", "d"], "v": ["a", "e"]}
 
@@ -48,7 +48,7 @@ def test_answers_do_not_depend_on_what_was_translated_before():
 
 def test_each_proof_numbers_its_variables_from_one(monkeypatch):
     seen = []
-    import kumosql.uexpr.translate as translate
+    import kumo_sql_prover.uexpr.translate as translate
 
     real = translate.fresh_id
 

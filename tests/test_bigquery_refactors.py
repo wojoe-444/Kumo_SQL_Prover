@@ -2,8 +2,8 @@
 
 import pytest
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import SmtStatus, TableConstraints
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import SmtStatus, TableConstraints
 
 SCHEMA = {
     "orders": ["order_id", "customer_id", "amount", "status", "created_at", "region"],

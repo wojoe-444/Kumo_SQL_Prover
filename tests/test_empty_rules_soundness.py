@@ -5,8 +5,8 @@ import pytest
 import sqlglot
 
 from sqlglot_support import skip_if_unparseable
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.empty_rules import canonical_empty, is_empty, propagate_empty
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.empty_rules import canonical_empty, is_empty, propagate_empty
 
 SCHEMA = {"t": ["id", "x", "y"], "u": ["k", "v"]}
 TYPES = {"t": {"id": "INT64", "x": "INT64", "y": "INT64"}, "u": {"k": "INT64", "v": "STRING"}}

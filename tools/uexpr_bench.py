@@ -1,4 +1,4 @@
-"""Run the SQLSolver suites through the bag-equivalence backend alone (``kumosql.uexpr``).
+"""Run the SQLSolver suites through the bag-equivalence backend alone (``kumo_sql_prover.uexpr``).
 
     python tools/uexpr_bench.py                 # all suites, 60 random-database trials per proof
     python tools/uexpr_bench.py calcite --trials 20 --show
@@ -18,8 +18,8 @@ import sqlsolver_bench as bench  # noqa: E402
 
 
 def prove_result(left: str, right: str, tables, constants: bool = False):
-    from kumosql.smt_equivalence import TableConstraints
-    from kumosql.uexpr import prove_bag_equivalent
+    from kumo_sql_prover.smt_equivalence import TableConstraints
+    from kumo_sql_prover.uexpr import prove_bag_equivalent
 
     schema = {t.name: [c.name for c in t.columns] for t in tables.values()}
     constraints = {
