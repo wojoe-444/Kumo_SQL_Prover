@@ -130,14 +130,20 @@ def _drop_select_item(tree: exp.Expression, index: int):
 
 
 def _reduce_queries(runner, left, right, dataset, dialect, compare, deadline):
+    # Every edit is a copy of the whole query, and a filter of n terms has 2n of them: the time limit is looked at
+    # before each one, not once a round, or a long filter runs many times past it before the first check.
     changed = True
     while changed and time.monotonic() < deadline:
         changed = False
         lt, rt = (sqlglot.parse_one(q, read=dialect) for q in (left, right))
         right_edits: dict = {}
         for key, edited in _edits(rt):
+            if time.monotonic() >= deadline:
+                return left, right
             right_edits.setdefault(key, edited)
         for key, edited in _edits(lt):
+            if time.monotonic() >= deadline:
+                return left, right
             partner = right_edits.get(key)
             if partner is None:
                 continue
@@ -153,6 +159,8 @@ def _reduce_queries(runner, left, right, dataset, dialect, compare, deadline):
         rs = rt if isinstance(rt, exp.Select) else rt.find(exp.Select)
         if ls is not None and rs is not None and len(ls.expressions) == len(rs.expressions) > 1:
             for index in range(len(ls.expressions)):
+                if time.monotonic() >= deadline:
+                    return left, right
                 a, b = _drop_select_item(lt, index), _drop_select_item(rt, index)
                 if a is None or b is None:
                     continue
