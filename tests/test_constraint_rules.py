@@ -9,9 +9,9 @@ pytest.importorskip("z3")
 duckdb = pytest.importorskip("duckdb")
 import sqlglot
 
-from kumosql.algebraic_equivalence import normalize, prove_equivalent_algebraic
-from kumosql.duckdb_load import insert_rows
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.algebraic_equivalence import normalize, prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import insert_rows
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 EMP = {"emp": ["empno", "ename", "job", "deptno", "sal"], "dept": ["deptno", "name"]}
 EMP_C = {

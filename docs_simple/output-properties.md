@@ -17,7 +17,7 @@ There is one row per customer group, so `customer_id` identifies a group in the 
 ## Try it in Python
 
 ```python
-from kumosql.output_properties import infer_properties
+from kumo_sql_prover.output_properties import infer_properties
 
 props = infer_properties(
     "SELECT customer_id, COUNT(*) AS n FROM orders GROUP BY customer_id",

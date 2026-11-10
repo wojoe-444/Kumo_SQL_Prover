@@ -4,8 +4,8 @@ import duckdb
 import pytest
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.lateral_boolean_groups import nullable_lateral_boolean_group
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.lateral_boolean_groups import nullable_lateral_boolean_group
 
 SCHEMA = {"o": ["k"], "d": ["k", "v"]}
 QUERY = "SELECT o.k,l.i FROM o LEFT JOIN LATERAL (SELECT (d.v IS NOT NULL) AS i FROM d WHERE d.k=o.k AND d.v>0 GROUP BY (d.v IS NOT NULL)) l ON TRUE"
@@ -13,7 +13,7 @@ QUERY = "SELECT o.k,l.i FROM o LEFT JOIN LATERAL (SELECT (d.v IS NOT NULL) AS i 
 
 def rewrite(sql=QUERY, schema=SCHEMA, not_null=None):
     tree = sqlglot.parse_one(sql, read="duckdb")
-    from kumosql.ast_utils import canonical_negation
+    from kumo_sql_prover.ast_utils import canonical_negation
     return nullable_lateral_boolean_group(canonical_negation(tree), schema, not_null)
 
 
@@ -93,7 +93,7 @@ def test_inherited_cte_cannot_borrow_physical_table_nonnull_fact():
     sql = "WITH d AS (SELECT raw.k,raw.v FROM raw) SELECT x.k,x.i FROM (" + QUERY.replace("AND d.v>0", "") + ") x"
     schema = {**SCHEMA, "raw": ["k", "v"]}
     tree = sqlglot.parse_one(sql, read="duckdb")
-    from kumosql.ast_utils import canonical_negation
+    from kumo_sql_prover.ast_utils import canonical_negation
     tree = canonical_negation(tree)
     for select in list(tree.find_all(sqlglot.exp.Select)):
         assert nullable_lateral_boolean_group(select, schema, {"d": frozenset({"v"})}) is None

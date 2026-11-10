@@ -5,10 +5,10 @@ import pytest
 pytest.importorskip("z3")
 pytest.importorskip("duckdb")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.executed_refutation import search_counterexample  # noqa: E402
-from kumosql.result_equivalence import SyntheticDataset, SyntheticTable, compare_outputs, execute_on_dataset  # noqa: E402
-from kumosql.smt_equivalence import SmtStatus, TableConstraints  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.executed_refutation import search_counterexample  # noqa: E402
+from kumo_sql_prover.result_equivalence import SyntheticDataset, SyntheticTable, compare_outputs, execute_on_dataset  # noqa: E402
+from kumo_sql_prover.smt_equivalence import SmtStatus, TableConstraints  # noqa: E402
 
 SCHEMA = {"t": ["a", "b", "c"], "u": ["a", "b", "c"]}
 TYPES = {name: {c: "INT64" for c in cols} for name, cols in SCHEMA.items()}

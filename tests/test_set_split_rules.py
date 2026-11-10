@@ -1,8 +1,8 @@
 import pytest
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.set_split_rules import split_distinct_select
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.set_split_rules import split_distinct_select
 
 pytest.importorskip("z3")
 

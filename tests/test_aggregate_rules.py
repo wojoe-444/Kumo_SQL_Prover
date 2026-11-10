@@ -1,8 +1,8 @@
 import sqlglot
 
-from kumosql import aggregate_rules as rules
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.ast_utils import LossySql, faithful_sql
+from kumo_sql_prover import aggregate_rules as rules
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.ast_utils import LossySql, faithful_sql
 
 SCHEMA = {"emp": ["empno", "ename", "sal", "comm", "deptno", "mgr"], "dept": ["deptno", "name"]}
 

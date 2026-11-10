@@ -1,6 +1,6 @@
 """Rerun every eval on a base commit and on this checkout, and show where their output differs.
 
-    python tools/eval_diff.py                        # base origin/master, every eval
+    python tools/eval_diff.py                        # base origin/main, every eval
     python tools/eval_diff.py --only sqlsolver qed   # eval rows or commands containing a word
     python tools/eval_diff.py --skip targeted_data   # leave slow ones out
     python tools/eval_diff.py --only targeted-test-data --sample 25 --serial --timings timings.json
@@ -129,7 +129,7 @@ def _command_with_current_python(command: str) -> str:
 
 
 def run(tree: Path, command: str, timeout: int) -> RunResult:
-    env = dict(os.environ, PYTHONPATH=str(tree / "src"), KUMOSQL_TIMING="0", PYTHONHASHSEED="0")
+    env = dict(os.environ, PYTHONPATH=str(tree / "src"), PYTHONHASHSEED="0")
     kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     started = time.monotonic()
     proc = subprocess.Popen(
@@ -157,7 +157,7 @@ def run(tree: Path, command: str, timeout: int) -> RunResult:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--base", default="origin/master", help="commit to compare against (default origin/master)")
+    parser.add_argument("--base", default="origin/main", help="commit to compare against (default origin/main)")
     parser.add_argument("--only", nargs="*", default=[], help="run only commands containing one of these words")
     parser.add_argument("--skip", nargs="*", default=[], help="leave out commands containing one of these words")
     parser.add_argument("--timeout", type=int, default=3600, help="seconds per ordinary command (default 3600)")

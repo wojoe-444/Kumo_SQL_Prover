@@ -9,7 +9,7 @@ this module never refutes.
 
     prove_bag_equivalent(left_sql, right_sql, schema=..., constraints=..., types=...)
 
-returns an :class:`~kumosql.smt_equivalence.SmtEquivalenceResult` that is either proven
+returns an :class:`~kumo_sql_prover.smt_equivalence.SmtEquivalenceResult` that is either proven
 or not proven. See ``docs/provers.md`` for the fragment and where it is incomplete.
 """
 

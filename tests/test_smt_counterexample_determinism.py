@@ -7,6 +7,8 @@ import textwrap
 
 import pytest
 
+pytestmark = pytest.mark.eval
+
 pytest.importorskip("z3")
 pytest.importorskip("duckdb")
 
@@ -17,9 +19,9 @@ SCRIPT = textwrap.dedent(
     sys.path[:0] = ['src', 'tools']
     import z3
     import constraint_rewrite_bench as bench
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.constraint_dependence import constraints_with, guarantees_of
-    from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.constraint_dependence import constraints_with, guarantees_of
+    from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
     fixture = bench.load_cases('cases.json')
     case = next(c for c in fixture['cases'] if c['id'] == 'h-lookup-join-elimination')
@@ -64,8 +66,8 @@ def test_repeated_lookup_join_counterexample_is_stable(imports):
 def test_isolated_candidate_search_keeps_the_solver_limits(monkeypatch):
     """A fresh Z3 solver has no timeout or work cap of its own, so the isolated one must be given both (#472)."""
     import z3
-    from kumosql.smt_equivalence import _Prover
-    from kumosql.solver_lock import WORK_PER_MS
+    from kumo_sql_prover.smt_equivalence import _Prover
+    from kumo_sql_prover.solver_lock import WORK_PER_MS
 
     prover = _Prover(250)
     solver = z3.Solver()

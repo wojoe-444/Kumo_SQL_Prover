@@ -64,7 +64,7 @@ Held out (every fourth case from the fourth, the 19 of the first two changes: no
 
 ## The order of a FLOAT64 sum
 
-Twenty cases (`float-sum-*`, `float-avg-*`, `int-sum-*`; fifteen development and five held out) are about the assumption that `SUM` and `AVG` do not depend on row order. FLOAT64 addition is not associative, so the same values added in a different order, or regrouped, can differ in the last digits; this repo's own notes say a FLOAT64 sum has no fixed order in BigQuery ([pipeline equivalence](pipeline-equivalence.md) compares floats to six places for that reason), and the GoogleSQL aggregate page was not consulted, so every label that rests on it carries an `unverified` field. The prover's rule is in [Equivalence provers](../provers.md#numbers-and-runtime-errors) (`src/kumosql/float_sum_order.py`):
+Twenty cases (`float-sum-*`, `float-avg-*`, `int-sum-*`; fifteen development and five held out) are about the assumption that `SUM` and `AVG` do not depend on row order. FLOAT64 addition is not associative, so the same values added in a different order, or regrouped, can differ in the last digits; this repo's own notes say a FLOAT64 sum has no fixed order in BigQuery ([pipeline equivalence](https://github.com/wojoe-444/KumoSQL/blob/master/docs/evals/pipeline-equivalence.md) compares floats to six places for that reason), and the GoogleSQL aggregate page was not consulted, so every label that rests on it carries an `unverified` field. The prover's rule is in [Equivalence provers](../provers.md#numbers-and-runtime-errors) (`src/kumo_sql_prover/float_sum_order.py`):
 
 | Case shape | Example | Expected answer |
 | --- | --- | --- |
@@ -78,7 +78,7 @@ The two floor tests are that no differing pair is proved and that the four ident
 
 ## NUMERIC scale and rounding
 
-The last 16 cases (`numeric-*`) came with the NUMERIC rounding model (`src/kumosql/smt_numeric.py`; the first column below is master with the 20 order-of-sum cases, the second adds the model):
+The last 16 cases (`numeric-*`) came with the NUMERIC rounding model (`src/kumo_sql_prover/smt_numeric.py`; the first column below is master with the 20 order-of-sum cases, the second adds the model):
 
 | all 95 cases | master (79 cases) | with NUMERIC scale and rounding (95 cases) |
 | --- | --- | --- |
@@ -93,7 +93,7 @@ Held out, all cases (every fourth from the fourth): 23 cases, the 19 above plus 
 
 ## Sums over groups
 
-The last 17 cases (`group-sum-*`, `sum-*`, `distinct-sum-*`, `window-sum-*`; twelve development and five held out, positions 95, 99, 103, 107 and 111 of the file, so in the same phase as the rest) are about a `SUM` that overflows on a whole group (`src/kumosql/smt_group_sums.py`). Before, every `SUM` of the same argument was one site whatever its group, so a `WHERE` moved into `HAVING` (the rewrite then adds up groups the original never did) was reported `same`.
+The last 17 cases (`group-sum-*`, `sum-*`, `distinct-sum-*`, `window-sum-*`; twelve development and five held out, positions 95, 99, 103, 107 and 111 of the file, so in the same phase as the rest) are about a `SUM` that overflows on a whole group (`src/kumo_sql_prover/smt_group_sums.py`). Before, every `SUM` of the same argument was one site whatever its group, so a `WHERE` moved into `HAVING` (the rewrite then adds up groups the original never did) was reported `same`.
 
 | the 17 group-sum cases | master | this change |
 | --- | --- | --- |
@@ -107,7 +107,7 @@ All 112 cases: 47/65 equivalent proved, 7 or 8/26 differing refuted (0 proved, 3
 ## What stays unknown
 
 * `slash-times-half`: the prover keeps FLOAT64 as a rational, so it cannot reason about the double a `/` returns. Unknown is the answer.
-* NUMERIC and BIGNUMERIC arithmetic is scaled and rounded (`src/kumosql/smt_numeric.py`, the pairs named `numeric-*`) only over values whose number of decimal places is known: a column declared INT64, NUMERIC or BIGNUMERIC, an integer literal, a plain-decimal string literal cast to NUMERIC or BIGNUMERIC, and `+ - * /`, `CAST` and `ROUND` of those. `numeric-versus-float-literal` (a NUMERIC compared with a FLOAT64) and anything over an aggregate, a `CASE`, a FLOAT64 or `CAST(f AS NUMERIC)` stay unknown, and a product of three or more factors can exceed the solver's time limit (a refutation is then reported as unknown).
+* NUMERIC and BIGNUMERIC arithmetic is scaled and rounded (`src/kumo_sql_prover/smt_numeric.py`, the pairs named `numeric-*`) only over values whose number of decimal places is known: a column declared INT64, NUMERIC or BIGNUMERIC, an integer literal, a plain-decimal string literal cast to NUMERIC or BIGNUMERIC, and `+ - * /`, `CAST` and `ROUND` of those. `numeric-versus-float-literal` (a NUMERIC compared with a FLOAT64) and anything over an aggregate, a `CASE`, a FLOAT64 or `CAST(f AS NUMERIC)` stay unknown, and a product of three or more factors can exceed the solver's time limit (a refutation is then reported as unknown).
 * The sign of zero: the prover treats `-0.0` and `0.0` as one value, so a query that reads the sign (`IEEE_DIVIDE`, `ATAN2` and `SIGN` on a value that can be FLOAT64) is declined, as is `CAST(f AS STRING)` of a FLOAT64.
 * A regrouped sum (a pre-aggregation in a derived table, a finer or coarser `GROUP BY`, a redundant grouping key), a `SUM` over a join in the direction that needs a witness database, a FLOAT64 or NUMERIC sum, the sum inside an `AVG`, and a `SUM` under a `CASE` branch: the error verdict is `unknown` (see [the error section of the SMT prover](../provers.md#numbers-and-runtime-errors)). A window `SUM` is only matched with the same window relation.
 * INT64 to FLOAT64 conversion past 2**53 is modelled only where no FLOAT64 value is in the queries (a big INT64 literal is declined otherwise).

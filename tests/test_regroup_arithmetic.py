@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import normalize, prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import normalize, prove_equivalent_algebraic  # noqa: E402
 
 FINE = "(SELECT region, status, SUM(amount) AS total, COUNT(*) AS n, COUNT(amount) AS n_amount FROM orders GROUP BY region, status) AS daily"
 AVG = "SELECT region, AVG(amount) AS mean FROM orders GROUP BY region"
@@ -35,8 +35,8 @@ def test_wrong_averages_stay_unproven(outer):
 def test_arithmetic_reading_a_column_outside_the_aggregates_is_left_alone():
     import sqlglot
 
-    from kumosql import algebraic_equivalence as ae
-    from kumosql.regroup_arithmetic import regroup_arithmetic
+    from kumo_sql_prover import algebraic_equivalence as ae
+    from kumo_sql_prover.regroup_arithmetic import regroup_arithmetic
 
     sql = f"SELECT region, SUM(total) + region AS x FROM {FINE} GROUP BY region"
     regroupers = (ae._collapse_aggregate, ae._roll_up_aggregate, ae._regroup_distinct)

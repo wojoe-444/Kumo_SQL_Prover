@@ -2,11 +2,11 @@
 
 [Plain-language version](../docs_simple/output-properties.md)
 
-`kumosql.output_properties.infer_properties(sql, constraints, schema, dialect="bigquery")` says, without running the query, which facts about its output are guaranteed. It is a deterministic pass over the syntax tree (no solver, no LLM), so it is cheap enough to call for every model. Anything it cannot establish is left out: "not known" is always a safe answer.
+`kumo_sql_prover.output_properties.infer_properties(sql, constraints, schema, dialect="bigquery")` says, without running the query, which facts about its output are guaranteed. It is a deterministic pass over the syntax tree (no solver, no LLM), so it is cheap enough to call for every model. Anything it cannot establish is left out: "not known" is always a safe answer.
 
 ```python
-from kumosql.output_properties import infer_properties
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.output_properties import infer_properties
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 schema = {"orders": ["id", "customer_id", "amount"]}
 constraints = {"orders": TableConstraints(not_null=frozenset({"id", "customer_id"}), keys=(("id",),))}

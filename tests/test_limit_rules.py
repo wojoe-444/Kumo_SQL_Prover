@@ -3,9 +3,9 @@ from collections import Counter
 import pytest
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.duckdb_load import run_unoptimized
-from kumosql.limit_rules import limit_rule
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import run_unoptimized
+from kumo_sql_prover.limit_rules import limit_rule
 
 SCHEMA = {"t": ["a", "b"], "u": ["a", "b"], "dept": ["deptno", "name"]}
 

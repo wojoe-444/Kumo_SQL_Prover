@@ -13,8 +13,8 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import TableConstraints, prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import TableConstraints, prove_equivalent_smt
 
 SCHEMA = {"t": ["x", "y"], "u": ["x", "y"]}
 DDL = {"t": "CREATE TABLE t (x BIGINT, y BIGINT)", "u": "CREATE TABLE u (x BIGINT, y BIGINT)"}

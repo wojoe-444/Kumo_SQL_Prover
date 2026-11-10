@@ -21,7 +21,7 @@ The repository has no licence file, so the pairs are not copied into KumoSQL. `t
 
 Nothing reads the published label while deciding; labels are only compared afterwards.
 
-1. **Proved equivalent.** `prove_equivalent_algebraic` runs on the pair as written (MySQL dialect, output names ignored, no keys). When it finds no proof, both queries go through `kumosql.canonical_rules` and the prover runs again. Every proof is then re-run on 900 random DuckDB databases; a database that separates the queries would make the pair **wrong**.
+1. **Proved equivalent.** `prove_equivalent_algebraic` runs on the pair as written (MySQL dialect, output names ignored, no keys). When it finds no proof, both queries go through `kumo_sql_prover.canonical_rules` and the prover runs again. Every proof is then re-run on 900 random DuckDB databases; a database that separates the queries would make the pair **wrong**.
 2. **Proved different.** A counterexample is a database on which DuckDB returns different result bags. Candidates are the prover's own counterexample, when it proposes one, and 300 random databases (half plain, half skewed towards one or two values per column so groups, duplicates and ties appear, with exact duplicate rows in some of them; table sizes reach past any `COUNT(..) >= n` threshold in the queries; values include every literal and its neighbours, the day before and after each date literal, a literal times each constant the queries divide or multiply by (`duration / 60 >= 5` gets 299, 300 and 301), and decimals with three places so `ROUND(x, 2)` differs from `x`). When those find nothing, 300 more databases come from a stream seeded by the pair itself, with tables of up to 10 rows, so pairs of one shape do not all miss on the same databases. Each candidate is checked by running both queries; a database already checked in the same search (small tables repeat) is not run again, since its answer would repeat. MySQL's `ORDER BY NULL` (no sorting) is dropped before DuckDB runs the query.
 3. **Unknown** otherwise. Unknown is always preferred to wrong.
 
@@ -29,7 +29,7 @@ DuckDB runs with MySQL's NULL ordering and case-insensitive string comparison. A
 
 ### Canonical rewrites
 
-`kumosql.canonical_rules.canonicalize` keeps every result bag on every database, NULLs included, and uses no constraints:
+`kumo_sql_prover.canonical_rules.canonicalize` keeps every result bag on every database, NULLs included, and uses no constraints:
 
 - `ORDER BY` without `LIMIT` is dropped.
 - `SELECT DISTINCT` over a `GROUP BY` that selects every group key is the plain grouped select.

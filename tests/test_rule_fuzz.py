@@ -31,7 +31,7 @@ def test_every_rule_normalize_calls_is_found():
 
 
 def test_a_rewrite_that_changes_results_is_reported(monkeypatch):
-    from kumosql import algebraic_equivalence as ae
+    from kumo_sql_prover import algebraic_equivalence as ae
 
     original = ae._fold_trivia
 

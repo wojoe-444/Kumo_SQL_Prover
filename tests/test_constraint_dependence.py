@@ -8,9 +8,11 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.constraint_dependence import constraints_with, guarantees_of, needed_guarantees
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.constraint_dependence import constraints_with, guarantees_of, needed_guarantees
+from kumo_sql_prover.smt_equivalence import TableConstraints
+
+pytestmark = pytest.mark.eval
 
 SCHEMA = {"orders": ["id", "customer_id", "total"], "customers": ["id", "name"]}
 CONSTRAINTS = {
@@ -64,7 +66,7 @@ def test_counterexamples_respect_foreign_keys():
 def partial_prover(proving_sets, reports=None):
     """A sound but partial prover: proves only when the NOT NULL columns it is given are one of ``proving_sets``."""
 
-    from kumosql.smt_equivalence import SmtEquivalenceResult, SmtStatus
+    from kumo_sql_prover.smt_equivalence import SmtEquivalenceResult, SmtStatus
 
     def prove(left, right, schema=None, constraints=None, dialect=None, **options):
         facts = (constraints or {}).get("t")

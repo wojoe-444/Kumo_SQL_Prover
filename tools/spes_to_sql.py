@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import calcite_corpora as cc  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from kumosql.duckdb_load import small_database  # noqa: E402
+from kumo_sql_prover.duckdb_load import small_database  # noqa: E402
 
 OUT = cc.FIXTURES / "spes"
 SCHEMA = cc.FIXTURES / "sqlsolver" / "calcite.schema.sql"

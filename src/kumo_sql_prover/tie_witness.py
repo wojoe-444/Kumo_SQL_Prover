@@ -1,19 +1,19 @@
 """A small database that shows a query's result changing with the order its rows are stored in.
 
-:mod:`kumosql.tie_determinism` says a window, ``LIMIT`` or aggregate *may* depend on how tied rows
+:mod:`kumo_sql_prover.tie_determinism` says a window, ``LIMIT`` or aggregate *may* depend on how tied rows
 are broken. ``find_tie_witness`` shows it: a database of a few rows, and two physical orders of those
-rows, on which DuckDB (one thread, BigQuery SQL through :mod:`kumosql.bigquery_on_duckdb`) returns two
+rows, on which DuckDB (one thread, BigQuery SQL through :mod:`kumo_sql_prover.bigquery_on_duckdb`) returns two
 different bags. With ``SET threads=1`` DuckDB breaks ties in windows, ``LIMIT`` and ``ARRAY_AGG`` by
 storage order, which is what makes a physical-order witness replay.
 
-The search tries the databases of :func:`kumosql.targeted_data.database_suite` built around the query,
+The search tries the databases of :func:`kumo_sql_prover.targeted_data.database_suite` built around the query,
 plus variants of them in which the rows of a table agree on every column but one (the shape a tie
 takes: equal sort keys, different payload). A database where the query fails is skipped. On the first
-database where one of the storage orders of :func:`kumosql.refute._orders` changes the result, rows are
+database where one of the storage orders of :func:`kumo_sql_prover.refute._orders` changes the result, rows are
 dropped greedily while the result still depends on the order, which usually leaves two tied rows. The
 declared facts always hold (``refute.legal``): NOT NULL columns, unique keys and foreign keys, so a
 witness never contradicts a fact the analysis rested on. Both orders are then re-run twice, and again
-with DuckDB's optimizer off (:func:`kumosql.duckdb_load.run_unoptimized`); a difference that does not
+with DuckDB's optimizer off (:func:`kumo_sql_prover.duckdb_load.run_unoptimized`); a difference that does not
 repeat identically, or that the unoptimized run does not show, is dropped, so a witness never rests on
 a random function or an engine bug.
 

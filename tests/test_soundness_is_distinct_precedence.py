@@ -15,10 +15,10 @@ pytest.importorskip("z3")
 
 from sqlglot_support import OLD_SQLGLOT
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.ast_utils import UnmodeledConstruct, canonical_negation, check_modeled
-from kumosql.duckdb_load import run_unoptimized
-from kumosql.smt_equivalence import prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.ast_utils import UnmodeledConstruct, canonical_negation, check_modeled
+from kumo_sql_prover.duckdb_load import run_unoptimized
+from kumo_sql_prover.smt_equivalence import prove_equivalent_smt
 
 SCHEMA = {"s": ["a", "b", "c", "d"]}
 DIALECTS = ("duckdb", "postgres", "mysql", "bigquery")

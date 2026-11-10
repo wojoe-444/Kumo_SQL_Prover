@@ -1,11 +1,11 @@
-"""Work-in-progress sweep: every SQL string in tests/fixtures/<dir> read under a dialect through kumosql.parse_check.
+"""Work-in-progress sweep: every SQL string in tests/fixtures/<dir> read under a dialect through kumo_sql_prover.parse_check.
 
 Usage: python tools/parse_check_sweep.py spider2:bigquery googlesql:bigquery qed:postgres  (SHOW=n prints n disagreements).
 Held-out files and rows (new/held_out/split markers) are skipped and never printed.
 """
 import gzip, json, sys, re, collections, glob, os, time
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src"))
-from kumosql import parse_check as pc
+from kumo_sql_prover import parse_check as pc
 
 ROOT = str(__import__("pathlib").Path(__file__).resolve().parent.parent / "tests" / "fixtures")
 SQLISH = re.compile(r"^\s*\(*\s*(SELECT|WITH)\b", re.I)
@@ -62,7 +62,19 @@ def sweep(dirname, dialect, show=8):
         for r in rs[:3]: print("        ", r[:250])
     return dis
 
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], epilog="SHOW=n in the environment prints n disagreements per sweep (default 8).")
+    parser.add_argument("sweeps", nargs="+", metavar="DIR:DIALECT", help="a folder of tests/fixtures and the dialect to read it under, e.g. spider2:bigquery")
+    args = parser.parse_args(argv)
+    for arg in args.sweeps:
+        directory, separator, dialect = arg.partition(":")
+        if not separator or not directory or not dialect:
+            parser.error(f"{arg!r} is not DIR:DIALECT")
+        sweep(directory, dialect, show=int(os.environ.get("SHOW", 8)))
+    return 0
+
+
 if __name__ == "__main__":
-    for arg in sys.argv[1:]:
-        d, dialect = arg.split(":")
-        sweep(d, dialect, show=int(os.environ.get("SHOW", 8)))
+    raise SystemExit(main())

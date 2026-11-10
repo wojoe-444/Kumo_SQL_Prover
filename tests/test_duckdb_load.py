@@ -1,4 +1,4 @@
-"""Row loading for DuckDB test databases (``kumosql.duckdb_load``): the loader that skips repeated statements must
+"""Row loading for DuckDB test databases (``kumo_sql_prover.duckdb_load``): the loader that skips repeated statements must
 leave every table exactly as a plain ``DELETE`` and ``INSERT`` would."""
 
 import random
@@ -7,7 +7,7 @@ import pytest
 
 duckdb = pytest.importorskip("duckdb")
 
-from kumosql.duckdb_load import TableLoader, insert_rows, rows_key, small_database  # noqa: E402
+from kumo_sql_prover.duckdb_load import TableLoader, insert_rows, rows_key, small_database  # noqa: E402
 
 TABLES = {'"t"': "a BIGINT, b VARCHAR, c DOUBLE", '"u"': "x VARCHAR"}
 # Values that compare equal in Python but load differently (1, True and 1.0 into VARCHAR; -0.0 and 0.0 into

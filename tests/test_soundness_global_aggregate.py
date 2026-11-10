@@ -13,8 +13,8 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import _fold_trivia, _prune_derived, _unwrap_projection, normalize, prove_equivalent_algebraic
-from kumosql.canonical_rules import canonicalize
+from kumo_sql_prover.algebraic_equivalence import _fold_trivia, _prune_derived, _unwrap_projection, normalize, prove_equivalent_algebraic
+from kumo_sql_prover.canonical_rules import canonicalize
 
 DDL = ("CREATE TABLE t (x INTEGER, y INTEGER)", "CREATE TABLE u (k INTEGER)")
 WITNESS = {"t": [(2, 4), (2, 5)], "u": [(1,)]}
@@ -23,7 +23,7 @@ EMPTY = {"t": [], "u": []}
 
 def _bags(left: str, right: str, rows: dict[str, list[tuple]]) -> tuple[Counter, Counter]:
     duckdb = pytest.importorskip("duckdb")
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     db = duckdb.connect()
     for create in DDL:

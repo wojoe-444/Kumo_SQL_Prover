@@ -2,7 +2,7 @@
 
 Z3 objects in the shared default context are not thread-safe: four threads making their first SMT proof at once
 all failed with ``Context mismatch``, and the process stayed broken afterwards. The provers now hold one lock
-(``kumosql.solver_lock``). Each check runs in a fresh interpreter, since only a cold start shows the failure.
+(``kumo_sql_prover.solver_lock``). Each check runs in a fresh interpreter, since only a cold start shows the failure.
 """
 
 import os
@@ -18,9 +18,9 @@ pytest.importorskip("z3")
 SCRIPT = textwrap.dedent(
     """
     import threading
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.bounded_equivalence import check_bounded, schema_from_prover
-    from kumosql.smt_equivalence import prove_equivalent_smt
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.bounded_equivalence import check_bounded, schema_from_prover
+    from kumo_sql_prover.smt_equivalence import prove_equivalent_smt
 
     bounded_schema = schema_from_prover({"t": ["a"]}, types={"t": {"a": "INT64"}})
 
@@ -70,7 +70,7 @@ def test_concurrent_cold_start_proves_in_every_thread(attempt):
 
 def test_solver_lock_preserves_gc_state_on_nesting_and_failure():
     import gc
-    from kumosql.solver_lock import serialized
+    from kumo_sql_prover.solver_lock import serialized
     original = gc.isenabled()
     try:
         @serialized
@@ -92,7 +92,7 @@ def test_solver_lock_preserves_gc_state_on_nesting_and_failure():
 
 def test_pending_cycles_are_finalized_under_solver_lock(monkeypatch):
     import gc
-    from kumosql.solver_lock import serialized, SOLVER_LOCK
+    from kumo_sql_prover.solver_lock import serialized, SOLVER_LOCK
     seen = []
     class Probe:
         def __del__(self):

@@ -16,9 +16,9 @@ import pytest
 pytest.importorskip("z3")
 duckdb = pytest.importorskip("duckdb")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.duckdb_load import insert_rows, run_unoptimized  # noqa: E402
-from kumosql.smt_equivalence import TableConstraints, prove_equivalent_smt  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.duckdb_load import insert_rows, run_unoptimized  # noqa: E402
+from kumo_sql_prover.smt_equivalence import TableConstraints, prove_equivalent_smt  # noqa: E402
 
 SCHEMA = {"e": ["empno", "deptno", "sal"], "d": ["deptno", "name"], "p": ["empno", "tag"], "s": ["sid", "lid"], "l": ["id", "pop"]}
 DDL = {

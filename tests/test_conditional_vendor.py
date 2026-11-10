@@ -14,9 +14,9 @@ import pytest
 pytest.importorskip("z3")
 duckdb = pytest.importorskip("duckdb")
 
-from kumosql import conditional_equivalence as ce
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+from kumo_sql_prover import conditional_equivalence as ce
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
 CASES = json.loads((Path(__file__).parent / "fixtures" / "conditional" / "vendor_cases.json").read_text())
 

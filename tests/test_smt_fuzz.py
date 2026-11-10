@@ -22,7 +22,7 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
 
 def _atom(rng, cols):

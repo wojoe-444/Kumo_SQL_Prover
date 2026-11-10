@@ -1,4 +1,4 @@
-"""Window spellings read alike (``kumosql.window_canonical``) and their near misses on ``events(user_id, ts, value)``.
+"""Window spellings read alike (``kumo_sql_prover.window_canonical``) and their near misses on ``events(user_id, ts, value)``.
 
 Every must-prove pair is also run on DuckDB (optimizer off) over databases with ties and NULLs, and every
 must-not-prove pair carries a database on which the two queries return different bags.
@@ -11,8 +11,8 @@ duckdb = pytest.importorskip("duckdb")
 
 import sqlglot  # noqa: E402
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.duckdb_load import insert_rows, run_unoptimized  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.duckdb_load import insert_rows, run_unoptimized  # noqa: E402
 
 SCHEMA = {"events": ["user_id", "ts", "value"]}
 TYPES = {"events": {"user_id": "INT64", "ts": "INT64", "value": "INT64"}}

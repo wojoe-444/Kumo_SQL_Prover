@@ -28,7 +28,7 @@ import duckdb
 import sqlglot
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from kumosql.duckdb_load import small_database  # noqa: E402
+from kumo_sql_prover.duckdb_load import small_database  # noqa: E402
 
 logging.getLogger("sqlglot").setLevel(logging.ERROR)
 FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "qed" / "qed_calcite_pairs.jsonl"

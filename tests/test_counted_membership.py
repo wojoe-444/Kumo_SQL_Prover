@@ -5,8 +5,8 @@ from collections import Counter
 import duckdb
 import pytest
 import sqlglot
-from kumosql.counted_membership import drop_equal_count_guard, nonnull_not_in
-from kumosql.passthrough_sources import remove_passthrough_sources
+from kumo_sql_prover.counted_membership import drop_equal_count_guard, nonnull_not_in
+from kumo_sql_prover.passthrough_sources import remove_passthrough_sources
 
 
 SCHEMA = {"a": ["x", "g"], "b": ["y", "g"]}
@@ -120,7 +120,7 @@ def test_not_in_requires_both_nonnull_values():
 
 
 def test_grouped_collation_contract_is_explicit():
-    from kumosql.counted_membership import GROUP_EQUALITY_ASSUMPTION
+    from kumo_sql_prover.counted_membership import GROUP_EQUALITY_ASSUMPTION
 
     parsed = sqlglot.parse_one(GUARD, read="duckdb")
     assert drop_equal_count_guard(parsed, NN) is None
@@ -153,8 +153,8 @@ def test_passthrough_keeps_aggregate_and_window_ancestor_boundaries(query):
 
 def test_empty_sqlite_aggregate_projected_in_is_not_row_exists():
     import sqlite3
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.smt_equivalence import TableConstraints
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.smt_equivalence import TableConstraints
     original = "WITH q AS(SELECT x AS x FROM t) SELECT COUNT(*),x IN(SELECT y FROM u) AS d FROM q"
     changed = "SELECT COUNT(*),EXISTS(SELECT 1 FROM u WHERE y=t.x) AS d FROM t"
     db = sqlite3.connect(":memory:")

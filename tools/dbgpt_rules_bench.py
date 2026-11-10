@@ -16,7 +16,7 @@ KumoSQL then decides each valid case without reading the label:
   columns, output names ignored, exact arithmetic since every number column is an INTEGER);
 * **refuted**: random DuckDB databases (respecting the same constraints) on which the two
   queries return different bags, confirmed with DuckDB's optimizer off
-  (``kumosql.duckdb_load.run_unoptimized``);
+  (``kumo_sql_prover.duckdb_load.run_unoptimized``);
 * **unknown**: neither.
 
 ``wrong`` is a proof of a ``not_equivalent`` case or a refutation of an ``equivalent`` one.
@@ -121,7 +121,7 @@ def random_database(case: Case, rng: random.Random) -> dict[str, list[tuple]]:
 
 
 def _load(db, case: Case, database: dict[str, list]) -> None:
-    from kumosql.duckdb_load import insert_rows
+    from kumo_sql_prover.duckdb_load import insert_rows
 
     for table, columns in case.schema.items():
         db.execute(f'DROP TABLE IF EXISTS "{table}"')
@@ -140,7 +140,7 @@ def differs_on(case: Case, database: dict[str, list]) -> bool | None:
 
     import duckdb
 
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     db = duckdb.connect()
     try:
@@ -200,8 +200,8 @@ def label_problems(case: Case) -> list[str]:
 
 
 def prove(case: Case) -> str:
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.smt_equivalence import SmtStatus, TableConstraints
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.smt_equivalence import SmtStatus, TableConstraints
 
     constraints = {
         table: TableConstraints(

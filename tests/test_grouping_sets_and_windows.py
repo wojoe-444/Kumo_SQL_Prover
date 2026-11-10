@@ -5,11 +5,11 @@ from collections import Counter
 import pytest
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.duckdb_load import run_unoptimized
-from kumosql.grouping_sets import expand_grouping_sets
-from kumosql.having_rules import key_having_to_where
-from kumosql.window_rules import never_null_counts
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import run_unoptimized
+from kumo_sql_prover.grouping_sets import expand_grouping_sets
+from kumo_sql_prover.having_rules import key_having_to_where
+from kumo_sql_prover.window_rules import never_null_counts
 
 SCHEMA = {
     "emp": ["empno", "ename", "job", "mgr", "sal", "comm", "deptno"],

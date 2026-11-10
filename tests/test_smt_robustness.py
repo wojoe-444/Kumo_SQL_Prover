@@ -12,10 +12,10 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.ast_utils import MAX_EXPANDED_READS, drop_case_conflicts, exponent_out_of_range, expanded_reads, parse_statements
-from kumosql.bounded_equivalence import BoundedStatus, check_bounded, schema_from_prover
-from kumosql.smt_equivalence import SmtStatus, _Compiler, _Prover, _prove, prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.ast_utils import MAX_EXPANDED_READS, drop_case_conflicts, exponent_out_of_range, expanded_reads, parse_statements
+from kumo_sql_prover.bounded_equivalence import BoundedStatus, check_bounded, schema_from_prover
+from kumo_sql_prover.smt_equivalence import SmtStatus, _Compiler, _Prover, _prove, prove_equivalent_smt
 
 PROVERS = (prove_equivalent_smt, prove_equivalent_algebraic)
 
@@ -184,7 +184,7 @@ def test_exponent_out_of_range():
 
 
 def test_bounded_solver_checks_carry_the_work_cap(monkeypatch):
-    from kumosql import bounded_equivalence
+    from kumo_sql_prover import bounded_equivalence
 
     created = []
     real = bounded_equivalence.bounded_solver

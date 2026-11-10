@@ -1,4 +1,4 @@
-"""SQL (a sqlglot tree) to the multiplicity algebra of :mod:`kumosql.uexpr.ir`.
+"""SQL (a sqlglot tree) to the multiplicity algebra of :mod:`kumo_sql_prover.uexpr.ir`.
 
 A query becomes ``Query(out, body)``: ``body`` is a numeric term whose free variables
 are the output variables ``out`` (one scalar variable per column), and its value is how

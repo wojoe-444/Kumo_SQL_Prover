@@ -38,7 +38,8 @@ from .ast_utils import FROM_KEY, UnmodeledConstruct, canonical_negation, check_m
 from .set_operations import positional_sql_pair
 from .literal_fold_rules import distribute_over_constant_union, fold_string_literals
 from .parse_check import refuse_misread_proofs
-from .solver_lock import serialized
+from .solver_lock import Z3_MISSING, serialized
+from . import solver_lock
 from .string_literals import canonical_literals, invalid_literal
 from .type_names import invalid_type_name
 from .sqlx_fragments import masked_template_problem
@@ -4794,7 +4795,7 @@ def _keeps_names(before: list[str], after: list[str] | None) -> bool:
 
 
 def limit_rule(select: exp.Select, types: dict[str, dict[str, str]] | None = None, dialect: str = "bigquery") -> exp.Expression | None:
-    """:func:`kumosql.limit_rules.limit_rule`, except on a ``DISTINCT ON`` select.
+    """:func:`kumo_sql_prover.limit_rules.limit_rule`, except on a ``DISTINCT ON`` select.
 
     Those rules drop an ORDER BY whose order no reader sees, but under DISTINCT ON the ORDER BY picks the
     row kept for each key, so it changes the rows themselves.
@@ -4955,7 +4956,7 @@ def prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtEq
     """Normalize both queries algebraically, then run the SMT prover on the result.
 
     On MySQL a proof that needs different strings compared with an untyped column to differ must also hold with the strings
-    read as the numbers they convert to (``kumosql.numeric_column_reading``).
+    read as the numbers they convert to (``kumo_sql_prover.numeric_column_reading``).
     See ``_prove_equivalent_algebraic_checked`` for the rest.
     """
 
@@ -4968,17 +4969,19 @@ def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs)
     """Normalize both queries algebraically, then run the SMT prover on the result.
 
     With ``search_counterexample=True`` an unproven pair the solver cannot refute is
-    run on databases built for it (:mod:`kumosql.executed_refutation`); a database
+    run on databases built for it (:mod:`kumo_sql_prover.executed_refutation`); a database
     on which the results differ comes back as a ``NOT_EQUIVALENT`` counterexample.
 
     With ``conditional=True`` a pair that is not proven is retried under facts taken from the queries
     (NOT NULL columns, unique keys, foreign keys); a proof that needs some of them comes back as
-    ``PROVEN_CONDITIONALLY`` with the minimal ``conditions`` (:mod:`kumosql.conditional_equivalence`).
+    ``PROVEN_CONDITIONALLY`` with the minimal ``conditions`` (:mod:`kumo_sql_prover.conditional_equivalence`).
     A proof over a set operation whose branch types are not all known carries
     ``set_operation_types.ASSUMPTION``; one whose branches have different known types is declined.
     Text that cannot be tokenized or nests too deeply is ``NOT_PROVEN``, never an exception.
     """
 
+    if solver_lock.z3 is None:
+        return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, Z3_MISSING)
     dialect = kwargs.get("dialect", "bigquery")
     try:
         left_sql, right_sql = (string_number_literals.normalize(sql, dialect, kwargs.get("types")) for sql in (left_sql, right_sql))

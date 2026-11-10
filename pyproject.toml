@@ -1,0 +1,45 @@
+[project]
+name = "kumo-sql-prover"
+version = "0.1.0"
+description = "Equivalence prover for BigQuery SQL: structural, algebraic, SMT and bounded checks, with counterexamples"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "sqlglot==30.21.0",
+]
+
+[project.optional-dependencies]
+smt = [
+    "z3-solver>=4.12,<6",
+]
+execution = [
+    "duckdb>=1.0,<2",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.5",
+    "duckdb>=1.0,<2",
+    "z3-solver>=4.12,<6",
+]
+
+[project.scripts]
+kumo-prove-smt = "kumo_sql_prover.smt_equivalence:main"
+kumo-prove-sqlsolver = "kumo_sql_prover.sqlsolver_backend:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "slow: a long benchmark run, deselected by default (pytest -m slow runs it)",
+    "canary: a few cases of a benchmark family; stays in the pull-request gate (never in the slow tier)",
+    "eval: scores the prover on a benchmark corpus and holds its floors (a test file declares it with pytestmark)",
+    "xdist_group(name): keep these tests on one pytest-xdist worker (used with --dist loadgroup)",
+]
+addopts = "-m 'not slow'"

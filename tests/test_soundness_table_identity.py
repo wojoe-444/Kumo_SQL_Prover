@@ -13,9 +13,9 @@ from sqlglot import exp
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.ast_utils import same_table
-from kumosql.duckdb_load import run_unoptimized
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.ast_utils import same_table
+from kumo_sql_prover.duckdb_load import run_unoptimized
 
 DIALECTS = ("bigquery", "duckdb")
 

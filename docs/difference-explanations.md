@@ -2,6 +2,8 @@
 
 [Plain-language version](../docs_simple/difference-explanations.md)
 
+> Commands written `python -m kumosql ...` belong to [KumoSQL](https://github.com/wojoe-444/KumoSQL); with KumoSQL installed they run this package. This repository's own entry points are `python -m kumo_sql_prover smt` and `python -m kumo_sql_prover sqlsolver`.
+
 When two queries are not equivalent, a counterexample database shows that they differ but not why. A **difference explanation** names the rows they disagree on as a short SQL predicate `P` that KumoSQL has checked, so a reviewer can decide (accept the change, or add a NOT NULL assertion) without reading a database dump.
 
 ```text
@@ -22,7 +24,7 @@ not_equivalent
 | `tables` | The lower-case tables whose columns it reads |
 | `exact` | `true` when the two queries disagree exactly where `P` holds; `false` when `P` covers every disagreement but the queries may still agree on some rows where it holds |
 
-The claim is "equivalent except when P": once the rows where `P` holds are filtered out of every table the queries read, the two queries are proved equivalent. A predicate is shown only after it has passed two checks, which live in `src/kumosql/difference_explanation.py`:
+The claim is "equivalent except when P": once the rows where `P` holds are filtered out of every table the queries read, the two queries are proved equivalent. A predicate is shown only after it has passed two checks, which live in `src/kumo_sql_prover/difference_explanation.py`:
 
 - a witness database with a row satisfying `P` on which the queries really differ, replayed on DuckDB through the same guards as other executed counterexamples;
 - a proof, by both the algebraic and the SMT prover, that the pair is equivalent when each table is filtered by `P`.
@@ -34,7 +36,7 @@ When no predicate passes both checks, nothing is shown. The absence of a predica
 The explanation is opt-in everywhere, so every existing output and eval answer is unchanged until it is asked for.
 
 - **API.** `POST /api/prove-queries` accepts `"explain": true`. A refuted pair then carries `except_when: {sql, atoms, tables, exact}` next to its `counterexample`. In Python, `pipeline_equivalence.prove_queries(left, right, explain=True)`. Only a pair whose final status is `not_equivalent` is searched; an equivalent, conditional or unknown pair never gets the field.
-- **Command line.** `python -m kumosql prove-sql-equivalent left.sql right.sql --explain-difference` prints `except when: <predicate>` and `exact: yes|no` after the verdict when the pair is not proven. `python -m kumosql prove-sql-smt left.sql right.sql --explain-difference` adds an `except_when` object to its JSON when the pair is refuted. The exit codes do not change.
+- **Command line.** `python -m kumosql prove-sql-equivalent left.sql right.sql --explain-difference` prints `except when: <predicate>` and `exact: yes|no` after the verdict when the pair is not proven. `python -m kumo_sql_prover smt left.sql right.sql --explain-difference` adds an `except_when` object to its JSON when the pair is refuted. The exit codes do not change.
 - **Settings → Solver → Compare queries.** The page asks for the explanation and, when there is one, shows **Equivalent except when `<predicate>`** above the counterexample.
 - **Change reports.** `build_change_report(..., explain_differences=True)` and `python -m kumosql change-report BASE HEAD --explain-differences` add `except_when` to each modified query model whose rewrite is unproven and has a verified predicate. The change report page and the review comment of `ci-check` ignore the field unless it is present; the page shows it under the model's behavior.
 

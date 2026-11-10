@@ -134,7 +134,7 @@ def new_database(tables: dict[str, Table]):
 
     import duckdb
 
-    from kumosql.duckdb_load import small_database
+    from kumo_sql_prover.duckdb_load import small_database
     db = small_database()
     for table in tables.values():
         columns = ", ".join(f'"{c.name}" {_duck_type(c)}' for c in table.columns)
@@ -245,7 +245,7 @@ def _random_check_cache(left_sql, right_sql, used, samples, db):
     corrupt or unwritable evidence falls back to executing the checks.
     """
     import duckdb
-    from kumosql import duckdb_load
+    from kumo_sql_prover import duckdb_load
 
     folder = os.environ.get("KUMOSQL_EVAL_CACHE", "").strip()
     if folder.lower() in ("", "off", "0", "false"):
@@ -306,7 +306,7 @@ def differ(left: str, right: str, tables: dict[str, Table], db, trials: int = 60
 
     import duckdb
 
-    from kumosql.duckdb_load import TableLoader, rows_key, run_unoptimized
+    from kumo_sql_prover.duckdb_load import TableLoader, rows_key, run_unoptimized
 
     rng = random.Random(seed)
     left, right = spark_days(left), spark_days(right)
@@ -360,14 +360,14 @@ _TARGETED_TYPES = {"VARCHAR": "STRING", "DOUBLE": "FLOAT64", "DATE": "DATE", "BI
 
 
 def targeted_differ(left_sql: str, right_sql: str, used: list[Table]):
-    """The targeted suite (kumosql.refute) as a last look; same result shape as ``differ``."""
+    """The targeted suite (kumo_sql_prover.refute) as a last look; same result shape as ``differ``."""
 
     import os
 
     if os.environ.get("KUMOSQL_TARGETED", "1") == "0":
         return None
-    from kumosql.refute import find_targeted_difference
-    from kumosql.result_equivalence import DataRules
+    from kumo_sql_prover.refute import find_targeted_difference
+    from kumo_sql_prover.result_equivalence import DataRules
 
     names = {t.name for t in used}
     schema = {t.name: {c.name: _TARGETED_TYPES[_duck_type(c)] for c in t.columns} for t in used}
@@ -447,20 +447,21 @@ def run_suite(name: str, prove, limit: int | None = None, trials: int = 60) -> S
 def default_prove(left: str, right: str, tables: dict[str, Table], constants: bool = False) -> bool:
     """Whether the prover proves the pair; answered from the verdict cache (``KUMOSQL_VERDICT_CACHE``) when the prover's source is unchanged."""
 
-    from kumosql import verdict_cache
+    from kumo_sql_prover import verdict_cache
 
     if verdict_cache.folder() is None:
         return prove_result(left, right, tables, constants).proven
-    payload = {"left": left, "right": right, "tables": [asdict(t) for t in sorted(tables.values(), key=lambda t: t.name)], "constants": constants}
+    # This file is part of the question: ``prove_result`` picks the dialect, the constraints and the options of the proof.
+    payload = {"left": left, "right": right, "tables": [asdict(t) for t in sorted(tables.values(), key=lambda t: t.name)], "constants": constants, "runner": verdict_cache.source_digest(__file__)}
     return verdict_cache.cached_verdict("sqlsolver_bench.default_prove", payload, lambda: prove_result(left, right, tables, constants).proven)
 
 
 def prove_result(left: str, right: str, tables: dict[str, Table], constants: bool = False):
     """The prover's full result (status, reason and any counterexample) for one pair."""
 
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 
-    from kumosql.smt_equivalence import TableConstraints
+    from kumo_sql_prover.smt_equivalence import TableConstraints
 
     schema = {t.name: [c.name for c in t.columns] for t in tables.values()}
     constraints = {
@@ -476,7 +477,15 @@ def prove_result(left: str, right: str, tables: dict[str, Table], constants: boo
 
 
 def main(argv: list[str] | None = None) -> int:
-    names = (argv if argv is not None else sys.argv[1:]) or list(SUITES)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Prove the SQLSolver pairs of each suite and count proved, unknown and wrong.")
+    parser.add_argument("suites", nargs="*", metavar="SUITE", help="one or more of: " + ", ".join(SUITES) + " (default: all)")
+    args = parser.parse_args(argv)
+    unknown = [name for name in args.suites if name not in SUITES]
+    if unknown:
+        parser.error(f"unknown suite {unknown[0]!r}; choose from {', '.join(SUITES)}")
+    names = args.suites or list(SUITES)
     print(f"{'suite':8} {'pairs':>6} {'scored':>7} {'proved':>7} {'unknown':>8} {'wrong':>6} {'unchecked':>10} {'sec':>6}")
     bad = 0
     for name in names:

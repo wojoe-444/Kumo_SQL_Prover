@@ -4,9 +4,9 @@ from collections import Counter
 import duckdb
 import pytest
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.structural_identity import same_scoped_query
-from kumosql.set_identity import expose_set_identity
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.structural_identity import same_scoped_query
+from kumo_sql_prover.set_identity import expose_set_identity
 import sqlglot
 
 SCHEMA = {"t": ["x", "k"], "u": ["x", "k"]}

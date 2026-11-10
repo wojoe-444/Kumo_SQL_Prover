@@ -1,11 +1,11 @@
-"""BigQuery statements sqlglot rejects that kumosql.bigquery_syntax reads (TABLE arguments are in test_table_function_arguments.py)."""
+"""BigQuery statements sqlglot rejects that kumo_sql_prover.bigquery_syntax reads (TABLE arguments are in test_table_function_arguments.py)."""
 
 import pytest
 import sqlglot
 import sqlglot.tokens
 from sqlglot import exp
 
-import kumosql  # noqa: F401  (installs the BigQuery syntax additions)
+import kumo_sql_prover  # noqa: F401  (installs the BigQuery syntax additions)
 
 
 @pytest.mark.parametrize(

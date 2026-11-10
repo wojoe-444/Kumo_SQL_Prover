@@ -6,9 +6,9 @@ import sqlglot
 import pytest
 from sqlglot_support import OLD_SQLGLOT
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.duckdb_load import run_unoptimized
-from kumosql.limit_rules import limit_rule
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import run_unoptimized
+from kumo_sql_prover.limit_rules import limit_rule
 
 SCHEMA = {"dept": ["deptno", "name"]}
 

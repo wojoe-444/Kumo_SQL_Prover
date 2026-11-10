@@ -13,9 +13,9 @@ import sqlglot
 pytest.importorskip("z3")
 duckdb = pytest.importorskip("duckdb")
 
-from kumosql.smt_equivalence import SmtStatus, TableConstraints, prove_equivalent_smt
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.duckdb_load import insert_rows
+from kumo_sql_prover.smt_equivalence import SmtStatus, TableConstraints, prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import insert_rows
 
 SCHEMA = {"t": ["id", "a"], "u": ["id", "b"]}
 STRICT = {
@@ -170,7 +170,7 @@ def test_proofs_match_expectations_and_execution(left, right, loose, strict):
 
 
 def test_having_on_group_keys_equals_where():
-    from kumosql.smt_equivalence import prove_equivalent_smt
+    from kumo_sql_prover.smt_equivalence import prove_equivalent_smt
 
     schema = {"dept": ["deptno", "name"]}
     having = "SELECT name, COUNT(*) FROM dept GROUP BY name HAVING name = 'a'"
@@ -185,7 +185,7 @@ SEMI_SCHEMA = {"dept": ["deptno", "name"], "emp": ["empno", "deptno", "sal"]}
 
 
 def _semi(left, right):
-    from kumosql.smt_equivalence import prove_equivalent_smt
+    from kumo_sql_prover.smt_equivalence import prove_equivalent_smt
 
     return prove_equivalent_smt(left, right, schema=SEMI_SCHEMA, compare_names=False).proven
 

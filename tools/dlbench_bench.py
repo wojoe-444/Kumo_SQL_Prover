@@ -333,8 +333,8 @@ def _with_unbounded_limit(sql: str, dialect: str) -> str:
 
 
 def prove(left: str, right: str, schema: dict[str, dict[str, str]], dialect: str) -> bool:
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.smt_equivalence import SmtStatus
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.smt_equivalence import SmtStatus
 
     if _ordered(left, dialect):
         if not _ordered(right, dialect):
@@ -438,7 +438,7 @@ def check_proof(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
         if (a != b) if ordered else (_bag(a) != _bag(b)):
             return f"SQLite: {data}"
         if native is not None:
-            from kumosql.duckdb_load import insert_rows, run_unoptimized
+            from kumo_sql_prover.duckdb_load import insert_rows, run_unoptimized
 
             db = duckdb.connect()
             try:

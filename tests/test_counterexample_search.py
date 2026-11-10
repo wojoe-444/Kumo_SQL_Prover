@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("duckdb")
 
-from kumosql import counterexample as cx  # noqa: E402
+from kumo_sql_prover import counterexample as cx  # noqa: E402
 
 
 def spec():

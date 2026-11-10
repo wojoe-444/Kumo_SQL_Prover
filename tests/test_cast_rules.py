@@ -3,9 +3,9 @@ from collections import Counter
 import pytest
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.cast_rules import fold_casts_and_constant_cases
-from kumosql.duckdb_load import run_unoptimized
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.cast_rules import fold_casts_and_constant_cases
+from kumo_sql_prover.duckdb_load import run_unoptimized
 
 TYPES = {"t": {"i": "int", "b": "bigint", "s": "varchar(20)", "d": "date", "n": "decimal(5,2)", "ti": "tinyint"}}
 SCHEMA = {"t": ["i", "b", "s", "d", "n", "ti"], "u": ["k", "x"], "v": ["k", "y"]}

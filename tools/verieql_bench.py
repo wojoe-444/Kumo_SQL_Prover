@@ -45,7 +45,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
-from kumosql import counterexample as cx  # noqa: E402
+from kumo_sql_prover import counterexample as cx  # noqa: E402
 from bench_sql_repairs import expand_row_predicates, pipes_as_concat, rebind_correlation_variables, uniquify_star_columns  # noqa: E402
 
 COMMIT = "493cbb81000205e33b0623cfd1c39106fa035fae"
@@ -290,8 +290,8 @@ EQUIVALENT, DIFFERENT, AGREES, UNKNOWN, WRONG = "equivalent", "different", "agre
 
 
 def prove(case: dict, spec: cx.Spec, timeout_ms: int, pair: tuple[str, str] | None = None):
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.smt_equivalence import TableConstraints
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.smt_equivalence import TableConstraints
 
     lower = {t.name.lower(): t for t in spec.tables.values()}
     schema = {n: [c.name.lower() for c in t.columns] for n, t in lower.items()}
@@ -419,7 +419,7 @@ def replay(case: dict, record: dict) -> bool | None:
     script = record.get("counterexample")
     if not script:
         return None
-    from kumosql.duckdb_load import small_database
+    from kumo_sql_prover.duckdb_load import small_database
     db = small_database()
     statements = [s for s in sqlglot.parse(script, read="mysql") if s is not None]
     try:

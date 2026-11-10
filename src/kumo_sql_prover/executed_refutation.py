@@ -5,7 +5,7 @@ yields one, and it yields none for outer joins, duplicate-producing joins,
 ``NOT IN`` with NULLs or set operations of different shapes, so such pairs stay
 "unknown" although a three-row database tells them apart. This module searches
 for that database: the corner-case, targeted and random databases of
-:mod:`kumosql.targeted_data` built around *both* queries, each respecting the
+:mod:`kumo_sql_prover.targeted_data` built around *both* queries, each respecting the
 declared NOT NULL columns, keys and foreign keys, run on DuckDB.
 
 A database on which the two result bags differ is a refutation that needs no
@@ -20,7 +20,7 @@ reading of them, the search only runs when
   comparisons, arithmetic, ``CASE``/``IF``/``COALESCE``, the plain aggregates and
   aggregate windows; no ``LIMIT``, string or date functions, ``LIKE``, arrays,
   ``ROW_NUMBER`` or anything nondeterministic),
-* the DuckDB run follows BigQuery's semantics (:mod:`kumosql.bigquery_on_duckdb`:
+* the DuckDB run follows BigQuery's semantics (:mod:`kumo_sql_prover.bigquery_on_duckdb`:
   a zero divisor fails the run as it does in BigQuery, NULL sorts first, and so
   on), and
 * the difference survives rounding floats to 6 digits and both sides return the
@@ -131,7 +131,7 @@ def _refusal(tree: exp.Expression) -> str | None:
 def _faithful(tree: exp.Expression) -> exp.Expression:
     """``tree`` with ``DATE_ADD``/``DATE_SUB`` cast back to ``DATE`` (DuckDB's date plus
     interval is a timestamp). The rest of the BigQuery reading (a zero divisor fails, NULL
-    order, ...) is :mod:`kumosql.bigquery_on_duckdb`, applied by the runner.
+    order, ...) is :mod:`kumo_sql_prover.bigquery_on_duckdb`, applied by the runner.
     """
 
     def guard(node: exp.Expression) -> exp.Expression:

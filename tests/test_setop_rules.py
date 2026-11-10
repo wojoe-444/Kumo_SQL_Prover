@@ -5,9 +5,9 @@ import duckdb
 import pytest
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.duckdb_load import insert_rows
-from kumosql.setop_rules import distinct_rows, normalize_set_operations
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import insert_rows
+from kumo_sql_prover.setop_rules import distinct_rows, normalize_set_operations
 
 SCHEMA = {"t": ["a", "b", "c"], "u": ["a", "b", "c"]}
 

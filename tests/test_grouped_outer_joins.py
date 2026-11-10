@@ -14,9 +14,9 @@ duckdb = pytest.importorskip("duckdb")
 
 import sqlglot  # noqa: E402
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.duckdb_load import insert_rows, run_unoptimized  # noqa: E402
-from kumosql.grouped_outer_joins import group_distinct_outer_join, null_extend_anti_joined  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.duckdb_load import insert_rows, run_unoptimized  # noqa: E402
+from kumo_sql_prover.grouped_outer_joins import group_distinct_outer_join, null_extend_anti_joined  # noqa: E402
 
 SCHEMA = {"a": ["x", "z"], "b": ["y", "w"], "c": ["y", "w"]}
 DDL = {"a": "x INT, z INT", "b": "y INT, w INT", "c": "y INT, w INT"}

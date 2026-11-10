@@ -3,8 +3,8 @@ non-NULL facts and DISTINCT aggregates. Each proof is paired with a near miss th
 
 from __future__ import annotations
 
-from kumosql.smt_equivalence import TableConstraints
-from kumosql.uexpr import prove_bag_equivalent
+from kumo_sql_prover.smt_equivalence import TableConstraints
+from kumo_sql_prover.uexpr import prove_bag_equivalent
 
 SCHEMA = {"emp": ["empno", "job", "sal", "deptno", "mgr"], "dept": ["deptno", "name"]}
 CONSTRAINTS = {

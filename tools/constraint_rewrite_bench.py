@@ -38,9 +38,9 @@ import sqlglot
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from kumosql.constraint_dependence import Guarantee, constraints_with, guarantees_of, needed_guarantees  # noqa: E402
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.smt_equivalence import SmtStatus, TableConstraints  # noqa: E402
+from kumo_sql_prover.constraint_dependence import Guarantee, constraints_with, guarantees_of, needed_guarantees  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.smt_equivalence import SmtStatus, TableConstraints  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "constraint_rewrites"
 DOMAINS = {"INT64": [0, 1, 2, 3, 4], "STRING": ["a", "b", "EU"]}
@@ -129,9 +129,9 @@ def literal(value) -> str:
 def connection(schema: dict):
     import duckdb
 
-    from kumosql.bigquery_on_duckdb import configure
+    from kumo_sql_prover.bigquery_on_duckdb import configure
 
-    from kumosql.duckdb_load import small_database
+    from kumo_sql_prover.duckdb_load import small_database
     db = small_database()
     configure(db)  # the cases are BigQuery: run them as BigQuery does, or fail where it fails
     for table, spec in schema["tables"].items():
@@ -147,7 +147,7 @@ def load(db, data: dict) -> None:
 
 
 def to_duck(sql: str) -> str:
-    from kumosql.bigquery_on_duckdb import faithful
+    from kumo_sql_prover.bigquery_on_duckdb import faithful
 
     return faithful(sqlglot.parse_one(sql, read="bigquery")).sql(dialect="duckdb")
 
@@ -155,7 +155,7 @@ def to_duck(sql: str) -> str:
 def bag(db, sql: str):
     from collections import Counter
 
-    from kumosql.bigquery_on_duckdb import bigquery_rows
+    from kumo_sql_prover.bigquery_on_duckdb import bigquery_rows
 
     return Counter(bigquery_rows(db.execute(sql).fetchall()))
 
@@ -163,7 +163,7 @@ def bag(db, sql: str):
 def differ(db, left: str, right: str) -> bool:
     """The bags differ; a database BigQuery fails on separates nothing."""
 
-    from kumosql.bigquery_on_duckdb import is_bigquery_failure
+    from kumo_sql_prover.bigquery_on_duckdb import is_bigquery_failure
 
     try:
         return bag(db, left) != bag(db, right)

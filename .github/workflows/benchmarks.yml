@@ -1,0 +1,53 @@
+name: Benchmarks
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  evals:
+    name: eval floors and scoreboard (sqlglot 30.21.0 compiled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]" "sqlglotc==30.21.0" --only-binary sqlglotc
+      - name: Run the benchmark floors
+        id: floors
+        continue-on-error: true
+        run: python -m pytest -n auto -m eval -q --junitxml=eval-report.xml
+      - name: Run the slow tier
+        id: slow
+        continue-on-error: true
+        run: python -m pytest -n auto -m "not eval" -q
+      - name: Check the scoreboard is current
+        id: scoreboard
+        continue-on-error: true
+        run: python tools/scoreboard.py --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-report
+          path: eval-report.xml
+      - name: Open an issue when a floor dropped
+        if: steps.floors.outcome == 'failure' || steps.slow.outcome == 'failure' || steps.scoreboard.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Benchmark floors failed on $(date -u +%Y-%m-%d)" \
+            --label benchmarks \
+            --body "The scheduled benchmark run failed (floors: ${{ steps.floors.outcome }}, slow tier: ${{ steps.slow.outcome }}, scoreboard check: ${{ steps.scoreboard.outcome }}). Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || \
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Benchmark floors failed on $(date -u +%Y-%m-%d)" \
+            --body "The scheduled benchmark run failed. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

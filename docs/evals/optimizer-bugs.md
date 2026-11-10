@@ -16,7 +16,7 @@ python tools/optimizer_bugs_bench.py --write-results
 2. **refuted**: the prover itself finds the two queries differ.
 3. **unknown**: anything else.
 
-Every run also checks that each pair really differs on its own data: DuckDB with its optimizer off (`kumosql.duckdb_load.run_unoptimized`), or SQLite for the one pair DuckDB cannot run. Results are compared as lists when both queries end in `ORDER BY`, and as bags otherwise.
+Every run also checks that each pair really differs on its own data: DuckDB with its optimizer off (`kumo_sql_prover.duckdb_load.run_unoptimized`), or SQLite for the one pair DuckDB cannot run. Results are compared as lists when both queries end in `ORDER BY`, and as bags otherwise.
 
 **Held out.** One case in five, by a hash of its id (5 of 24), is held out. The first run showed every case.
 

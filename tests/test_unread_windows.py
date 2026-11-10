@@ -5,9 +5,9 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import SmtStatus
-from kumosql.unread_windows import drop_unread_windows
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import SmtStatus
+from kumo_sql_prover.unread_windows import drop_unread_windows
 
 SCHEMA = {"t": ["id", "k", "v"]}
 

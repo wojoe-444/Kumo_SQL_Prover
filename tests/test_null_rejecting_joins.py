@@ -1,8 +1,8 @@
 import pytest
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.null_rejecting_joins import left_join_to_inner, rejected_tables
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.null_rejecting_joins import left_join_to_inner, rejected_tables
 
 SCHEMA = {"s": ["id", "pid", "buyer"], "p": ["pid", "name", "price"], "u": ["pid", "day", "units"]}
 

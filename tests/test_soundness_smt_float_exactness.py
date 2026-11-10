@@ -20,9 +20,9 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.duckdb_load import run_unoptimized
-from kumosql.smt_equivalence import MIXED_NUMERIC_ASSUMPTION, prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import run_unoptimized
+from kumo_sql_prover.smt_equivalence import MIXED_NUMERIC_ASSUMPTION, prove_equivalent_smt
 
 PROVERS = pytest.mark.parametrize("prove", [prove_equivalent_smt, prove_equivalent_algebraic], ids=["smt", "algebraic"])
 BIG = 2**53  # 9007199254740992; 2**53 + 1 rounds to it as FLOAT64

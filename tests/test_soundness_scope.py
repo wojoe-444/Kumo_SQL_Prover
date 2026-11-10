@@ -13,9 +13,9 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import normalize, prove_equivalent_algebraic
-from kumosql.canonical import canonical_copy
-from kumosql.smt_equivalence import prove_equivalent_smt
+from kumo_sql_prover.algebraic_equivalence import normalize, prove_equivalent_algebraic
+from kumo_sql_prover.canonical import canonical_copy
+from kumo_sql_prover.smt_equivalence import prove_equivalent_smt
 
 DDL = ["CREATE TABLE t (x INTEGER, y INTEGER)", "CREATE TABLE u (k INTEGER, x INTEGER)"]
 ROWS = {"t": [(2, 4), (2, 5)], "u": [(1, 0)]}

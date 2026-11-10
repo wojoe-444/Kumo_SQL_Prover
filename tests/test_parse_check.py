@@ -1,4 +1,4 @@
-"""The parse check: sqlglot's reading of a query against an independent one (``kumosql.parse_check``).
+"""The parse check: sqlglot's reading of a query against an independent one (``kumo_sql_prover.parse_check``).
 
 The misreads below were found by running both readings on an engine (``tools/parser_oracle.py``, MySQL 8.0 and
 DuckDB) or on BigQuery (``docs/parser-checks.md``). Every case is a text, so the tests are parallel-safe.
@@ -11,9 +11,9 @@ import dataclasses
 import duckdb
 import pytest
 
-from kumosql import parse_check as pc
-from kumosql.equivalence import EquivalenceResult, EquivalenceStatus
-from kumosql.smt_equivalence import SmtEquivalenceResult, SmtStatus
+from kumo_sql_prover import parse_check as pc
+from kumo_sql_prover.equivalence import EquivalenceResult, EquivalenceStatus
+from kumo_sql_prover.smt_equivalence import SmtEquivalenceResult, SmtStatus
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -183,7 +183,7 @@ def _unguarded(prover):
 
 
 def test_smt_prover_declines_a_proof_that_rests_on_a_misread():
-    from kumosql.smt_equivalence import prove_equivalent_smt
+    from kumo_sql_prover.smt_equivalence import prove_equivalent_smt
 
     assert _unguarded(prove_equivalent_smt)(*MISREAD_PAIR).status is SmtStatus.PROVEN_EQUIVALENT  # the false proof
     result = prove_equivalent_smt(*MISREAD_PAIR)
@@ -193,7 +193,7 @@ def test_smt_prover_declines_a_proof_that_rests_on_a_misread():
 
 
 def test_basic_prover_declines_a_proof_that_rests_on_a_misread():
-    from kumosql.equivalence import prove_equivalent
+    from kumo_sql_prover.equivalence import prove_equivalent
 
     assert _unguarded(prove_equivalent)(*MISREAD_PAIR).status is EquivalenceStatus.PROVEN_EQUIVALENT
     result = prove_equivalent(*MISREAD_PAIR)
@@ -203,7 +203,7 @@ def test_basic_prover_declines_a_proof_that_rests_on_a_misread():
 
 
 def test_algebraic_prover_declines_under_the_dialect_of_the_call():
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 
     text = "SELECT x FROM t WHERE a = b < c"
     unguarded = _unguarded(prove_equivalent_algebraic)
@@ -218,7 +218,7 @@ def test_algebraic_prover_declines_under_the_dialect_of_the_call():
 
 
 def test_sqlsolver_entry_points_decline_too():
-    from kumosql import sqlsolver_backend
+    from kumo_sql_prover import sqlsolver_backend
 
     def runner(pairs, ddl, runtime, timeout_s):  # SQLSolver says EQ to the pair and NEQ to both controls
         return ["EQ", "NEQ", "NEQ"]

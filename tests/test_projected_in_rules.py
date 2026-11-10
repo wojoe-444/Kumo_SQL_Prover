@@ -4,11 +4,11 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from kumosql.ast_utils import FROM_KEY
-from kumosql.algebraic_equivalence import normalize, prove_equivalent_algebraic
-from kumosql.duckdb_load import run_unoptimized
-from kumosql.projected_in_rules import normalize_projected_in
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.ast_utils import FROM_KEY
+from kumo_sql_prover.algebraic_equivalence import normalize, prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import run_unoptimized
+from kumo_sql_prover.projected_in_rules import normalize_projected_in
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 
 NN = {"t": frozenset({"x"}), "u": frozenset({"y"})}

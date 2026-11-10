@@ -3,8 +3,8 @@
 import pytest
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.int_div_rules import fold_literal_int_div
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.int_div_rules import fold_literal_int_div
 
 SCHEMA = {"emp": ["empno", "ename"]}
 TYPES = {"emp": {"empno": "INTEGER", "ename": "VARCHAR(10)"}}
@@ -22,7 +22,7 @@ def _proven(left, right):
 
 def _differ_on_duckdb(left, right, rows):
     duckdb = pytest.importorskip("duckdb")
-    from kumosql.duckdb_load import insert_rows, run_unoptimized
+    from kumo_sql_prover.duckdb_load import insert_rows, run_unoptimized
 
     db = duckdb.connect()
     db.execute("CREATE TABLE emp (empno INTEGER, ename VARCHAR)")

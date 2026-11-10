@@ -3,7 +3,7 @@
 ``WHERE t.s = 'x' AND t.s = 'y'`` is empty for a text column and returns the rows where ``t.s`` is 0 for an integer column,
 since MySQL compares a number with a string as numbers and reads ``'x'`` and ``'y'`` as 0. The provers read an untyped column as
 text, so they proved the pair empty. On MySQL a proof now has to hold with those strings replaced by the number they convert to
-(``kumosql.numeric_column_reading``). Other dialects refuse the comparison of an integer column with such a string, so they are
+(``kumo_sql_prover.numeric_column_reading``). Other dialects refuse the comparison of an integer column with such a string, so they are
 unchanged.
 """
 
@@ -11,9 +11,9 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql import numeric_column_reading, string_number_compare
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+from kumo_sql_prover import numeric_column_reading, string_number_compare
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
 PROVERS = (prove_equivalent_algebraic, prove_equivalent_smt)
 NONE = "SELECT t.k FROM t WHERE FALSE"

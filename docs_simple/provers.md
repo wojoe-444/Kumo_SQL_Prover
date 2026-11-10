@@ -2,7 +2,7 @@
 
 [All simple guides](README.md) · [Full reference](../docs/provers.md)
 
-None of these checks uses the network. Calling a prover or a rewrite from Python makes no request; the one optional lookup (the columns of tables the project does not define) is off unless you turn it on. See [pipeline analysis](pipeline-analysis.md).
+None of these checks uses the network. Calling a prover or a rewrite from Python makes no request; the one optional lookup (the columns of tables the project does not define) is off unless you turn it on. See [pipeline analysis](https://github.com/wojoe-444/KumoSQL/blob/master/docs_simple/pipeline-analysis.md).
 
 Two queries are equivalent when they return the same results under the comparison's rules. Usually that means the same rows with the same duplicate counts, ignoring unspecified row order. Column names, types, ordering, and declared data guarantees can also matter; read the check's assumptions.
 
@@ -33,7 +33,7 @@ python -m pip install ".[smt,execution]"
 A small Python example:
 
 ```python
-from kumosql import prove_equivalent
+from kumo_sql_prover import prove_equivalent
 
 result = prove_equivalent(
     "SELECT id FROM orders WHERE 1 = 1",
@@ -74,6 +74,10 @@ Some writes cannot be compared faithfully, so the check answers `error` instead 
 
 Repeating the same comparison should find the same counterexample regardless of earlier comparisons or unrelated imports. For example, removing a lookup join can lose its treatment of a user whose plan is NULL: the join drops that user, while reading the users table keeps them. The solver isolates its candidate search to avoid changing this witness with process history. The search can still miss a difference or run out of time; returned examples must respect the declared data guarantees and make the query results differ.
 
+An example database also has to be one that could exist. Three things used to go wrong. A text column could be shown holding the number 1, or a whole-number column holding `'A'`. Text could be put in an order it does not have: the check reported that `WHERE s < ''` and a filter that keeps nothing are different, with the example `s = 'A'`, although nothing sorts before empty text. And with about ninety text values in the queries, the search for a readable example never came back, whatever time limit was set. Now each value matches the declared type of its column, text is ordered the way BigQuery and DuckDB order it (an example that breaks this is thrown away, and the answer is "unknown" if no better one is found), and every step of the search has a time limit.
+
+The limits: this needs declared column types, so a column without one can still be shown with a number where the queries compare it with text. Text order is plain character order, so an example may not hold in a database set up to ignore upper and lower case. The [full reference](../docs/provers.md#smt-equivalence-prover) has the details and the tests.
+
 ## Strings compared with numbers
 
 `WHERE '2' <> 2` looks like a condition that is never true, but engines disagree: MySQL turns the string into a number and finds them equal, DuckDB and PostgreSQL cast it the same way, and BigQuery refuses the query. Treating the two as always different once led the checker to say this query matches one with no filter, when real engines return different rows.
@@ -91,6 +95,20 @@ The structural checker also refuses a query BigQuery would plainly reject (for e
 KumoSQL knows that `SELECT d.b + 1 FROM (SELECT a AS b FROM t ORDER BY a LIMIT 1) AS d` returns the same row as `SELECT a + 1 FROM t ORDER BY a LIMIT 1`: it takes the first row, then computes the value. That rewrite had three holes, all now closed. When the outer query contained its own subquery, such as `(SELECT MAX(b) FROM u)`, renaming `d.b` to `a` also changed which column that subquery read, so two different queries were called equal. A value like `RAND()` that the outer query used twice would be drawn twice after the rewrite. And a `GROUP BY 1` could point at a different item once the select list changed. In each case the checker now declines, so the pair is "not proven" rather than wrongly "proven", and the common rewrites still go through. The evidence is a handful of hand-made witnesses plus fuzzing, not a proof that no such hole is left. The [full reference](../docs/provers.md) has the details.
 
 Proofs may depend on declared keys, non-NULL columns, arithmetic assumptions, or restrictions on runtime errors. Check those before applying a change to real data. [Constraint-dependent rewrites](constraint-rewrites.md) explains data guarantees, and [bounded verification](evals/bounded-verification.md) explains the row limit.
+
+## A subquery compared on its own is read in your dialect
+
+Some subqueries in `FROM` are too involved for the prover to read row by row, for example one that groups and sums. It treats such a subquery as a black box, and when the two queries hold differently written black boxes it runs a small proof of its own to see whether they are the same table. That small proof used to read both subqueries as BigQuery, even when you said the queries were MySQL, PostgreSQL or DuckDB.
+
+The dialects disagree about decimals. `1.00` is an exact decimal in MySQL and a floating-point number in BigQuery. So under MySQL the prover could not see that `SUM(price * (1 - discount))` and `SUM(price * (1.00 - discount))` are the same sum, and it called two filters equal that are not: `x = 0.1` and `x = 0.10000000000000000001` are the same floating-point number in BigQuery but two different decimals in MySQL, where a row holding exactly 0.1 passes only the first. Now the small proof reads the subqueries in the dialect you named. When a subquery cannot be written back in that dialect without changing it, it is not compared at all, which can only cost a proof.
+
+The evidence is the two examples above as tests in three dialects and a rerun of the benchmarks that read other dialects; it is not a proof that no other step still assumes BigQuery. The [full reference](../docs/provers.md) has the details.
+
+## Broken input gets an answer, not a crash
+
+Sometimes the text handed to a checker is not a query it can read: a quote that never closes, sixty parentheses inside each other, a table written `t..u`, or a table description with no columns. These used to stop the program with an internal error, which is hard to tell apart from a real bug and takes down whatever tool was calling the checker. Now each checker gives its ordinary "I cannot tell" answer: the provers say "not proven", the run-both-queries check says "error" with the reason, and the bounded check says "unknown".
+
+For example, comparing `SELECT '` with `SELECT a FROM t` now returns "not proven" with a parse error as the reason. The cases come from an automated search over the entry points and are kept as tests; other odd inputs nobody has tried may still fail. The [full reference](../docs/provers.md) lists them.
 
 ## Numbers and errors
 

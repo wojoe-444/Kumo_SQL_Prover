@@ -12,9 +12,9 @@ pytest.importorskip("z3")
 duckdb = pytest.importorskip("duckdb")
 import sqlglot
 
-from kumosql.algebraic_equivalence import normalize, prove_equivalent_algebraic
-from kumosql.duckdb_load import run_unoptimized
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.algebraic_equivalence import normalize, prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import run_unoptimized
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 SCHEMA = {"emp": ["empno", "deptno", "sal"], "dept": ["deptno", "name"], "other": ["x"]}
 TYPES = {t: {c: "INT" for c in cols} for t, cols in SCHEMA.items()}

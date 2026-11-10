@@ -7,8 +7,8 @@ import duckdb
 import pytest
 import sqlglot
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.duckdb_load import run_unoptimized
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.duckdb_load import run_unoptimized
 
 SCHEMA = {"t": ["a", "b", "c"], "u": ["a", "b", "c"]}
 

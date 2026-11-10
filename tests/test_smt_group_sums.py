@@ -12,8 +12,8 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql import smt_errors
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+from kumo_sql_prover import smt_errors
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
 SCHEMA = {"t": ["x", "y", "f", "n", "c"], "u": ["x", "y"]}
 TYPES = {"t": {"x": "INT64", "y": "INT64", "f": "FLOAT64", "n": "NUMERIC", "c": "BOOL"}, "u": {"x": "INT64", "y": "INT64"}}
@@ -119,7 +119,7 @@ def test_a_witness_needs_rows_to_overflow_and_the_original_not_to():
 duckdb = pytest.importorskip("duckdb")
 import sqlglot  # noqa: E402
 
-from kumosql.bigquery_on_duckdb import bigquery_rows, configure, faithful, is_bigquery_failure  # noqa: E402
+from kumo_sql_prover.bigquery_on_duckdb import bigquery_rows, configure, faithful, is_bigquery_failure  # noqa: E402
 
 PAIRS = [
     ("SELECT y, SUM(x) AS s FROM t GROUP BY y HAVING y > 0", "SELECT y, SUM(x) AS s FROM t WHERE y > 0 GROUP BY y"),

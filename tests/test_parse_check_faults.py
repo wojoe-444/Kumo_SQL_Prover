@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 from sqlglot import exp
 
-from kumosql import parse_check as pc
+from kumo_sql_prover import parse_check as pc
 
 # What a misreading parser could put in place of an operator.
 SWAP = {exp.Add: exp.Sub, exp.Sub: exp.Add, exp.Mul: exp.Div, exp.Div: exp.Mul, exp.And: exp.Or, exp.Or: exp.And,

@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from kumosql import smt_values as v
+from kumo_sql_prover import smt_values as v
 
 
 def test_int64_arithmetic_is_exact_and_overflow_is_an_error():

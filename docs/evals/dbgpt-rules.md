@@ -17,7 +17,7 @@ python tools/dbgpt_rules_bench.py --write-results
 | not equivalent | 3 | a stored counterexample database (14: `'abc'` matches `LIKE 'abc%'` but is not `> 'abc'`; 30: a row matching both sides of an `OR` appears twice after the split into `UNION ALL`; 34: the rewrite joins `t1.c1` to `t2.c2`) |
 | invalid | 3 | DuckDB rejects a query (10, 33, 36); left out of the score |
 
-Every DuckDB difference is confirmed with the optimizer off (`kumosql.duckdb_load.run_unoptimized`). Case 35 is equal as bags but its `ORDER BY` differs (a missing count sorts as 0 on one side and as NULL on the other); KumoSQL compares bags, so it is labelled equivalent.
+Every DuckDB difference is confirmed with the optimizer off (`kumo_sql_prover.duckdb_load.run_unoptimized`). Case 35 is equal as bags but its `ORDER BY` differs (a missing count sorts as 0 on one side and as NULL on the other); KumoSQL compares bags, so it is labelled equivalent.
 
 ## How a case is decided
 

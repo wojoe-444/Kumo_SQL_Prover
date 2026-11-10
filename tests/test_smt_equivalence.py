@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql.smt_equivalence import SmtStatus, main, prove_equivalent_smt
+from kumo_sql_prover.smt_equivalence import SmtStatus, main, prove_equivalent_smt
 
 
 def _status(left, right, **kwargs):
@@ -292,7 +292,7 @@ def test_limit_zero_is_empty():
 
 def test_counterexample_does_not_leave_a_key_column_null():
     """A column only one query reads must not turn NULL in the counterexample (it broke NOT NULL keys)."""
-    from kumosql.smt_equivalence import SmtStatus, TableConstraints, prove_equivalent_smt
+    from kumo_sql_prover.smt_equivalence import SmtStatus, TableConstraints, prove_equivalent_smt
 
     constraints = {"t": TableConstraints(not_null=frozenset({"id"}), keys=(("id",),))}
     result = prove_equivalent_smt(

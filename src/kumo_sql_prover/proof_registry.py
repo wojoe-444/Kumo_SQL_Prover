@@ -91,7 +91,7 @@ def classification(rule: str) -> str:
         return "independent"
     if rule in LEGACY_BASIS:
         return "legacy"
-    raise KeyError(f"rewrite rule {rule!r} has no proof-checker classification (see kumosql.proof_registry)")
+    raise KeyError(f"rewrite rule {rule!r} has no proof-checker classification (see kumo_sql_prover.proof_registry)")
 
 
 __all__ = ["FAMILIES", "Family", "LEGACY_BASIS", "RULE_FAMILIES", "classification"]

@@ -4,8 +4,8 @@ import pytest
 
 pytest.importorskip("duckdb")
 
-from kumosql.query_mutants import OPERATORS, mutate
-from kumosql.result_equivalence import (
+from kumo_sql_prover.query_mutants import OPERATORS, mutate
+from kumo_sql_prover.result_equivalence import (
     DataRules,
     DatasetRunner,
     ExecutionError,
@@ -14,7 +14,7 @@ from kumosql.result_equivalence import (
     execute_on_dataset,
     generate_synthetic_dataset,
 )
-from kumosql.targeted_data import database_suite, edge_datasets, random_datasets, targeted_datasets
+from kumo_sql_prover.targeted_data import database_suite, edge_datasets, random_datasets, targeted_datasets
 
 SCHEMA = {
     "emp": {"id": "INT64", "dept": "INT64", "sal": "INT64", "name": "STRING"},

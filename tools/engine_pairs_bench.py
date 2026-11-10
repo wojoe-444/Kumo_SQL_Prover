@@ -21,10 +21,10 @@ collation pair, which stays in DuckDB SQL.
 
 Each pair gets one outcome:
 
-1. **proven**: ``kumosql.prove_equivalent`` (structural) or ``prove_equivalent_algebraic`` (with the
+1. **proven**: ``kumo_sql_prover.prove_equivalent`` (structural) or ``prove_equivalent_algebraic`` (with the
    fixture's types, keys and NOT NULL columns) proves it. Right only for ``equivalent``.
 2. **refuted**: the algebraic prover's executed counterexample search or the targeted refuter
-   (``kumosql.refute.find_targeted_difference``) finds a database where the results differ, and a
+   (``kumo_sql_prover.refute.find_targeted_difference``) finds a database where the results differ, and a
    replay of that database in DuckDB with the optimizer off (``run_unoptimized``) confirms it. Right
    only for ``fixture`` and ``not_equivalent``.
 3. **unknown**: anything else, including a prover claim whose database does not load as declared or
@@ -177,7 +177,7 @@ def types_of(fixture: dict) -> dict[str, dict[str, str]]:
 
 
 def constraints_of(fixture: dict):
-    from kumosql.smt_equivalence import TableConstraints
+    from kumo_sql_prover.smt_equivalence import TableConstraints
 
     out = {}
     for table, spec in (fixture.get("constraints") or {}).items():
@@ -186,7 +186,7 @@ def constraints_of(fixture: dict):
 
 
 def rules_of(fixture: dict):
-    from kumosql.result_equivalence import DataRules
+    from kumo_sql_prover.result_equivalence import DataRules
 
     return {
         table: DataRules(not_null=frozenset(spec.get("not_null", ())), keys=tuple(tuple(k) for k in spec.get("keys", ())))
@@ -245,9 +245,9 @@ class Engine:
     def __init__(self, name: str, fixture: dict, rows: dict[str, list] | None = None):
         import duckdb
 
-        from kumosql.bigquery_on_duckdb import configure
-        from kumosql.duckdb_load import insert_rows
-        from kumosql.result_equivalence import _DUCKDB_TYPES, _local_name
+        from kumo_sql_prover.bigquery_on_duckdb import configure
+        from kumo_sql_prover.duckdb_load import insert_rows
+        from kumo_sql_prover.result_equivalence import _DUCKDB_TYPES, _local_name
 
         self.fixture = fixture
         self.dialect = fixture.get("dialect", "bigquery")
@@ -290,7 +290,7 @@ class Engine:
     def text(self, sql: str) -> str:
         if self.dialect != "bigquery":
             return sql
-        from kumosql.result_equivalence import prepare_statements
+        from kumo_sql_prover.result_equivalence import prepare_statements
 
         statements, target = prepare_statements(inline_struct_rows(sql), self.schema, run_tag="pairs")
         if len(statements) != 1 or target is not None:
@@ -300,7 +300,7 @@ class Engine:
     def rows(self, raw: list[tuple]) -> tuple:
         if self.dialect != "bigquery":
             return tuple(tuple(r) for r in raw)
-        from kumosql.bigquery_on_duckdb import bigquery_rows
+        from kumo_sql_prover.bigquery_on_duckdb import bigquery_rows
 
         return tuple(bigquery_rows(raw))
 
@@ -308,8 +308,8 @@ class Engine:
         """Whether the two queries return different bags here (a difference must survive the
         optimizer-off rerun), and each side's row count."""
 
-        from kumosql.duckdb_load import run_unoptimized
-        from kumosql.result_equivalence import QueryOutput, compare_outputs
+        from kumo_sql_prover.duckdb_load import run_unoptimized
+        from kumo_sql_prover.result_equivalence import QueryOutput, compare_outputs
 
         a, b = self.text(left), self.text(right)
 
@@ -399,10 +399,10 @@ def replays(case: Case, fixtures: dict, tables: dict) -> bool:
 
 
 def decide(case: Case, fixtures: dict) -> dict:
-    from kumosql import prove_equivalent
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.refute import find_targeted_difference
-    from kumosql.smt_equivalence import SmtStatus
+    from kumo_sql_prover import prove_equivalent
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.refute import find_targeted_difference
+    from kumo_sql_prover.smt_equivalence import SmtStatus
 
     fixture = fixtures[case.fixture]
     types = types_of(fixture)

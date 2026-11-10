@@ -9,8 +9,8 @@ import pytest
 
 z3 = pytest.importorskip("z3")
 
-from kumosql import solver_lock
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt
+from kumo_sql_prover import solver_lock
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
 IN_LIST = "SELECT a FROM t WHERE a IN (" + ", ".join(map(str, range(35))) + ")"
 OR_CHAIN = "SELECT a FROM t WHERE " + " OR ".join(f"a = {i}" for i in range(35))

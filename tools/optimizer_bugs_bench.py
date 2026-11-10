@@ -14,7 +14,7 @@ Each case gets one outcome:
 3. **unknown**: anything else.
 
 The harness also runs both queries on the case's data (DuckDB with its optimizer off, as
-``kumosql.duckdb_load.run_unoptimized`` does, or SQLite for a pair DuckDB cannot run) and checks they
+``kumo_sql_prover.duckdb_load.run_unoptimized`` does, or SQLite for a pair DuckDB cannot run) and checks they
 really differ; ``confirmed`` counts those. One case in five (by a hash of its id) is held out.
 
     python tools/optimizer_bugs_bench.py
@@ -69,7 +69,7 @@ def load_cases(fixtures: Path = FIXTURES) -> list[Case]:
 def declared(case: Case) -> tuple[dict[str, list[str]], dict]:
     """The setup's tables, their columns and the keys and NOT NULL columns it declares (CHECKs are ignored)."""
 
-    from kumosql.smt_equivalence import TableConstraints
+    from kumo_sql_prover.smt_equivalence import TableConstraints
 
     schema, constraints = {}, {}
     for statement in sqlglot.parse(case.setup, read="duckdb") if case.setup else ():
@@ -105,7 +105,7 @@ def results(case: Case) -> tuple[list[tuple], list[tuple]]:
         db = sqlite3.connect(":memory:")
         return db.execute(case.left).fetchall(), db.execute(case.right).fetchall()
     import duckdb
-    from kumosql.duckdb_load import run_unoptimized
+    from kumo_sql_prover.duckdb_load import run_unoptimized
 
     db = duckdb.connect()
     if case.setup:
@@ -125,8 +125,8 @@ def differs(case: Case) -> bool:
 
 
 def prove(case: Case) -> str:
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.smt_equivalence import SmtStatus
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.smt_equivalence import SmtStatus
 
     schema, constraints = declared(case)
     try:

@@ -1,4 +1,4 @@
-"""DISTINCT and regrouping rules (``kumosql.distinct_rules``): proofs they unlock, and pairs they must not prove."""
+"""DISTINCT and regrouping rules (``kumo_sql_prover.distinct_rules``): proofs they unlock, and pairs they must not prove."""
 
 import random
 import sqlite3
@@ -9,10 +9,10 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-from kumosql.ast_utils import LossySql, faithful_sql
-from kumosql.distinct_rules import drop_dedup_read_as_set, drop_membership_dedup, merge_grouped_source, regroup_distinct
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.ast_utils import LossySql, faithful_sql
+from kumo_sql_prover.distinct_rules import drop_dedup_read_as_set, drop_membership_dedup, merge_grouped_source, regroup_distinct
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 SCHEMA = {"t": ["a", "b", "c"], "s": ["a", "b", "d"]}
 

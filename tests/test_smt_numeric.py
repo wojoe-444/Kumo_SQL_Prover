@@ -1,4 +1,4 @@
-"""Scaled NUMERIC and BIGNUMERIC arithmetic in the SMT prover (``kumosql.smt_numeric``)."""
+"""Scaled NUMERIC and BIGNUMERIC arithmetic in the SMT prover (``kumo_sql_prover.smt_numeric``)."""
 
 from decimal import Decimal, ROUND_HALF_UP
 from fractions import Fraction
@@ -8,8 +8,8 @@ import pytest
 
 z3 = pytest.importorskip("z3")
 
-from kumosql import smt_numeric, smt_values as S  # noqa: E402
-from kumosql.smt_equivalence import SmtStatus, prove_equivalent_smt  # noqa: E402
+from kumo_sql_prover import smt_numeric, smt_values as S  # noqa: E402
+from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt  # noqa: E402
 
 SCHEMA = {"t": ["x", "y", "f", "n", "m", "c"]}
 TYPES = {"t": {"x": "INT64", "y": "INT64", "f": "FLOAT64", "n": "NUMERIC", "m": "NUMERIC", "c": "BOOL"}}

@@ -905,7 +905,7 @@ class Searcher:
         return self._search_targeted(rng) if targeted and os.environ.get("KUMOSQL_TARGETED", "1") != "0" else None
 
     def _search_targeted(self, rng) -> Counterexample | None:
-        """Databases built around the queries' constants, joins and groups (:mod:`kumosql.targeted_data`).
+        """Databases built around the queries' constants, joins and groups (:mod:`kumo_sql_prover.targeted_data`).
 
         A database is tried only if it respects every declaration of the spec (NOT NULL, keys,
         foreign keys, enumerations, sequential columns and checks).
@@ -1046,7 +1046,7 @@ class Searcher:
 def find_counterexample(spec: Spec, left: str, right: str, *, dialect: str = "mysql", trials: int = 150, seed: int = 0):
     """A database on which the queries differ, ``None`` if none was found, ``False`` if DuckDB rejects a query.
 
-    ``False`` too for a BigQuery query that names a type BigQuery does not have (``kumosql.type_names``): DuckDB
+    ``False`` too for a BigQuery query that names a type BigQuery does not have (``kumo_sql_prover.type_names``): DuckDB
     reads ``FLOAT`` and ``VARCHAR``, so a search would report on a query BigQuery rejects.
     """
 

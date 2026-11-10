@@ -6,8 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from kumosql.output_properties import infer_properties
-from kumosql.smt_equivalence import TableConstraints
+from kumo_sql_prover.output_properties import infer_properties
+from kumo_sql_prover.smt_equivalence import TableConstraints
+
+pytestmark = pytest.mark.eval
 
 SCHEMA = {"orders": ["id", "customer_id", "amount"], "customers": ["id", "name"], "items": ["order_id", "line", "qty"]}
 CONSTRAINTS = {

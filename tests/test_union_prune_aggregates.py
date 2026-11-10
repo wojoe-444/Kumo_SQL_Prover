@@ -13,8 +13,8 @@ import pytest
 pytest.importorskip("z3")
 duckdb = pytest.importorskip("duckdb")
 
-from kumosql.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
-from kumosql.duckdb_load import run_unoptimized  # noqa: E402
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic  # noqa: E402
+from kumo_sql_prover.duckdb_load import run_unoptimized  # noqa: E402
 
 SCHEMA = {"t": ["id", "x", "y"]}
 

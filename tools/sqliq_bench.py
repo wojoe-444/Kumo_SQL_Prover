@@ -98,8 +98,8 @@ def load_pairs(data_dir: Path) -> list[Pair]:
 def prove(pair: Pair) -> str:
     """"proved", "refuted" or "unknown"."""
 
-    from kumosql.algebraic_equivalence import prove_equivalent_algebraic
-    from kumosql.smt_equivalence import SmtStatus, TableConstraints
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.smt_equivalence import SmtStatus, TableConstraints
 
     schema = {t: list(cols) for t, cols in pair.tables.items()}
     constraints = {t: TableConstraints(not_null=frozenset(k), keys=(k,)) for t, k in pair.keys.items()}
@@ -278,8 +278,8 @@ _BQ_TYPES = {"text": "STRING", "num": "INT64"}
 def targeted(pair: Pair):
     """A database from the targeted suite on which the queries differ, else None (SQLite semantics)."""
 
-    from kumosql.refute import find_targeted_difference
-    from kumosql.result_equivalence import DataRules
+    from kumo_sql_prover.refute import find_targeted_difference
+    from kumo_sql_prover.result_equivalence import DataRules
 
     schema = {}
     for table, columns in pair.tables.items():
@@ -304,7 +304,7 @@ BOUNDED_ROWS = 3
 def bounded_refutes(pair: Pair) -> bool:
     """A database of at most 3 rows per table found by the z3 bounded check, on which SQLite returns different bags."""
 
-    from kumosql import bounded_equivalence as be
+    from kumo_sql_prover import bounded_equivalence as be
 
     tables = {}
     for table, columns in pair.tables.items():

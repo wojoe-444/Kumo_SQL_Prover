@@ -1,6 +1,6 @@
 """Regroup outputs that combine several aggregates (``SUM(a) / SUM(b)``).
 
-The regrouping rules in :mod:`kumosql.algebraic_equivalence` (``_collapse_aggregate``,
+The regrouping rules in :mod:`kumo_sql_prover.algebraic_equivalence` (``_collapse_aggregate``,
 ``_roll_up_aggregate``, ``_regroup_distinct``) fold an aggregate over an already
 grouped derived table back into one grouped query, but only when every output is a
 single aggregate or a key. A ratio such as ``SUM(total) / SUM(n_amount)`` over a

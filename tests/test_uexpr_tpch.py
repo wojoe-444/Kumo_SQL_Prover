@@ -9,8 +9,8 @@ import pytest
 
 pytest.importorskip("z3")
 
-from kumosql.smt_equivalence import TableConstraints  # noqa: E402
-from kumosql.uexpr import prove_bag_equivalent  # noqa: E402
+from kumo_sql_prover.smt_equivalence import TableConstraints  # noqa: E402
+from kumo_sql_prover.uexpr import prove_bag_equivalent  # noqa: E402
 
 SCHEMA = {"t": ["id", "d", "x"], "u": ["id", "x"]}
 CONSTRAINTS = {"t": TableConstraints(keys=(("id",),)), "u": TableConstraints(keys=(("id",),))}
@@ -151,6 +151,8 @@ def test_comparison_is_null_means_an_operand_is_null():
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import uexpr_bench  # noqa: E402
 import sqlsolver_bench as bench  # noqa: E402
+
+pytestmark = pytest.mark.eval
 
 TPCH_PROVED = [3, 4, 14, 16, 17, 1, 15]  # INTERVAL, SEMI/ANTI, OR-factoring, key-elimination order and widening casts
 
