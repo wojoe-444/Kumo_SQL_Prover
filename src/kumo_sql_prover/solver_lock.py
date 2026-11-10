@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import gc
 import threading
+import time
 
 try:
     import z3
@@ -25,26 +26,64 @@ SOLVER_LOCK = threading.RLock()
 Z3_MISSING = "z3-solver is not installed (pip install z3-solver)"
 
 
+# While a serialized call runs, automatic collection is paused in every thread (see ``serialized``). Python frees a
+# syntax tree only by collection (a node and its parent refer to each other), so everything a long call discards
+# would stay until the call returns: a 30 s normalization that needs 150 MB held 3 GB. The thread that holds the
+# lock may collect, since no other thread is inside Z3 then, and long loops ask it to with ``sweep``.
+SWEEP_AFTER = 100_000  # container objects made since the last collection
+_FULL_SHARE = 10  # a full collection runs once this many times its own duration has passed since the last one
+_paused_by: int | None = None  # the thread whose outermost serialized call paused the collector
+_full_ended = 0.0
+_full_took = 0.0
+
+
+def sweep() -> bool:
+    """Free what the running proof has discarded, when enough has piled up. Call it from long loops.
+
+    It does nothing unless this thread is inside a ``serialized`` call that paused the collector, and nothing
+    until ``SWEEP_AFTER`` objects were made since the last collection, so a call costs a comparison. Objects made
+    since the last sweep are collected each time; older ones only when a full collection is due, which keeps
+    the cost of full collections under about a tenth of the running time however much the process holds.
+    """
+
+    global _full_ended, _full_took
+    if _paused_by != threading.get_ident() or gc.get_count()[0] < SWEEP_AFTER:
+        return False
+    now = time.monotonic()
+    if now - _full_ended >= _FULL_SHARE * _full_took:
+        gc.collect()
+        _full_ended = time.monotonic()
+        _full_took = _full_ended - now
+    else:
+        gc.collect(1)
+    return True
+
+
 def serialized(function):
     """Run ``function`` while holding :data:`SOLVER_LOCK`."""
 
     @functools.wraps(function)
     def locked(*args, **kwargs):
+        global _paused_by
         with SOLVER_LOCK:
             # Cyclic Z3 terms from a completed proof can otherwise be collected
             # by a different Python thread while this thread uses the context.
             restore_gc = gc.isenabled()
             if restore_gc:
                 gc.disable()
+                _paused_by = threading.get_ident()
             try:
                 return function(*args, **kwargs)
             finally:
                 if restore_gc:
+                    _paused_by = None
                     try:
                         if gc.get_count()[0] >= gc.get_threshold()[0]:
                             gc.collect()
                     finally:
                         gc.enable()
+                else:
+                    sweep()  # the end of a nested call is a point where this thread may collect
 
     return locked
 
@@ -63,6 +102,7 @@ def bounded_solver(timeout_ms: int):
     Z3 reports ``reason_unknown()`` ``"canceled"`` for the cap and ``"timeout"`` for the wall clock.
     """
 
+    sweep()  # a proof makes one solver per question, so this is a point every long proof passes often
     return bound(z3.Solver(), timeout_ms)
 
 
