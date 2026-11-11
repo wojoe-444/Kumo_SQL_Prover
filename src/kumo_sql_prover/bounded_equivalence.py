@@ -613,7 +613,7 @@ class Group:
     cache: dict = field(default_factory=dict)
 
 
-AGGREGATES = (exp.Count, exp.Sum, exp.Min, exp.Max, exp.Avg)
+AGGREGATES = (exp.Count, exp.Sum, exp.Min, exp.Max, exp.Avg, exp.LogicalAnd, exp.LogicalOr)
 
 
 class SymbolicDatabase:
@@ -2070,7 +2070,7 @@ class Compiler:
     def _e_Count(self, node, scope):
         return self._aggregate(node, scope)
 
-    _e_Sum = _e_Min = _e_Max = _e_Avg = _e_Count
+    _e_Sum = _e_Min = _e_Max = _e_Avg = _e_LogicalAnd = _e_LogicalOr = _e_Count
 
     def _aggregate(self, node, scope: Scope) -> V:
         group = scope.group
@@ -2113,6 +2113,12 @@ class Compiler:
         counted = z3.Sum(*[z3.If(p, 1, 0) for p in present]) if present else z3.IntVal(0)
         if isinstance(node, exp.Count):
             return V("int", counted, _false())
+        if isinstance(node, (exp.LogicalAnd, exp.LogicalOr)):  # BOOL_AND / BOOL_OR: NULLs are skipped, NULL when nothing is left
+            if distinct or {v.kind for v in values} - {"null", "bool"}:
+                raise Unsupported("BOOL_AND or BOOL_OR of a non-boolean")
+            held = [z3.And(p, v.val) if isinstance(node, exp.LogicalOr) else z3.And(p, z3.Not(v.val)) for p, v in zip(present, values) if v.kind == "bool"]
+            found = z3.Or(*held) if held else _false()
+            return V("bool", found if isinstance(node, exp.LogicalOr) else z3.Not(found), z3.Not(z3.Or(*present)) if present else _true())
         if isinstance(node, (exp.Sum, exp.Avg)):
             values = [to_kind(v, "int") if v.kind == "bool" else v for v in values]
         kinds = {v.kind for v in values} - {"null"}
@@ -2169,12 +2175,17 @@ def _single_value(node: exp.Expression) -> bool:
 
 
 def _is_condition(node: exp.Expression) -> bool:
-    """Is ``node`` used only for its truth value: a WHERE, HAVING, ON or CASE condition, possibly under AND, OR, NOT."""
+    """Is ``node`` used only for its truth value, on single rows: a WHERE or ON condition (or a CASE condition inside
+    one), possibly under AND, OR, NOT. The select list, HAVING and ORDER BY are left out: an unknown name there may be
+    an aggregate, which is not a predicate on a row."""
 
+    clause = node.find_ancestor(exp.Where, exp.Join, exp.Having, exp.Qualify, exp.Order, exp.Group, exp.Select)
+    if not isinstance(clause, (exp.Where, exp.Join)):
+        return False
     child, parent = node, node.parent
     while isinstance(parent, (exp.Paren, exp.And, exp.Or, exp.Not)):
         child, parent = parent, parent.parent
-    if isinstance(parent, (exp.Where, exp.Having, exp.Qualify)):
+    if isinstance(parent, exp.Where):
         return True
     if isinstance(parent, exp.Join):
         return parent.args.get("on") is child

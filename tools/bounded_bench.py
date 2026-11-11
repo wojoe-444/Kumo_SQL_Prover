@@ -212,6 +212,8 @@ def differential_case(case: dict, trials: int = 12) -> Counter:
             except Exception as error:
                 status = f"error: {type(error).__name__}"
                 break
+            if '"$empty"' in duck and all(len(row) == 0 for row in mine):
+                theirs = [() for _ in theirs]  # ``SELECT FROM t`` runs with one constant column: only the row count is comparable
             if cx._bag(mine) != cx._bag(theirs):
                 # an ungrouped column or a LIMIT tie has an arbitrary answer: only a stable result counts
                 if _stable(searcher, spec, data, duck):

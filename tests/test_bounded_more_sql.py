@@ -132,7 +132,10 @@ def test_is_binds_after_a_comparison():
 
 def test_an_unknown_function_is_a_predicate_only_where_a_condition_is_expected():
     same("select a from t where p(a) and not p(a)", "select a from t where false")
-    same("select case when p(a) then 1 else 0 end from t", "select if(p(a), 1, 0) from t")
+    same("select a from t where case when p(a) then b > 1 else b < 1 end", "select a from t where (p(a) and b > 1) or (not p(a) and b < 1)")
+    # in a select list or HAVING the name may be an aggregate, which is not a predicate on a row
+    unsupported("select case when p(a) then 1 else 0 end from t", "select if(p(a), 1, 0) from t", "function P")
+    unsupported("select a from t group by a having p(a)", "select a from t group by a having p(a)", "function P")
     same("select t.a from t join u on p(t.a, u.a)", "select t.a from t, u where p(t.a, u.a)")
     # ``YEARWEEK(a) = 201901`` used to compare a truth value with a number, which is never true
     unsupported("select a from t where yearweek(a) = 201901", "select a from t where false", "function YEARWEEK")
@@ -366,3 +369,20 @@ def test_a_table_alias_can_rename_columns():
     different("select x from t as r (y, x)", "select a from t", rows=1)
     unsupported("select a from t as r (x, y)", "select a from t", "unknown column")
     unsupported("select x from t as r (x, y, z)", "select a from t", "column aliases")
+
+
+def test_bool_and_and_bool_or_skip_nulls_and_are_null_over_nothing():
+    same("select a, bool_and(b > 1) from t group by a", "select a, not bool_or(not b > 1) from t group by a")
+    same("select a, bool_or(b > 1) from t group by a", "select a, max(case when b > 1 then 1 when b <= 1 then 0 end) = 1 from t group by a")
+    same("select a from t group by a having bool_and(b > 1)", "select a from t group by a having min(b) > 1")
+    # a NULL condition is skipped, so one true row and one NULL row give TRUE, not NULL
+    different("select bool_and(b > 1) from t", "select count(*) = count(case when b > 1 then 1 end) from t", rows=1)
+    different("select a, bool_and(b > 1) from t group by a", "select a, bool_or(b > 1) from t group by a")
+    different("select coalesce(bool_or(b > 1), false) from t", "select bool_or(b > 1) from t", rows=1)  # the empty table
+    unsupported("select bool_and(b) from t", "select bool_and(b) from t", "BOOL_AND")
+    for sql in (
+        "select a, bool_and(b > 1), bool_or(b > 1), bool_and(b is null) from t group by a",
+        "select bool_and(b > 1), bool_or(a = b) from t",
+        "select a, bool_and(b > 1) over (partition by a), bool_or(b > 0) filter (where a > 1) over () from t",
+    ):
+        assert agrees_with_replay(sql)
