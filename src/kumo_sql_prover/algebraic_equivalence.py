@@ -4864,7 +4864,12 @@ def normalize(
     ``shape_fallback.disabled()``, which the prover uses for a second attempt at a pair they do not prove.
     """
 
-    tree = expand_alias_columns(name_listed_outputs(check_modeled(canonical_negation(strip_positions(sqlglot.parse_one(sql, read=dialect))))), schema)
+    tree = strip_positions(sqlglot.parse_one(sql, read=dialect))
+    if shape_fallback.enabled():
+        from .quoted_names import unquote_plain_names
+
+        tree = unquote_plain_names(tree, dialect)  # pre-pass: "t"."id" is t.id where the quotes change nothing
+    tree = expand_alias_columns(name_listed_outputs(check_modeled(canonical_negation(tree))), schema)
     if group_by_constants:
         tree = _drop_constant_groupings(tree)
     tree = _resolve_ordinals(tree, group_by=not group_by_constants)
