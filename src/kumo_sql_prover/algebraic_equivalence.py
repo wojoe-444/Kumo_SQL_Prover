@@ -116,6 +116,7 @@ from .semijoin_shapes import rewrite_semijoin_shapes
 from .grouped_self_membership import read_grouped_self_membership
 from .disjoint_union import separate_disjoint_unions
 from .keyed_only_grouping import key_only_group_to_distinct
+from .one_row_groups import collapse_one_row_groups
 from .one_row_tails import drop_one_row_tail
 from .plain_grouping_calls import fold_plain_grouping_calls
 from .string_spelling_rules import string_spelling_rules
@@ -4955,6 +4956,7 @@ def normalize(
         push_filter_into_wrapped_join,
         drop_one_row_tail,
         lambda sel: spell_windowed_input(sel, types_map),
+        collapse_one_row_groups,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
