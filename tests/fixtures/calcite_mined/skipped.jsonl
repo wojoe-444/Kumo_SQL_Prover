@@ -49,11 +49,8 @@
 {"name":"testExistsDecorrelationProducesSingleValues","source":"RelOptRulesTest","reason":"join type left_mark","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testExpandFilterNestedExistsCorrelatingTwoLevels","source":"RelOptRulesTest","reason":"table CATALOG.SALES.EMP_ADDRESS outside the modelled catalogs","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testExpandFilterNestedExistsWithTwoSiblingInnerExists","source":"RelOptRulesTest","reason":"table CATALOG.SALES.EMP_ADDRESS outside the modelled catalogs","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testExpandFilterScalar","source":"RelOptRulesTest","reason":"unsupported aggregate SINGLE_VALUE","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testExpandJoinIn","source":"RelOptRulesTest","reason":"input ref out of range (plan refers past its input row)","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testExpandJoinInComposite","source":"RelOptRulesTest","reason":"input ref out of range (plan refers past its input row)","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testExpandJoinScalar","source":"RelOptRulesTest","reason":"unsupported aggregate SINGLE_VALUE","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testExpandProjectScalar","source":"RelOptRulesTest","reason":"unsupported aggregate SINGLE_VALUE","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testExpressionInWindowFunction","source":"RelOptRulesTest","reason":"window function","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testFilterAndProjectWithMultiJoin","source":"RelOptRulesTest","reason":"unsupported relational operator MyProject","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testFilterReduceCrash","source":"RelOptRulesTest","reason":"CAST from DOUBLE to INTEGER","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
@@ -146,7 +143,6 @@
 {"name":"testPullConstantThroughAggregatePermutedInVolcano","source":"RelOptRulesTest","reason":"unsupported relational operator EnumerableProject","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testPullConstantThroughUnionInVolcano","source":"RelOptRulesTest","reason":"unsupported relational operator EnumerableProject","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testPushAggregateThroughJoin7","source":"RelOptRulesTest","reason":"unsupported aggregate ANY_VALUE","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testPushAggregateThroughJoin8","source":"RelOptRulesTest","reason":"unsupported aggregate SINGLE_VALUE","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testPushBoolAndBoolOrThroughUnion","source":"RelOptRulesTest","reason":"unsupported aggregate BOOL_AND","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testPushFilterPastAggFour","source":"RelOptRulesTest","reason":"CAST from CHAR to INTEGER","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testPushFilterPastWindowWithDoubleWindows","source":"RelOptRulesTest","reason":"unsupported relational operator LogicalWindow","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}

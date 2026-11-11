@@ -4,9 +4,6 @@
 {"name": "testCastInAggregateReduceFunctions", "reason": "integer-typed STDDEV/VAR aggregate (Calcite integer arithmetic not modelled)"}
 {"name": "testEmptyTable", "reason": "table is empty only by test-harness convention (not expressible in the schema)"}
 {"name": "testEmptyTableTransformsComplexQueryToSingleTableScan", "reason": "table is empty only by test-harness convention (not expressible in the schema)"}
-{"name": "testExpandFilterScalar", "reason": "unsupported aggregate SINGLE_VALUE"}
-{"name": "testExpandJoinScalar", "reason": "unsupported aggregate SINGLE_VALUE"}
-{"name": "testExpandProjectScalar", "reason": "unsupported aggregate SINGLE_VALUE"}
 {"name": "testJoinConditionPushdown4", "reason": "implicit cross-type comparison"}
 {"name": "testJoinProjectTransposeWindow", "reason": "window function"}
 {"name": "testProjectCorrelateTransposeRuleAntiCorrelate", "reason": "projection with no columns"}
@@ -15,7 +12,6 @@
 {"name": "testProjectJoinTransposeItem", "reason": "column type ANY"}
 {"name": "testProjectSetOpTranspose", "reason": "window function"}
 {"name": "testPushAggregateThroughJoin7", "reason": "nondeterministic aggregate ANY_VALUE"}
-{"name": "testPushAggregateThroughJoin8", "reason": "unsupported aggregate SINGLE_VALUE"}
 {"name": "testPushProjectWithOverPastJoin1", "reason": "window function"}
 {"name": "testPushProjectWithOverPastJoin2", "reason": "window function"}
 {"name": "testPushProjectWithOverPastJoin3", "reason": "window function"}

@@ -93,7 +93,13 @@ catalogs (GEO, STRUCT, nested, custom) 17, `CURRENT_TIMESTAMP`/`RAND`/`USER` 10.
 * `SEARCH(x, Sarg[...])` expands to comparisons, including `NULL AS TRUE/FALSE`.
   Aggregate `FILTER $f` becomes `agg(CASE WHEN f THEN x END)` (`COUNT()` -> `COUNT(CASE
   WHEN f THEN 1 END)`), `$SUM0` is `COALESCE(SUM(x), 0)`, `LITERAL_AGG(lit)` with group keys
-  is the literal.
+  is the literal. `SINGLE_VALUE($i)` as the only call of an aggregate with no keys is
+  `SELECT (SELECT ci FROM input)`: NULL over no rows, the value over one row, an error
+  over more, which is what a scalar subquery is. On DuckDB such a pair is compared on the
+  random databases where both queries run (a database on which a scalar subquery meets
+  several rows is an error in Calcite too and is skipped, like one where a CAST overflows).
+  `testPushAggregateThroughJoin8` is equal only in that sense: its two sides raise the
+  error on different databases, so it is not expected to prove.
 * `ORDER BY` keys carry an explicit null-ordering key, `(x IS NULL)` / `(x IS NULL) DESC`,
   because MySQL has no `NULLS FIRST/LAST`; Calcite's default is ASC NULLS LAST, DESC
   NULLS FIRST. `OFFSET` without a fetch is `LIMIT 9223372036854775807 OFFSET n`.

@@ -1,15 +1,14 @@
 {
  "source_commit": "31f4b6c271440942ecaca1e1111d4beeabf1f14c",
  "files": 444,
- "converted": 399,
- "converted_from_plan_text": 24,
- "skipped": 45,
+ "converted": 403,
+ "converted_from_plan_text": 28,
+ "skipped": 41,
  "skip_reasons": {
   "aggregate FILTER clause (not represented in QED's IR)": 8,
   "unsupported operator ST_POINT": 7,
   "window function": 5,
   "integer-typed STDDEV/VAR aggregate (Calcite integer arithmetic not modelled)": 4,
-  "unsupported aggregate SINGLE_VALUE": 4,
   "projection with no columns": 3,
   "table is empty only by test-harness convention (not expressible in the schema)": 2,
   "nondeterministic aggregate ANY_VALUE": 2,

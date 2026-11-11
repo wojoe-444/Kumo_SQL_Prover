@@ -10,14 +10,14 @@
   "core/src/test/resources/org/apache/calcite/test/OuterJoinToAntiJoinRuleTest.xml"
  ],
  "tests": 1016,
- "translated": 560,
+ "translated": 564,
  "unchanged": 182,
  "unchanged_identical_sql": 3,
- "skipped": 274,
+ "skipped": 270,
  "translated_coverage": {
   "new": 176,
-  "in_sqlsolver": 189,
-  "in_qed": 382,
+  "in_sqlsolver": 192,
+  "in_qed": 386,
   "in_rbot": 36
  },
  "unchanged_coverage": {
@@ -28,8 +28,8 @@
  },
  "skipped_coverage": {
   "new": 210,
-  "in_sqlsolver": 10,
-  "in_qed": 60,
+  "in_sqlsolver": 7,
+  "in_qed": 56,
   "in_rbot": 9
  },
  "skip_reasons": {
@@ -45,7 +45,6 @@
   "non-deterministic function CURRENT_TIMESTAMP": 7,
   "unsupported relational operator Uncollect": 7,
   "table CATALOG.GEO.RESTAURANTS outside the modelled catalogs": 7,
-  "unsupported aggregate SINGLE_VALUE": 6,
   "dynamic-star table (schema unknown)": 6,
   "join type left_mark": 6,
   "unsupported aggregate ANY_VALUE": 6,
@@ -66,6 +65,7 @@
   "unsupported aggregate STDDEV_SAMP": 3,
   "CAST from VARCHAR to INTEGER": 2,
   "LITERAL_AGG without group keys": 2,
+  "unsupported aggregate SINGLE_VALUE": 2,
   "nonstandard test resources": 2,
   "custom type system": 2,
   "VALUES column of untyped NULLs": 2,
@@ -114,9 +114,9 @@
  "duckdb_validation": {
   "databases_per_pair": 8,
   "seed": 1,
-  "agree": 558,
+  "agree": 561,
   "differs": 1,
-  "duckdb_unsupported": 1,
+  "duckdb_unsupported": 2,
   "errors": 0,
   "differing": [
    "testFullJoinToLeftAndRightJoin"

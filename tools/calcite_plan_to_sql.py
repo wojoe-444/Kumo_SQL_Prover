@@ -1258,6 +1258,13 @@ class Converter:
                 raise Skip("duplicate grouping sets")
             if src.empty:
                 raise Skip("grouping sets over an empty LogicalValues")
+        if not keys and sets is None and len(aggs) == 1 and not src.empty:
+            single = re.fullmatch(r"SINGLE_VALUE\(\$(\d+)\)", aggs[0][1].strip())
+            if single and int(single.group(1)) < len(cols):
+                # with no keys SINGLE_VALUE is NULL over no rows, the value over one row and an error over
+                # more: what a scalar subquery is, so the one-row relation is a select of that subquery
+                i = int(single.group(1))
+                return Rel(f"SELECT (SELECT {cols[i]} FROM ({src.sql}) AS {a}) AS c0", [ctypes[i]], [aggs[0][0]])
         exprs = [cols[i] for i in keys]
         types = [ctypes[i] for i in keys]
         names = [src.names[i] if src.names else None for i in keys]

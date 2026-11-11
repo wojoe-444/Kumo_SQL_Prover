@@ -108,6 +108,7 @@ from .boolean_identities import fold_boolean_identities
 from . import shape_fallback
 from . import union_source_names
 from .union_rollup import roll_up_grouped_union
+from .one_row_joins import cross_join_one_row
 from .expansion_layers import collapse_layered_expansion
 from .closed_sources import closed_derived_source, inner_join_conditions, plain_inner_join
 from .listed_output_names import name_listed_outputs
@@ -4956,6 +4957,7 @@ def normalize(
         push_filter_into_wrapped_join,
         drop_one_row_tail,
         roll_up_grouped_union,
+        cross_join_one_row,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:

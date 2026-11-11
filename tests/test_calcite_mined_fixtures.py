@@ -159,6 +159,22 @@ LogicalJoin(condition=[=($7, $8)], joinType=[semi])
         conv.Converter().top(conv.parse_plan(plan))
 
 
+def test_converter_writes_keyless_single_value_as_a_scalar_subquery():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import calcite_plan_to_sql as conv
+
+    plan = """
+LogicalAggregate(group=[{}], agg#0=[SINGLE_VALUE($0)])
+  LogicalProject(DEPTNO=[$0])
+    LogicalTableScan(table=[[CATALOG, SALES, DEPT]])
+"""
+    rel = conv.Converter().top(conv.parse_plan(plan))
+    assert rel.sql.startswith("SELECT (SELECT ") and "SINGLE_VALUE" not in rel.sql and len(rel.types) == 1
+    for other in ("group=[{0}], agg#0=[SINGLE_VALUE($0)]", "group=[{}], agg#0=[SINGLE_VALUE($0)], agg#1=[COUNT()]"):
+        with pytest.raises(conv.Skip):  # per group, or beside another aggregate, it is not one scalar subquery
+            conv.Converter().top(conv.parse_plan(plan.replace("group=[{}], agg#0=[SINGLE_VALUE($0)]", other)))
+
+
 def test_duckdb_runs_a_sample():
     duckdb = pytest.importorskip("duckdb")
     for case in CASES[:25]:
