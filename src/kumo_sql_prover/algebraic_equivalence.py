@@ -131,6 +131,9 @@ from .existence_joins import read_existence_joins, read_existence_joins_everywhe
 from .grouped_conditional_counts import grouped_conditional_counts
 from .integer_expression_bounds import integer_expression_bounds
 from .extreme_group_sources import read_extreme_group_source
+from .pinned_source_columns import read_pinned_source_columns
+from .refuted_case_arms import drop_refuted_case_arm
+from .single_value_joins import read_single_value_join
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
 from .wrapped_join_filters import push_filter_into_wrapped_join
@@ -4998,6 +5001,9 @@ def normalize(
         lambda sel: read_existence_joins(sel, schema),
         lambda sel: integer_expression_bounds(sel, types_map, dialect),
         grouped_conditional_counts,
+        lambda sel: read_pinned_source_columns(sel, types_map),
+        drop_refuted_case_arm,
+        lambda sel: read_single_value_join(sel, dialect),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
