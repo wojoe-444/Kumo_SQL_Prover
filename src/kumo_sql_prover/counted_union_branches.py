@@ -193,11 +193,19 @@ def _counted_positions(branch: exp.Select, known, declared_keys, declared) -> se
     if any(node is not branch for node in branch.find_all(exp.Select, exp.Subquery, exp.Exists, exp.Window)):
         return None
     base: dict[str, str] = {}
+    listed: set[str] = set()
     for source in select_sources(branch):
         if _base_table(source, known) is None or not source.alias_or_name or source.alias_or_name.lower() in base:
             return None
         base[source.alias_or_name.lower()] = _table_key(source)
-    if any(key.find(exp.AggFunc) is not None or not _row_value(key) for key in group.expressions):
+        listed |= set(_base_table(source, known))
+    # MySQL reads a GROUP BY name that no source has as the output of that name
+    named = {item.alias.lower(): item.this for item in branch.expressions if isinstance(item, exp.Alias)}
+    group_keys = [
+        named[key.name.lower()] if isinstance(key, exp.Column) and not key.table and key.name.lower() not in listed and key.name.lower() in named else key
+        for key in group.expressions
+    ]
+    if any(key.find(exp.AggFunc) is not None or not _row_value(key) for key in group_keys):
         return None
     positions = set()
     for position, item in enumerate(branch.expressions):
@@ -212,7 +220,7 @@ def _counted_positions(branch: exp.Select, known, declared_keys, declared) -> se
             if any(v for k, v in value.args.items() if k != "this") or not _row_value(value.this) or not _integer_value(value.this):
                 return None
             positions.add(position)
-        elif value.find(exp.AggFunc) is not None or not _row_value(value) or not _fixed([value], list(group.expressions), declared_keys, declared, base, set()):
+        elif value.find(exp.AggFunc) is not None or not _row_value(value) or not _fixed([value], group_keys, declared_keys, declared, base, set()):
             return None
     if branch.args.get("where") is not None and branch.args["where"].find(exp.AggFunc) is not None:
         return None
