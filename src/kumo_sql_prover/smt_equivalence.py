@@ -4892,32 +4892,63 @@ def _unify_opaque(compiler: "_Compiler", unions, **settings) -> None:
     if len(bodies) < 2 or _nesting[0] >= 2:
         return
 
-    def tables(sql: str) -> frozenset:
+    def shape(sql: str) -> tuple[frozenset, tuple]:
+        """The tables a body reads and the literals it holds, both without CTE names or layout."""
+
         tree = sqlglot.parse_one(sql, read="bigquery")
         ctes = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
-        return frozenset(t.name.lower() for t in tree.find_all(exp.Table)) - ctes
+        names = frozenset(t.name.lower() for t in tree.find_all(exp.Table)) - ctes
+        return names, tuple(sorted(node.sql(dialect="bigquery") for node in tree.find_all(exp.Literal)))
 
+    shapes = {key: shape(sql) for key, (sql, _, _) in bodies.items()}
     representatives: list[str] = []
     mapping: dict[str, str] = {}
     budget = _OPAQUE_PROOFS
-    for key, (sql, arity, own) in bodies.items():
-        for rep in representatives:
-            rep_sql, rep_arity, rep_own = bodies[rep]
-            if rep_arity != arity or budget <= 0 or tables(rep_sql) != tables(sql):
-                continue
-            budget -= 1
-            _nesting[0] += 1
-            try:
-                # The LIMIT-aware entry point: a body may end in ORDER BY .. LIMIT on both sides. The bodies are read
-                # in the dialect of the proof they belong to (``_own_dialect_text``), never as BigQuery by default.
-                result = prove_equivalent_smt(rep_own, own, compare_names=False, dialect=compiler.dialect, **settings)
-            finally:
-                _nesting[0] -= 1
-            if result.status is SmtStatus.PROVEN_EQUIVALENT:
+
+    def equal(rep: str, key: str) -> bool:
+        nonlocal budget
+        rep_sql, _, rep_own = bodies[rep]
+        _, _, own = bodies[key]
+        _nesting[0] += 1
+        try:
+            # The LIMIT-aware entry point: a body may end in ORDER BY .. LIMIT on both sides. The bodies are read
+            # in the dialect of the proof they belong to (``_own_dialect_text``), never as BigQuery by default.
+            result = prove_equivalent_smt(rep_own, own, compare_names=False, dialect=compiler.dialect, **settings)
+        finally:
+            _nesting[0] -= 1
+        if result.status is SmtStatus.PROVEN_EQUIVALENT:
+            return True
+        budget -= 1  # a failed proof is what costs time: a proof that succeeds is bounded by the number of bodies
+        return False
+
+    def candidates(key: str, same_literals: bool) -> list[str]:
+        return [
+            rep
+            for rep in representatives
+            if bodies[rep][1] == bodies[key][1] and shapes[rep][0] == shapes[key][0] and (shapes[rep][1] == shapes[key][1]) == same_literals
+        ]
+
+    # Two bodies that read the same tables and hold the same literals are the likely pair (another spelling of one
+    # relation); bodies with other literals are different relations far more often than not, and a decorrelated query
+    # has a dozen of them (one filter per quarter), so they would use up the budget before the likely pairs are tried.
+    for key in bodies:
+        for rep in candidates(key, True):
+            if budget > 0 and equal(rep, key):
                 mapping[key] = rep
                 break
         else:
             representatives.append(key)
+    kept: list[str] = []
+    for key in representatives:
+        for rep in kept:
+            if budget > 0 and bodies[rep][1] == bodies[key][1] and shapes[rep][0] == shapes[key][0] and equal(rep, key):
+                mapping[key] = rep
+                break
+        else:
+            kept.append(key)
+    for key in mapping:  # a representative that was folded into an earlier one takes the others along
+        while mapping[key] in mapping:
+            mapping[key] = mapping[mapping[key]]
     if mapping:
         for occ in _all_occs(unions):
             if occ.opaque and occ.table in mapping:
