@@ -142,7 +142,7 @@ def test_non_integer_column_is_not_substituted():
     text_types = {**TYPES, "emp": {**TYPES["emp"], "deptno": "VARCHAR"}}
     as_text = normalize(sql, schema=SCHEMA, dialect="mysql", types=text_types)
     as_int = normalize(sql, schema=SCHEMA, dialect="mysql", types=TYPES)
-    assert "k.deptno = e.deptno" in as_text
+    assert "e.deptno = k.deptno" in as_text  # still the column (an equality of two columns is printed in name order)
     assert "k.deptno = 2" in as_int
 
 
