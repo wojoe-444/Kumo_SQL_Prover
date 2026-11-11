@@ -115,6 +115,8 @@ The prover's reasons for the development cases still open were read and three ru
 | error cases classified | 19/21 | 19/21 |
 | wrong | 0 | 0 |
 
+Rerun twice on the merge of `main` (`8ae945f`) with nothing else running, the differing count was 12/26 both times (the 11 above plus one NUMERIC product pair, the kind that can hit the solver's time limit on a loaded machine); the recorded 11 is the lower figure and stays the floor.
+
 Held out (28 cases): 11/15 equivalent proved, 3/7 differing refuted (1 by the executed search, 0 proved, 1 assumed), 5/6 error cases classified, 0 wrong; before, 2/7 refuted. The held-out cases were looked at by verdict only. The development cases are tuned on test.
 
 ## What stays unknown
