@@ -142,3 +142,36 @@ def test_counts_give_the_same_rows(sql):
     for rows in [{}, ROWS] + [random_rows(rng) for _ in range(14)]:
         assert not differ_on_duckdb(sql, out, rows)
         assert not differ_on_duckdb(sql, normalized, rows)
+
+
+def inner_counted(sql):
+    """The rule applied to the innermost grouped select of ``sql``."""
+
+    tree = sqlglot.parse_one(sql, read="postgres")
+    inner = max((s for s in tree.find_all(sqlglot.exp.Select) if s.args.get("group")), key=lambda s: s.depth)
+    out = count_conditional_sums(inner)
+    return out.sql(dialect="postgres") if out is not None else None
+
+
+def test_a_sum_that_may_belong_to_an_enclosing_query_is_left_alone():
+    # every column of the sum is the enclosing query's: the sum is that query's aggregate, NULL over no rows of t
+    assert inner_counted("SELECT (SELECT SUM(CASE WHEN t.b > 1 THEN 1 ELSE 0 END) FROM u GROUP BY u.a) FROM t") is None
+    assert inner_counted("SELECT a FROM t GROUP BY a HAVING EXISTS (SELECT SUM(CASE WHEN t.b > 1 THEN 1 ELSE 0 END) FROM u GROUP BY u.a)") is None
+    # a bare name inside a subquery expression could be the enclosing query's column
+    assert inner_counted("SELECT (SELECT SUM(CASE WHEN b > 1 THEN 1 ELSE 0 END) FROM u GROUP BY u.a) FROM t") is None
+    assert inner_counted("SELECT t.a FROM t WHERE t.c IN (SELECT SUM(CASE WHEN t.b > 1 THEN 1 ELSE 0 END) FROM u AS t2 GROUP BY t2.a)") is None
+    # a column of the select's own source makes it this select's aggregate, whatever else it reads
+    assert (
+        inner_counted("SELECT (SELECT SUM(CASE WHEN u.b > t.b THEN 1 ELSE 0 END) FROM u GROUP BY u.a) FROM t")
+        == "SELECT COUNT(CASE WHEN u.b > t.b THEN 1 END) FROM u GROUP BY u.a"
+    )
+    # no column at all: the innermost query's aggregate
+    assert inner_counted("SELECT (SELECT SUM(1) FROM u GROUP BY u.a) FROM t") == "SELECT COUNT(*) FROM u GROUP BY u.a"
+    # a derived table sees no enclosing row, bare names included; so does a branch of a set operation
+    assert (
+        inner_counted("SELECT d.n FROM (SELECT a, SUM(CASE WHEN b > 1 THEN 1 ELSE 0 END) AS n FROM u GROUP BY a) AS d")
+        == "SELECT a, COUNT(CASE WHEN b > 1 THEN 1 END) AS n FROM u GROUP BY a"
+    )
+    assert inner_counted("SELECT a, 0 FROM t UNION ALL SELECT a, SUM(CASE WHEN b > 1 THEN 1 ELSE 0 END) FROM u GROUP BY a") is not None
+    # the COALESCE spelling is the count over any bag of rows, so it is read wherever it stands
+    assert inner_counted("SELECT (SELECT COALESCE(SUM(CASE WHEN t.b > 1 THEN 1 ELSE 0 END), 0) FROM u GROUP BY u.a) FROM t") is not None
