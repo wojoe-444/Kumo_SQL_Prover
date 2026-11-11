@@ -4908,6 +4908,10 @@ def normalize(
     tree = grouping_sets_to_union(isolate_tailed_grouping_sets(tree) if shapes else tree)  # pre-pass: a row tail moves one level up first
     tree = _drop_group_in_membership_tests(tree)
     tree = _fold_dates(extract_to_ranges(tree))
+    if shapes:
+        from .timestamp_shifts import fold_timestamp_shifts
+
+        tree = fold_timestamp_shifts(tree, dialect)  # a constant timestamp +/- a constant interval is one timestamp
     tree = _fold_boolean_constants(_fold_constants(tree))
     tree = _fold_trivia(tree)
     tree = _fold_null_guards(tree, not_null)
