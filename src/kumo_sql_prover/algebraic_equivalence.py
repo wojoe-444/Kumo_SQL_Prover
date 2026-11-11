@@ -115,6 +115,7 @@ from .having_count_rules import rewrite_count_tests
 from .semijoin_shapes import rewrite_semijoin_shapes
 from .grouped_self_membership import read_grouped_self_membership
 from .disjoint_union import separate_disjoint_unions
+from .key_expression_having import key_expression_having_to_where
 from .keyed_only_grouping import key_only_group_to_distinct
 from .one_row_groups import collapse_one_row_groups
 from .one_row_tails import drop_one_row_tail
@@ -4957,6 +4958,7 @@ def normalize(
         drop_one_row_tail,
         lambda sel: spell_windowed_input(sel, types_map),
         collapse_one_row_groups,
+        key_expression_having_to_where,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
