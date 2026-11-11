@@ -30,7 +30,9 @@ Conditions, all checked:
   aggregates; no window, no nested aggregate, nothing volatile;
 * every read of it is a qualified column ``alias.output``, or a bare name that only it can own: every other source
   is a base table the schema lists or a derived table with named outputs and no star, and none has that name;
-* no read sits in ``GROUP BY``, and no other source or nested query uses the alias.
+* no read sits in ``GROUP BY``, and no other source or nested query uses the alias;
+* its outputs are not all plain ``COUNT`` calls: that is the guard table of Calcite's ``NOT IN`` expansion, which
+  ``expanded_not_in.drop_count_guards`` reads while it is still a table.
 """
 
 from __future__ import annotations
@@ -105,6 +107,8 @@ def read_one_row_source(select: exp.Select, schema: dict | None) -> exp.Expressi
         outputs = _one_row(source)
         if outputs is None:
             continue
+        if all(type(value) is exp.Count for value in outputs.values()):
+            continue  # a table of plain counts is Calcite's NOT IN guard: ``expanded_not_in`` reads it as a table
         alias = names[position]
         # the joins: plain everywhere, and the one-row table may also be LEFT JOINed ON TRUE
         ok = True

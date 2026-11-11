@@ -95,6 +95,7 @@ def test_the_one_row_table_becomes_scalar_subqueries():
     "SELECT h.x FROM h, (SELECT DISTINCT MAX(q) AS m FROM ps) AS t WHERE h.y < t.m",
     "SELECT h.x FROM h, (SELECT MAX(q) OVER () AS m FROM ps) AS t WHERE h.y < t.m",
     "SELECT h.x FROM h, (SELECT 1 AS m) AS t WHERE h.y < t.m",  # no aggregate: left to other rules
+    "SELECT h.x FROM h, (SELECT COUNT(*) AS c, COUNT(q) AS ck FROM ps) AS t WHERE t.c = 0 OR t.ck >= t.c",  # Calcite's NOT IN guard: another rule's
     "SELECT h.x FROM h, (SELECT MAX(q) AS m, 1 AS one FROM ps) AS t WHERE h.y < t.m",
     "SELECT h.x FROM h, (SELECT MAX(q) + RANDOM() AS m FROM ps) AS t WHERE h.y < t.m AND h.x < t.m",
     # joined in a way that can pad or drop
