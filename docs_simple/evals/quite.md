@@ -21,7 +21,7 @@ The flag comes from running both queries once, on one database. Two queries can 
 ## Limits of the evidence
 
 - The authors' databases are not public. A refutation uses a database KumoSQL builds, so a flagged-equal pair that is refuted is a disagreement about one database, not a mistake by either side.
-- The total a score is divided by is the number of pairs the authors flagged equal minus the pairs where KumoSQL found a database that separates the two queries. When the search for such databases gets better, that total shrinks (it went from 2,609 to 2,480 on 2026-11-11) and the same proofs read as a higher share. The full reference lists the pairs that left the total and why, and the score against all flagged pairs.
+- The total a score is divided by is the number of pairs the authors flagged equal minus the pairs where KumoSQL found a database that separates the two queries. When the search for such databases gets better, that total shrinks (it went from 2,609 to 2,479 on 2026-11-11) and the same proofs read as a higher share. The full reference lists the pairs that left the total and why, and the score against all flagged pairs.
 - Most pairs that are not proved end as "unknown", which is not a failure: many LLM rewrites need reasoning the prover does not have.
 - Results are compared as bags of rows. Where a query keeps only the first rows by a sort key that has ties, either answer can be correct, and the full reference counts the pairs this applies to.
 - The data has no licence. It is downloaded from a pinned version when the eval runs and is never stored in this repository.
