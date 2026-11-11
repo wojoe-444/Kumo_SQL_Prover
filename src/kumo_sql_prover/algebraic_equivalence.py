@@ -4876,6 +4876,11 @@ def normalize(
 
     from .mysql_exists_casts import drop_mysql_exists_cast
     from .single_source_columns import qualify_single_source_columns
+    from .keyed_distinct_aggregates import drop_keyed_aggregate_distinct
+    from .membership_joins import join_to_membership
+    from .counted_outer_joins import counted_outer_join_to_inner
+    from .nonempty_group_counts import drop_nonempty_group_counts
+    from .grouped_membership_filters import grouped_membership_filters
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
@@ -4960,6 +4965,11 @@ def normalize(
         wrap_tailed_outer_join_aggregate,
         push_filter_into_wrapped_join,
         drop_one_row_tail,
+        lambda sel: counted_outer_join_to_inner(sel, schema),  # LEFT JOIN .. HAVING COUNT(right column) > 0 keeps no padded row
+        lambda sel: drop_nonempty_group_counts(sel, schema, not_null),  # HAVING COUNT(NOT NULL column) >= 1 holds for every group
+        lambda sel: join_to_membership(sel, schema, types_map),  # a source joined only to be matched, under a select blind to repeats
+        lambda sel: grouped_membership_filters(sel, schema),  # a test on group keys with a subquery filters before the grouping
+        lambda sel: drop_keyed_aggregate_distinct(sel, schema, keys, not_null),  # COUNT(DISTINCT c) where a key keeps c from repeating
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
