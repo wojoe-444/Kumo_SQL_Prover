@@ -342,7 +342,9 @@ def version(dbms: str) -> str | None:
     try:
         if isinstance(adapter, (_Sqlite, _Duck)) and adapter.db is None:
             adapter.reset({})
-        return str(adapter.run(VERSION_QUERY[dbms])[0][0]).split()[0]
+        text = str(adapter.run(VERSION_QUERY[dbms])[0][0]).split()[0]
+        number = re.match(r"v?(\d+(\.\d+)*)", text)  # 8.0.46, not the distribution's build suffix
+        return number.group(1) if number else text
     except Exception:
         return None
 

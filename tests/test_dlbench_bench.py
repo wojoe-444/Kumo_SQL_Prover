@@ -24,7 +24,9 @@ native = importlib.util.module_from_spec(_native_spec)
 sys.modules["dlbench_native"] = native
 _native_spec.loader.exec_module(native)
 
-FLOORS = {"parsed": 799, "exact_proven": 156}  # measured 799/807 and 156/604
+# measured 799/807 and 161/604 on b5192d3. Of the 156 before, 21 were removed as false-proof classes (the native
+# replay showed the engines disagree); the string rule narrowed with the same replay and new prover rules added 26.
+FLOORS = {"parsed": 799, "exact_proven": 161}
 
 
 def _pair(source_dbms, target_dbms, source, target, schema=(), renames=None):
@@ -510,6 +512,22 @@ def test_contradictions_are_recorded_by_id_only(ledger, in_process):
     assert set(listed["BUTTERTrans/duckdb/9001"]["engines"]) == {"sqlite", "duckdb"}
     assert "made up" not in ledger.read_text(encoding="utf-8")
     assert bench.contradicted() == listed
+
+
+def test_the_results_say_what_was_replayed(in_process, monkeypatch):
+    monkeypatch.delenv(native.ENV)
+    assert bench.replay_sentence([{"outcome": "proven", "wrong": False}]).startswith("No native replay in this run")
+    monkeypatch.setenv(native.ENV, "{}")
+    results = [
+        {"outcome": "proven", "wrong": False, "replay": {"route": "sqlite>duckdb", "compared": 40, "skipped": None}},
+        {"outcome": "proven", "wrong": True, "replay": {"route": "sqlite>duckdb", "compared": 2, "skipped": None}},
+        {"outcome": "proven", "wrong": False, "replay": {"route": "sqlite>monetdb", "compared": 0, "skipped": "no monetdb engine"}},
+        {"outcome": "proven", "wrong": False, "replay": {"route": "mysql>mariadb", "compared": 0, "skipped": "not a query"}},
+        {"outcome": "unknown", "wrong": False},
+    ]
+    sentence = bench.replay_sentence(results)
+    assert "replayed 2 of the 4 proofs" in sentence and "sqlite>duckdb 2" in sentence and ": 1 differences." in sentence
+    assert "Not replayed: 1 no MonetDB engine, 1 not a query." in sentence and "duckdb " in sentence and "sqlite " in sentence
 
 
 def test_the_pinned_contradictions_name_pairs_of_the_subset():

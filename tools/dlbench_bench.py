@@ -981,6 +981,8 @@ def results_rows(results: list[dict]) -> dict[str, dict]:
     parsed = sum(r["parsed"] for r in results)
     gaps = sum(r["detail"].startswith("dialect gap") for r in results)
     same = sum(r["outcome"] == "proven" and r["detail"] == "same statement" for r in exact)
+    volatile_calls = sum(r["detail"].startswith("volatile") for r in results)
+    listed = sum(r["detail"].startswith("contradicted natively") for r in results)
     return {
         "dlbench": {
             "suite": "DLBench cross-dialect translations (pinned subset)",
@@ -989,15 +991,36 @@ def results_rows(results: list[dict]) -> dict[str, dict]:
             "score": f"{proven}/{len(exact)} exact pairs proved, {sum(r['wrong'] for r in results)} wrong; {parsed}/{len(results)} parsed",
             "metric": "Translations from SQLite, MySQL and PostgreSQL into six databases' dialects, proved equal to the source in the source's dialect after sqlglot reads both; parsed means both sides parse in their own dialect.",
             "evidence": "proof",
-            "correctness": f"Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); {gaps} pairs where the two databases read the same text differently (LIKE case, MySQL collation, integer division, SQLite type conversion) are left unproved. {sum(r['outcome'] == 'proven' for r in approx)}/{len(approx)} 'approximate' pairs are proved (listed in the docs). {same} of the exact proofs are a MariaDB translation that is its MySQL source token for token, where the provers have nothing to read (an INSERT, a table with no published definition); statements whose answer can change between two runs are refused.",
+            "correctness": f"Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); {gaps} pairs where the two databases read the same text differently (LIKE case, string collations, integer and decimal division, Unix time ranges, row values, SQLite type conversion; the docs list every rule) are left unproved, and so are {volatile_calls} that call the clock, a random value, a sequence or the session{f' and {listed} whose proof an earlier native replay contradicted' if listed else ''}. {replay_sentence(results)} {sum(r['outcome'] == 'proven' for r in approx)}/{len(approx)} 'approximate' pairs are proved (listed in the docs). {same} of the exact proofs are a MariaDB translation that is its MySQL source token for token, where the provers have nothing to read (an INSERT, a table with no published definition); statements whose answer can change between two runs are refused.",
             "coverage": {k: counts[k] for k in ("proven", "unknown", "unsupported") if counts[k]},
             "held_out": f"{sum(r['outcome'] == 'proven' for r in held)}/{len(held)} exact pairs proved",
             "docs": "docs/evals/dlbench.md",
             "command": "python tools/dlbench_bench.py --write-results",
             "date": today(),
-            "caveats": f"Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test). The 2026-11-11 harness changes (translated column and table spellings read back, the same-statement rule) were developed on the development split only.",
+            "caveats": f"Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test). The 2026-11-11 harness changes (translated column and table spellings read back, the same-statement rule, the volatile-call refusal, and the gap rules that the native replay of every proof led to) were developed on the development split only; held-out pairs were replayed for their verdicts, never read.",
         },
     }
+
+
+def replay_sentence(results: list[dict]) -> str:
+    """What the native replay of this run covered, for the results file."""
+
+    import dlbench_native as native
+
+    replays = [r["replay"] for r in results if r.get("replay")]
+    if not replays:
+        return f"No native replay in this run ({native.ENV} not set); the docs record the last one."
+    routes = Counter(x["route"] for x in replays if x["compared"])
+    engines = sorted({d for route in routes for d in route.split(">")})
+    versions = ", ".join(f"{d} {native.version(d) or '?'}" for d in engines)
+    native.close_all()
+    reasons = Counter("no MonetDB engine" if "monetdb" in (x["skipped"] or "") else "not a query" if x["skipped"] == "not a query" else "not replayable" for x in replays if not x["compared"])
+    return (
+        f"With {native.ENV} set, this run also replayed {sum(routes.values())} of the {sum(r['outcome'] == 'proven' for r in results)} proofs on the "
+        f"databases themselves ({', '.join(f'{route} {n}' for route, n in sorted(routes.items()))}; {versions}): "
+        f"{sum(bool(r['wrong'] and r['replay']['compared']) for r in results if r.get('replay'))} differences. "
+        f"Not replayed: {', '.join(f'{n} {reason}' for reason, n in sorted(reasons.items())) or 'none'}."
+    )
 
 
 def record_contradictions(results: list[dict]) -> int:
