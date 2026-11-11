@@ -111,6 +111,42 @@ def test_other_selects_stay(sql):
     assert rewritten(sql) is None
 
 
+def test_the_grouping_may_name_either_side_of_the_match():
+    # GROUP BY x.d with y.c in the select list: once x.d is read as y.c, the select reads its GROUP BY column
+    assert rewritten("SELECT y.c, COUNT(DISTINCT y.a) FROM t AS x JOIN t AS y ON x.d = y.c GROUP BY x.d") == (
+        "SELECT y.c, COUNT(DISTINCT y.a) FROM t AS y WHERE y.c IN (SELECT x.d FROM t AS x) GROUP BY y.c"
+    )
+    # y.d is still not a GROUP BY column then: one of several values per group, a different one per plan
+    assert rewritten("SELECT y.d, COUNT(DISTINCT y.a) FROM t AS x JOIN t AS y ON x.d = y.c GROUP BY x.d") is None
+
+
+def test_a_second_test_on_the_matched_column_stays_as_a_test_on_its_partner():
+    assert rewritten("SELECT DISTINCT y.a, y.b FROM t AS y JOIN u AS x ON x.a = y.c WHERE x.a IN (SELECT e FROM u)") == (
+        "SELECT DISTINCT y.a, y.b FROM t AS y WHERE y.c IN (SELECT e FROM u) AND y.c IN (SELECT x.a FROM u AS x)"
+    )
+    # a subquery test on another column of the matched source reads more of it than the match
+    assert rewritten("SELECT DISTINCT y.a, y.b FROM t AS y JOIN u AS x ON x.a = y.c WHERE x.e IN (SELECT e FROM u)") is None
+
+
+def test_a_derived_table_that_returns_the_matched_column_is_the_subquery():
+    assert rewritten("SELECT DISTINCT y.a, y.b FROM t AS y JOIN (SELECT e AS k FROM u WHERE a > 0) AS x ON x.k = y.c") == (
+        "SELECT DISTINCT y.a, y.b FROM t AS y WHERE y.c IN (SELECT e AS k FROM u WHERE a > 0)"
+    )
+    assert rewritten("SELECT DISTINCT y.a, y.b FROM t AS y JOIN (SELECT e AS k, a FROM u WHERE a > 0) AS x ON x.k = y.c") == (
+        "SELECT DISTINCT y.a, y.b FROM t AS y WHERE y.c IN (SELECT x.k FROM (SELECT e AS k, a FROM u WHERE a > 0) AS x)"
+    )
+
+
+def test_a_grouped_derived_table_with_every_key_grouped_gives_one_row_per_group():
+    grouped = "(SELECT c AS k, COUNT(*) AS n FROM t GROUP BY c) AS g"
+    # g.n is not a GROUP BY column, but g has one row per g.k
+    assert rewritten(f"SELECT g.k, g.n, MAX(x.e) FROM {grouped} JOIN u AS x ON x.a = g.k JOIN u AS z ON z.e = g.k GROUP BY g.k") == (
+        f"SELECT g.k, g.n, MAX(x.e) FROM {grouped}, u AS x WHERE x.a = g.k AND g.k IN (SELECT z.e FROM u AS z) GROUP BY g.k"
+    )
+    # grouped by c and d inside: several rows of g per g.k, and g.n is one of several
+    assert rewritten("SELECT g.n, MAX(x.e) FROM (SELECT c AS k, COUNT(*) AS n FROM t GROUP BY c, d) AS g JOIN u AS x ON x.a = g.k JOIN u AS z ON z.e = g.k GROUP BY g.k") is None
+
+
 def test_a_matched_column_is_read_as_its_partner_only_within_one_type():
     # x.a is INT and u.a is VARCHAR: MySQL finds 1 = '1' and '01', which are different outputs
     assert rewritten("SELECT DISTINCT x.a, u.e FROM t AS x JOIN u ON u.a = x.a", TYPES) is None
@@ -199,6 +235,11 @@ CASES = [
     "SELECT DISTINCT x.a FROM t AS x JOIN u ON u.a = x.a WHERE EXISTS (SELECT 1 FROM t AS z WHERE z.a = u.e)",
     "SELECT DISTINCT x.c, u.e FROM t AS x CROSS JOIN u WHERE u.a = x.c AND x.d IS NULL",
     "SELECT u.e, COUNT(DISTINCT u.a) FROM u JOIN t AS x ON x.d = u.e GROUP BY u.e",
+    "SELECT y.c, COUNT(DISTINCT y.a) FROM t AS x JOIN t AS y ON x.d = y.c GROUP BY x.d",
+    "SELECT DISTINCT y.a, y.b FROM t AS y JOIN u AS x ON x.a = y.c WHERE x.a IN (SELECT e FROM u)",
+    "SELECT DISTINCT y.a, y.b FROM t AS y JOIN (SELECT e AS k FROM u WHERE a > 0) AS x ON x.k = y.c",
+    "SELECT DISTINCT y.a, y.b FROM t AS y JOIN (SELECT e AS k, a FROM u WHERE a > 0) AS x ON x.k = y.c",
+    "SELECT g.k, g.n, MAX(x.e) FROM (SELECT c AS k, COUNT(*) AS n FROM t GROUP BY c) AS g JOIN u AS x ON x.a = g.k JOIN u AS z ON z.e = g.k GROUP BY g.k",
 ]
 
 
@@ -208,6 +249,10 @@ def test_the_rewritten_query_returns_the_same_rows(sql):
 
     after = rewritten(sql)
     assert after is not None
+    # DuckDB has no MySQL-style column outside the GROUP BY; ANY_VALUE picks the value the group's rows share
+    for loose in ("y.c", "g.n"):
+        if f"SELECT {loose}," in sql or f", {loose}," in sql:
+            sql, after = (text.replace(f"{loose},", f"ANY_VALUE({loose}),", 1) for text in (sql, after))
     rng = random.Random(len(sql))
     value = lambda: rng.choice([None, 0, 1, 1, 2, 2, 3])  # noqa: E731
     for _ in range(150):
