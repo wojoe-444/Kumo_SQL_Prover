@@ -84,7 +84,7 @@ from .solver_lock import Z3_MISSING, bound, bounded_solver, serialized, sweep
 from .string_literals import canonical_literals
 from .type_names import invalid_type_name
 from .sqlx_fragments import masked_template_problem
-from . import numeric_column_reading, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals
+from . import numeric_column_reading, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals, volatile_calls
 from .float_sum_order import Ledger
 
 try:  # pragma: no cover - exercised by the import itself
@@ -1075,6 +1075,9 @@ class _Compiler:
                 raise Unsupported(f"nondeterministic: {sub.sql(dialect='bigquery')}")
             if isinstance(sub, exp.Anonymous) and (sub.name or "").upper() in _NONDETERMINISTIC_NAMES:
                 raise Unsupported(f"nondeterministic: {sub.sql(dialect='bigquery')}")
+            if volatile_calls.kind(sub, self.dialect) is not None:
+                # The one list for every dialect: NOW(), nextval('q'), date('now'), sequence.NEXTVAL, ...
+                raise Unsupported(volatile_calls.reason(sub, self.dialect))
             if isinstance(sub, exp.Window) and not allow_windows:
                 # The normalizer isolates window functions in a derived table named kqw*; it is kept whole.
                 owner = sub.find_ancestor(exp.Select)
@@ -5322,9 +5325,44 @@ def prove_equivalent_smt(left_sql: str, right_sql: str, **kwargs) -> SmtEquivale
     See ``_prove_equivalent_smt`` for the rest.
     """
 
-    return numeric_column_reading.checked(
+    from . import statement_values
+
+    # NOW(), CURRENT_DATE and the like are read as one unknown value per statement: a proof is conditional on it.
+    return statement_values.proved(_prove_equivalent_smt_as_written, left_sql, right_sql, kwargs)
+
+
+def _prove_equivalent_smt_as_written(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
+    result = numeric_column_reading.checked(
         _prove_equivalent_smt, left_sql, right_sql, kwargs, lambda reason: SmtEquivalenceResult(SmtStatus.NOT_PROVEN, reason)
     )
+    return without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
+
+
+UNLISTED_FUNCTION_ASSUMPTION = "functions the prover has no definition for return the same value for the same arguments: {names}"
+
+
+def without_volatile_proof(result: SmtEquivalenceResult, left_sql: str, right_sql: str, dialect: str | None) -> SmtEquivalenceResult:
+    """``result`` unless it is a proof of a pair that holds a volatile call, which is ``NOT_PROVEN``.
+
+    The compiler refuses a volatile call it meets (``_check_nondeterminism``), but it compiles the statements as
+    the normalization rules left them, and a rule may have merged two calls into one or dropped one. The inputs
+    as they were written are read here, after the proof. A proof that reads a function the prover does not know
+    as a function of its arguments says so in its assumptions (``UNLISTED_FUNCTION_ASSUMPTION``)."""
+
+    if result.status not in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
+        return result
+    unlisted: set[str] = set()
+    for sql in (left_sql, right_sql):
+        why, names = volatile_calls.read(sql, dialect or "bigquery")
+        if why:
+            return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, f"unsupported: {why}", assumptions=result.assumptions)
+        unlisted.update(names)
+    # The algebraic prover calls this prover on rewritten text; only the names in the text it was given itself are kept.
+    prefix = UNLISTED_FUNCTION_ASSUMPTION.split("{")[0]
+    assumed = tuple(a for a in result.assumptions if not a.startswith(prefix))
+    if unlisted:
+        assumed += (UNLISTED_FUNCTION_ASSUMPTION.format(names=", ".join(sorted(unlisted))),)
+    return result if assumed == tuple(result.assumptions) else dataclasses.replace(result, assumptions=assumed)
 
 
 def _prove_equivalent_smt(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:

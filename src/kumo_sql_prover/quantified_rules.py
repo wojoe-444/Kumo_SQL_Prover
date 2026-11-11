@@ -28,6 +28,7 @@ except ImportError:  # z3-solver is an optional extra; the rules below are reach
     z3 = None
 from sqlglot import exp
 
+from . import volatile_calls
 from .domain_join_rules import lateral_aggregates
 from .solver_lock import bounded_solver, serialized
 
@@ -104,7 +105,7 @@ def _volatile(node: exp.Expression) -> bool:
     return any(
         isinstance(n, exp.Rand) or (isinstance(n, exp.Anonymous) and str(n.this).lower() in _VOLATILE)
         for n in node.find_all(exp.Rand, exp.Anonymous)
-    )
+    ) or any(found == volatile_calls.PER_CALL for _, found in volatile_calls.sites(node))
 
 
 def _plain_group(group: exp.Expression | None) -> bool:

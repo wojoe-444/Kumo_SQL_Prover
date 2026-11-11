@@ -121,7 +121,7 @@ from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
 from .wrapped_join_filters import push_filter_into_wrapped_join
-from .smt_equivalence import SmtEquivalenceResult, SmtStatus, prove_equivalent_smt
+from .smt_equivalence import SmtEquivalenceResult, SmtStatus, prove_equivalent_smt, without_volatile_proof
 
 MAX_BRANCHES = 16
 _SPLIT_ALIAS = "kumosql_u"
@@ -4910,6 +4910,26 @@ def normalize(
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
+        from .closed_queries import fold_closed_query
+        from .inline_rows import inline_struct_rows
+
+        tree = fold_closed_query(inline_struct_rows(tree, dialect), dialect)  # pre-pass: inline rows as a table; a query that reads no table as its rows
+        from .counted_joins import counted_join_rules
+
+        tree = counted_join_rules(tree)  # pre-pass: COUNT(*) over a FULL JOIN as the count of its two halves
+        from .count_exists_rules import count_tests_to_exists
+
+        tree = count_tests_to_exists(tree)  # pre-pass: (SELECT COUNT(*) ..) > 0 as EXISTS
+        from .subquery_absorption import absorb_subquery_tests
+
+        tree = absorb_subquery_tests(tree)  # pre-pass: x IN (..) OR x IN (the same with one more filter) is the first
+        from .typed_comparisons import typed_comparison_rules
+
+        tree = typed_comparison_rules(tree, types, dialect)  # pre-pass: date + INTERVAL as DATE_ADD in a comparison; x + 1 = y + 1 as x = y
+        from .sqlite_date_text import sqlite_date_text_rules
+
+        tree = sqlite_date_text_rules(tree, dialect)  # pre-pass: SQLite's STRFTIME digits as text or as a number
+    if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
         from .aggregate_membership import read_aggregate_membership
 
@@ -5087,9 +5107,18 @@ def prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtEq
     See ``_prove_equivalent_algebraic_checked`` for the rest.
     """
 
-    return numeric_column_reading.checked(
+    from . import statement_values
+
+    # NOW(), CURRENT_DATE and the like are read as one unknown value per statement: a proof is conditional on it.
+    return statement_values.proved(_prove_equivalent_algebraic_as_written, left_sql, right_sql, kwargs)
+
+
+def _prove_equivalent_algebraic_as_written(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
+    result = numeric_column_reading.checked(
         _prove_equivalent_algebraic_checked, left_sql, right_sql, kwargs, lambda reason: SmtEquivalenceResult(SmtStatus.NOT_PROVEN, reason)
     )
+    # The rules below may merge or drop a call; a pair that holds a volatile one as written is never proven.
+    return without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
 
 
 def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:

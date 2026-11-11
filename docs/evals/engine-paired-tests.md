@@ -28,32 +28,44 @@ Labels are **equivalent** (133: same rows on every database the declared keys an
 2. **refuted**: the algebraic prover's counterexample (SMT model or executed search) or the targeted refuter (`kumo_sql_prover.refute.find_targeted_difference`) gives a database, and the database keeps the declared keys and NOT NULL columns and separates the two queries in DuckDB, confirmed with the optimizer off (`run_unoptimized`). An SMT model can use placeholder values (a string in an `INT64` column); such a claim does not count as a refutation, and it was the case for one TPC-H pair, which the targeted refuter then refuted with a typed database.
 3. **unknown**: anything else.
 
-Every pair also runs on its source's data: TPC-H at scale 0.01 (Trino's `tiny` schema, made by `tools/benchmark_corpora.py`; it reproduces Trino's expected rows for order 31718), the inline Spark, PostgreSQL, DuckDB and authored tables otherwise. All 157 agree with their label there. Trino's inline `VALUES` become `UNNEST([STRUCT(...)])` in GoogleSQL, which KumoSQL's DuckDB reading refuses; for execution only, the harness rewrites those to the same rows as `SELECT ... UNION ALL SELECT ...`. The provers get the pairs as written.
+Every pair also runs on its source's data: TPC-H at scale 0.01 (Trino's `tiny` schema, made by `tools/benchmark_corpora.py`; it reproduces Trino's expected rows for order 31718), the inline Spark, PostgreSQL, DuckDB and authored tables otherwise. All 157 agree with their label there. Trino's inline `VALUES` become `UNNEST([STRUCT(...)])` in GoogleSQL, which KumoSQL's DuckDB reading refuses; for execution only, the harness rewrites those to the same rows as `SELECT ... UNION ALL SELECT ...`. The provers get the pairs as written (and since 2026-11-11 read the inline rows themselves, `inline_rows.py`).
 
-**Held out.** One case in five, by a hash of its id (36 of 157). Every case, held-out ones included, was seen while building the harness and its Trino translations, so the held-out score is not a clean estimate (tuned on test); no prover change was made.
+**Held out.** One case in five, by a hash of its id (36 of 157). Every case, held-out ones included, was seen while building the harness and its Trino translations, so the held-out score is not a clean estimate (tuned on test). The prover rules of 2026-11-11 were developed on the other four fifths; the held-out pairs were scored, not read.
 
 ## Scores
 
-2026-10-04, baseline on master 0f13b9af (sqlglot 30.21, z3-solver 5.1.0.0, an otherwise idle 4-core machine; no prover change was made for this eval): **41/157 decided correctly, 0 wrong**: 20 proved, 21 refuted, 116 unknown. Held out: 11/36, 0 wrong. A first run on 2026-10-03 on an older master measured 33/157; the 8 more are all Trino pairs that agree only on TPC-H tiny and are now refuted. Whether that comes from rules merged since, or from the earlier run having been on a busy machine (the targeted refuter works to a time budget), was not separated.
+2026-11-11, on 10f3be2 (sqlglot 30.21 compiled, z3-solver 5.4.1.0, a 4-core machine): **145/157 decided correctly, 0 wrong**: 124 proved, 21 refuted, 12 unknown. Held out: 33/36, 0 wrong.
 
 | Source | Scored | Proved | Refuted | Unknown |
 | --- | --- | --- | --- | --- |
-| Trino | 134 | 16 | 12 | 106 |
-| Spark | 7 | 2 | 2 | 3 |
+| Trino | 134 | 114 | 12 | 8 |
+| Spark | 7 | 5 | 2 | 0 |
 | PostgreSQL | 2 | 1 | 1 | 0 |
 | DuckDB | 3 | 0 | 0 | 3 |
 | JoinEquiv (authored) | 3 | 0 | 2 | 1 |
-| jOOQ (authored) | 8 | 1 | 4 | 3 |
+| jOOQ (authored) | 8 | 4 | 4 | 0 |
 
-By origin: original pairs (upstream pairs, translated) 20/122, adapted pairs (paired, completed or changed by us) 14/23, authored guards 7/12. By label: 20/133 equivalent pairs proved, 13/15 fixture-only pairs refuted, 8/9 not-equivalent pairs refuted. 0 prover claims were left unknown for failing to replay.
+By origin: original pairs (upstream pairs, translated) 114/122, adapted pairs (paired, completed or changed by us) 21/23, authored guards 10/12. By label: 124/133 equivalent pairs proved, 13/15 fixture-only pairs refuted, 8/9 not-equivalent pairs refuted. 0 prover claims were left unknown for failing to replay.
 
-What is proved: JOIN USING against ON (one and two columns, `SELECT *`, unaliased derived tables), the join order of a date-bounded join, a CTE against its inlined copy, three FULL JOIN counts filtered to unmatched rows against their LEFT JOIN UNION ALL RIGHT JOIN rewrites, the full join with nulls on the probe side (`testOuterJoinWithNullsOnProbe`), five closed pairs over empty inputs, EXISTS against IN and against `EXISTS OR EXISTS` (Spark), PostgreSQL's join removal under a UNIQUE key and `EXISTS (SELECT DISTINCT ...)`. What is refuted: twelve Trino pairs that agree only on the tiny data (the four empty-build-side tests, true only while no part is named 'a'; six single-nation-row and single-order tests), Spark's NOT IN against NOT EXISTS and its fixture-only pair, the PostgreSQL dropped-qual reading, the JoinEquiv projection counterexample and the unguarded full-row form, and four jOOQ negatives. Every refutation database respects the fixture's declared keys and NOT NULL columns (the harness checks this before it counts one).
+The baseline, 2026-10-04 on KumoSQL master 0f13b9af with no prover change made for this eval, was 41/157 (20 proved, 21 refuted, 116 unknown; held out 11/36). The refutations are the same 21 pairs; the 104 new proofs come from the rules below, written for this eval on its development pairs (the held-out fifth was scored only as a count, and every case had already been seen while the harness was built, so it is tuned on test either way).
 
-What stays unknown:
+| Module | Reads | Pairs it opened |
+| --- | --- | --- |
+| `inline_rows.py` | `UNNEST([STRUCT(1 AS a, 2 AS b), ...]) AS t`, how sqlglot writes another engine's `VALUES`, as the derived table `(SELECT 1 AS a, 2 AS b UNION ALL ...) AS t` | with the next one, Trino's joins over inline rows: 81 of the 104 new proofs |
+| `closed_queries.py` | a query that reads no table has one result: a small interpreter works out its rows and the query becomes that list, sorted. Integers, Booleans, string equality, NULL, three-valued logic, `IN`, `EXISTS`, scalar subqueries, every join kind, `GROUP BY` with `COUNT` / `SUM` / `MIN` / `MAX`, `DISTINCT`, set operations, an element of an array written in place, and decimals of up to 15 digits in comparisons only; anything else is declined | the same, plus `1.0 IN (..)` and an array subscript |
+| `counted_joins.py` | `SELECT COUNT(*)` over a `FULL JOIN` whose `ON` compares a left column, as the count of the `LEFT JOIN` plus the `RIGHT JOIN` rows whose left column is NULL; a `FULL JOIN` under an `IS NOT NULL` test keeps the tested side; `COUNT(*)` does not read the select lists of the `UNION ALL` it counts | Trino's FULL JOIN counts against their `LEFT JOIN UNION ALL RIGHT JOIN` rewrites |
+| `count_exists_rules.py` | `(SELECT COUNT(*) ..) > 0` and its spellings as `EXISTS`, the tests for no row as `NOT EXISTS`; `COUNT(x)` moves `x IS NOT NULL` into the subquery; a count grouped on its correlated key only as a `WHERE` conjunct, where its NULL does what FALSE does | the jOOQ transforms (their negatives stay refuted) |
+| `subquery_absorption.py` | `x IN (..) OR x IN (the same with more filters)` is the first test, likewise `EXISTS`, under `NOT`, and for `AND`: by the order FALSE < NULL < TRUE, so NULLs included | Spark's implied ORs |
+| `typed_comparisons.py` | with declared types: a DATE plus a whole-day interval, compared with a date, is the `DATE_ADD` spelling; `x + n OP y + n` over integers is `x OP y` | two date-bounded joins, `orderkey + 1 = orderkey + 1` |
 
-* **Inline rows (about 80 Trino pairs).** sqlglot writes Trino's `VALUES` as `UNNEST([STRUCT(1 AS a), ...])`, the usual GoogleSQL form, and the prover does not read an UNNEST of a STRUCT array outside a cross join, its fields, or `SELECT *` over it. These pairs test outer joins with constant and non-equality conditions, so this is the largest gap the eval shows.
-* **Aggregates over outer joins (7)** and **FULL JOIN normalised to LEFT or RIGHT under a NULL-rejecting filter (4)**: the Trino FULL JOIN tests against their LEFT JOIN UNION ALL RIGHT JOIN rewrites.
-* `orderkey + 1 = orderkey + 1` against `orderkey = orderkey`, `COUNT(*)` over `orders UNION ALL orders` joined on its key against `2 * COUNT(*)`, Spark's implied ORs, the jOOQ `COUNT(*) > 0` forms, and every DuckDB collation pair (the provers do not model collations; none was proved, including the `NOACCENT.NOCASE` trap).
+All are shape rules (off on the prover's second attempt, see [provers.md](../provers.md#a-second-attempt-without-the-shape-rules)) and read GoogleSQL only. Each has made-up pairs it must prove and near misses it must not, in its own test file. The interpreter of `closed_queries.py` is compared with DuckDB on seeded random queries of its fragment (400 in the gate; a longer run of 14,340 found no difference), and the other rules run their rewrite against the original in DuckDB on random rows with NULLs.
+
+What is refuted: twelve Trino pairs that agree only on the tiny data (the four empty-build-side tests, true only while no part is named 'a'; six single-nation-row and single-order tests), Spark's NOT IN against NOT EXISTS and its fixture-only pair, the PostgreSQL dropped-qual reading, the JoinEquiv projection counterexample and the unguarded full-row form, and four jOOQ negatives. Every refutation database respects the fixture's declared keys and NOT NULL columns (the harness checks this before it counts one).
+
+What stays unknown (12):
+
+* Nine equivalent pairs: `COUNT(*)` over `orders UNION ALL orders` joined on its key against `2 * COUNT(*)`; a FULL JOIN count whose `ON` compares no column of the left side (`counted_joins.py` needs one to tell the padded rows); closed queries that read a struct field through a path, unnest an array column or call `SAFE_DIVIDE`; a DuckDB collation pair (the provers do not model collations); the JoinEquiv `DISTINCT` join against an `INTERSECT` of outer joins; and two held-out pairs.
+* Two fixture-only pairs and one not-equivalent pair that no refuter separates (none is proved, including the `NOACCENT.NOCASE` collation trap).
 
 ## Limits
 
