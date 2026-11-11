@@ -56,6 +56,8 @@ SELECT COUNT(*) AS violations FROM `orders` AS c WHERE c.`cid` IS NOT NULL AND N
 
 The check names the table as the query spells it. BigQuery does not enforce keys, so the proof relies on the data meeting them whether or not they are declared.
 
+**Conditions that are not about the data.** A pair that reads `NOW()`, `CURRENT_DATE` or `SESSION_USER()` can be proved only on the condition that both queries read the same statement time or session ([calls fixed for the statement](provers.md#calls-fixed-for-the-statement-conditional-proofs)). Such a condition has `kind` `same_statement_time` or `same_session`, an empty `table`, the calls in `columns` and an empty `check_sql`: there is nothing to count in the warehouse. It is returned whether or not `conditional=True` was passed, and it is listed after any conditions on the data.
+
 ## Where it appears
 
 - **Python.** `prove_equivalent_algebraic(left, right, conditional=True)` and `prove_equivalent_smt(left, right, conditional=True)` return `SmtStatus.PROVEN_CONDITIONALLY` with `result.conditions`, each a `kumo_sql_prover.conditional_equivalence.Condition` (`kind`, `table`, `columns`, `text`, `check_sql`, and `parent` and `parent_columns` for a foreign key). The unconditional counterexample, if there was one, stays in `result.counterexample`: it is a database that breaks a condition.

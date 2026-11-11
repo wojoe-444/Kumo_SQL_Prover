@@ -129,6 +129,13 @@ def prove_bag_equivalent(left_sql: str, right_sql: str, **options):
     does not depend on what the process did before.
     """
 
+    from .. import statement_values
+
+    # NOW(), CURRENT_DATE and the like are read as one unknown value per statement: a proof is conditional on it.
+    return statement_values.proved(_prove_bag_equivalent_as_written, left_sql, right_sql, options)
+
+
+def _prove_bag_equivalent_as_written(left_sql: str, right_sql: str, **options):
     from ..smt_equivalence import without_volatile_proof
     from .ir import id_scope, in_id_scope
 
