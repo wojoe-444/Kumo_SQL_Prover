@@ -50,8 +50,10 @@ from .eager_sum_readback import read_back_eager_sums
 from .fk_rules import drop_fk_join
 from .exists_constant_rules import exists_constant_rules
 from .decorrelation_rules import decorrelation_step
+from .anti_join_reading import read_unmatched_left_join
 from .constraint_normalization import keyed_join_to_exists, normalize_key_counts
 from .counted_presence import read_counted_presence
+from .distinct_source_filters import lift_source_distinct
 from .grouping_expansion import collapse_grouping_expansion
 from .grouped_output_names import group_by_named_outputs
 from .grouping_sets import expand_grouping_sets, grouping_sets_to_union
@@ -5192,6 +5194,8 @@ def normalize(
         lambda sel: _narrow("own_group_joins", lambda s: inner_join_own_groups(s, not_null, types_map), sel),
         lambda sel: _narrow("duplicate_self_joins", lambda s: regroup_duplicate_self_join(s, keys, not_null, types_map), sel),
         lambda sel: read_counted_presence(sel, not_null, types_map, schema),
+        lambda sel: _narrow("anti_join_reading", read_unmatched_left_join, sel),
+        lambda sel: _narrow("distinct_source_filters", lift_source_distinct, sel),
         merge_preserved_join_source,
         lambda sel: prune_windowed_outputs(sel, schema),
         count_subquery_as_join,
