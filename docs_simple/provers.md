@@ -66,6 +66,8 @@ Each solver check has a fixed work limit as well as a time limit. When the work 
 
 A replayed counterexample does establish a difference: the report includes a database where the results disagree. Matching a few random databases does not establish that no counterexample exists. That agreement is also weaker than BigQuery agreement: the queries run on DuckDB, decimals are compared to 12 significant digits, and column types are not compared.
 
+Queries written for DuckDB can be refuted the same way, and more directly: the prover builds small databases, runs both queries on DuckDB exactly as they are written, and reports the first database on which the rows differ. For example, `SELECT t.a FROM t LEFT JOIN u ON t.a = u.a` and the same query with an inner join differ on one `t` row and an empty `u`. The search refuses queries where the engine may choose the rows (`LIMIT`, `DISTINCT ON`, a `ROWS` window frame, random or clock functions) and tables that were not declared. Finding no such database proves nothing. See [the full reference](../docs/provers.md#executed-counterexamples-for-duckdb-queries).
+
 Two details of the structural check: it drops a result ordering only when no sort key could raise an error (a `LIMIT` that cannot cut any row does not change that), and it treats a function that might be a user-defined one as a different function when its spelling differs, because BigQuery reads those names case-sensitively.
 
 ## Comparing scripts that change a table
