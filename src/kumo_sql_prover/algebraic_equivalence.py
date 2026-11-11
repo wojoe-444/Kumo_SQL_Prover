@@ -4881,6 +4881,7 @@ def normalize(
     from .counted_outer_joins import counted_outer_join_to_inner
     from .nonempty_group_counts import drop_nonempty_group_counts
     from .grouped_membership_filters import grouped_membership_filters
+    from .grouped_source_dedup import drop_dedup_over_grouped
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
@@ -4959,6 +4960,7 @@ def normalize(
         lambda sel: drop_mysql_exists_cast(sel, dialect),
         lambda sel: rewrite_case_arms(sel, dialect),
         lambda sel: drop_unmatched_left_join(sel, schema, dialect),
+        lambda sel: drop_nonempty_group_counts(sel, schema, not_null),  # COUNT(NOT NULL column) >= 1 holds for every group; before the next rule reads it as a NULL test
         lambda sel: rewrite_count_tests(sel, schema),
         lambda sel: rewrite_semijoin_shapes(sel, schema, types_map),
         lambda sel: string_spelling_rules(sel, types_map, dialect),
@@ -4966,9 +4968,9 @@ def normalize(
         push_filter_into_wrapped_join,
         drop_one_row_tail,
         lambda sel: counted_outer_join_to_inner(sel, schema),  # LEFT JOIN .. HAVING COUNT(right column) > 0 keeps no padded row
-        lambda sel: drop_nonempty_group_counts(sel, schema, not_null),  # HAVING COUNT(NOT NULL column) >= 1 holds for every group
         lambda sel: join_to_membership(sel, schema, types_map),  # a source joined only to be matched, under a select blind to repeats
         lambda sel: grouped_membership_filters(sel, schema),  # a test on group keys with a subquery filters before the grouping
+        lambda sel: drop_dedup_over_grouped(sel, schema),  # DISTINCT or GROUP BY over the keys of a grouped derived table
         lambda sel: drop_keyed_aggregate_distinct(sel, schema, keys, not_null),  # COUNT(DISTINCT c) where a key keeps c from repeating
     ) if shapes else ()
 

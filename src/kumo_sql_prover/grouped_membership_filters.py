@@ -50,6 +50,7 @@ from sqlglot import exp
 
 from .ast_utils import conjuncts, distinct_on, extended_grouping, plain_distinct
 from .decorrelation_rules import _and_all, _bound_by, _bound_within, _sources
+from .grouped_source_dedup import renaming_aliases
 from .semijoin_shapes import _VOLATILE, _derived, _own, _plain_column, _plain_table
 
 
@@ -165,8 +166,8 @@ def _key_outputs(inner: exp.Select, listed: dict[str, set[str]]) -> dict[str, ex
     """Output name -> key expression for the non-aggregate outputs of a plainly grouped derived select.
 
     An output is a key when it is spelled as a ``GROUP BY`` item, or when both are columns of one source (``t.g``
-    and a bare ``g`` of the only source ``t``; a bare ``GROUP BY`` name that a select alias also carries is not
-    matched this way, since dialects differ on which of the two it means)."""
+    and a bare ``g`` of the only source ``t``). A bare ``GROUP BY`` name that a select alias gives to something
+    else is no key here, since dialects differ on which of the two it means."""
 
     group = _plain_keys(inner)
     if group is None or plain_distinct(inner) or distinct_on(inner):
@@ -176,12 +177,13 @@ def _key_outputs(inner: exp.Select, listed: dict[str, set[str]]) -> dict[str, ex
     if any(isinstance(e, exp.Star) or isinstance(e.unalias(), exp.Column) and isinstance(e.unalias().this, exp.Star) for e in inner.expressions):
         return None
     sources = _sources(inner)
-    aliased = {item.alias.lower() for item in inner.expressions if isinstance(item, exp.Alias) and item.alias}
-    keys = {e.sql().lower() for e in group.expressions}
+    renamed = renaming_aliases(inner)
+    keys = set()
     for item in group.expressions:
         bare = _plain_column(item)
-        if bare is not None and not bare.table and bare.name.lower() in aliased:
+        if bare is not None and not bare.table and bare.name.lower() in renamed:
             continue
+        keys.add(item.sql().lower())
         column = _source_column(item, sources, listed)
         if column is not None:
             keys.add(column.sql().lower())

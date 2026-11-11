@@ -7,7 +7,9 @@ replaced by the test ``y.d IN (SELECT x.c FROM .. AS x)``; every other place tha
     SELECT a.k, COUNT(DISTINCT b.v) FROM t AS a JOIN t AS b ON a.k = b.g GROUP BY a.k
     SELECT b.g AS k, COUNT(DISTINCT b.v) FROM t AS b WHERE b.g IN (SELECT a.k FROM t AS a) GROUP BY b.g
 
-Conditions that read ``x`` alone (``x.e > 0``) move into the subquery's ``WHERE``.
+Conditions that read ``x`` alone (``x.e > 0``) move into the subquery's ``WHERE``; one that holds a subquery of
+its own stays in place as a condition on ``y.d`` when ``x.c`` is the only column of ``x`` it reads. A derived table ``x`` that
+returns only the matched column, with no condition of its own in the select, is used as the subquery itself.
 
 **Why it is sound.** Write ``R`` for the rows the other sources and the other conditions produce, and for a
 row ``r`` of ``R`` let ``n(r)`` be the number of rows of ``x`` that pass ``x``'s own conditions and have
@@ -26,7 +28,11 @@ select is one that reads only the set:
   or FALSE by whether a counted row exists, however often). The groups are the same in both forms (a group
   exists when a row with its key does), and each such aggregate is a function of the set of values in the
   group. Columns outside aggregates must be ``GROUP BY`` columns, so that no value is picked from an arbitrary
-  row of a group.
+  row of a group; this is checked on the rewritten select, where ``x.c`` and ``y.d`` are one column
+  (``SELECT y.d .. GROUP BY x.c`` reads its group key). A column of a grouped derived table is as good as a
+  ``GROUP BY`` column when every group key of that derived table is one: the derived table has one row per
+  combination of its keys, so all rows of a group hold the same row of it
+  (``grouped_source_dedup.unique_key_outputs``).
 
 Reading ``x.c`` as ``y.d`` replaces a value by one that compares equal to it. Equal values are one value only
 within one type (``1 = 1.0``, MySQL converts a string compared with a number), so when ``x.c`` is read anywhere
@@ -38,8 +44,7 @@ rest of the prover it takes two strings that compare equal to be the same string
 comma), ``WHERE``, ``GROUP BY``, ``HAVING``, ``ORDER BY`` and ``DISTINCT``; two or more sources with different
 names, each a table or a derived table; every column of the select qualified with one of those names. The
 source ``x`` that goes is the last one that qualifies. Its link must be the one condition that reads ``x``
-together with another source and must be a plain ``x.c = y.d``; the conditions on ``x`` alone must hold no
-subquery.
+together with another source and must be a plain ``x.c = y.d``.
 
 **What is refused.** Outer joins (the padded rows are not a membership test), ``USING`` and ``NATURAL``,
 ``LIMIT``/``OFFSET`` (which rows come first may depend on repeats), window functions, ``ROLLUP``/``CUBE``/grouping
@@ -55,6 +60,7 @@ from sqlglot import exp
 
 from .ast_utils import FROM_KEY, extended_grouping, plain_distinct
 from .decorrelation_rules import _and_all, _closed, _sources
+from .grouped_source_dedup import unique_key_outputs
 from .semijoin_shapes import _FLOATING, _VOLATILE, _declared_type, _derived, _inner_conjuncts, _link, _only, _own, _plain_column, _plain_table, _under
 
 _CLAUSES = frozenset({"expressions", "from_", "from", "joins", "where", "group", "having", "order", "distinct"})
@@ -89,8 +95,8 @@ def positivity_test(count: exp.Expression) -> bool:
     return (number == 0 and kind in (exp.GT, exp.NEQ, exp.EQ, exp.LTE)) or (number == 1 and kind in (exp.GTE, exp.LT))
 
 
-def repeat_blind(select: exp.Select) -> bool:
-    """Whether ``select`` returns the same rows whenever its input holds the same set of different rows."""
+def _set_reading(select: exp.Select) -> bool:
+    """Whether the DISTINCT, grouping and aggregates of ``select`` read only the set of its input rows."""
 
     distinct = select.args.get("distinct")
     if distinct is not None and not plain_distinct(select):
@@ -114,28 +120,49 @@ def repeat_blind(select: exp.Select) -> bool:
         if type(node) is exp.Count and positivity_test(node):
             continue
         return False
-    # outside the aggregates only GROUP BY columns may be read: nothing is picked from an arbitrary row
+    return True
+
+
+def _reads_only_keys(select: exp.Select, schema: dict | None = None) -> bool:
+    """Whether a grouped or aggregating ``select`` reads, outside its aggregates, only ``GROUP BY`` columns, or
+    columns of a grouped derived table all of whose group keys are ``GROUP BY`` columns (one row of it per group)."""
+
+    group = select.args.get("group")
+    if group is None and not any(_own(n, select) for n in select.find_all(exp.AggFunc)):
+        return True  # a plain SELECT DISTINCT: every output row is computed from one input row
     keys = set()
     for item in group.expressions if group is not None else []:
         column = _plain_column(item)
         if column is None or not column.table:
             return False
         keys.add((column.table.lower(), column.name.lower()))
+    fixed = set()  # sources that contribute one row to every group
+    for source in _sources(select):
+        name = (source.alias_or_name or "").lower()
+        carried = unique_key_outputs(source, schema)
+        if name and carried is not None and all(any((name, output) in keys for output in outputs) for outputs in carried):
+            fixed.add(name)
     for clause in ("expressions", "having", "order"):
         value = select.args.get(clause)
         for part in value if isinstance(value, list) else [value] if value is not None else []:
             if part.find(exp.Select) is not None:
                 return False  # a subquery may read any column of the group's rows
             for column in part.find_all(exp.Column):
-                if column.find_ancestor(exp.AggFunc) is None and (column.table.lower(), column.name.lower()) not in keys:
+                if column.find_ancestor(exp.AggFunc) is None and (column.table.lower(), column.name.lower()) not in keys and column.table.lower() not in fixed:
                     return False
     return True
+
+
+def repeat_blind(select: exp.Select) -> bool:
+    """Whether ``select`` returns the same rows whenever its input holds the same set of different rows."""
+
+    return _set_reading(select) and _reads_only_keys(select)
 
 
 def join_to_membership(select: exp.Select, schema: dict | None, types: dict | None = None) -> exp.Expression | None:
     """``select`` with one matched-only source turned into an ``IN`` test (a new select), else ``None``."""
 
-    if not _only(select, _CLAUSES) or not repeat_blind(select):
+    if not _only(select, _CLAUSES) or not _set_reading(select):
         return None
     sources = _sources(select)
     names = [(s.alias_or_name or "").lower() for s in sources]
@@ -182,9 +209,14 @@ def join_to_membership(select: exp.Select, schema: dict | None, types: dict | No
         if mine.table.lower() != name:
             continue
         local = [i for i in touching if i not in links]
-        if any(isinstance(n, (exp.Select, exp.Subquery, exp.AggFunc, exp.Window, *_VOLATILE)) for i in local for n in parts[i].walk()):
+        # a condition on x with a subquery stays where it is, as a condition on y.d, if x.c is all it reads of x
+        staying = [i for i in local if any(isinstance(n, (exp.Select, exp.Subquery)) for n in parts[i].walk())]
+        local = [i for i in local if i not in staying]
+        if any(isinstance(n, (exp.AggFunc, exp.Window, *_VOLATILE)) for i in local for n in parts[i].walk()):
             continue
-        elsewhere = [c for c in reads[name] if not any(_under(c, parts[i]) for i in touching)]
+        if any(isinstance(n, _VOLATILE) for i in staying for n in parts[i].walk()):
+            continue
+        elsewhere = [c for c in reads[name] if not any(_under(c, parts[i]) for i in [links[0]] + local)]
         if any(c.name.lower() != mine.name.lower() for c in elsewhere):
             continue
         if elsewhere:
@@ -192,21 +224,33 @@ def join_to_membership(select: exp.Select, schema: dict | None, types: dict | No
             kinds = [_declared_type(c, by_name[c.table.lower()], types or {}) for c in (mine, other)]
             if kinds[0] != kinds[1] or any(f in k for k in kinds if k for f in _FLOATING):
                 continue
-        body = exp.Select(expressions=[mine.copy()])
-        body.set(FROM_KEY, exp.From(this=sources[index].copy()))
-        condition = _and_all([parts[i].copy() for i in local])
-        if condition is not None:
-            body.set("where", exp.Where(this=condition))
+        inner = _derived(sources[index])
+        if inner is not None and not local and len(inner.expressions) == 1 and inner.expressions[0].alias_or_name.lower() == mine.name.lower() and not inner.find(exp.Star):
+            body = inner.copy()  # a derived table that returns just the matched column is the subquery itself
+        else:
+            body = exp.Select(expressions=[mine.copy()])
+            body.set(FROM_KEY, exp.From(this=sources[index].copy()))
+            condition = _and_all([parts[i].copy() for i in local])
+            if condition is not None:
+                body.set("where", exp.Where(this=condition))
         membership = exp.In(this=other.copy(), query=exp.Subquery(this=body))
-        kept = [parts[i].copy() for i in range(len(parts)) if i not in touching]  # these read no column of x
-        # the other reads of x.c (select list, GROUP BY, HAVING, ORDER BY) are re-pointed in a copy, found by position
+        # the other reads of x.c (select list, GROUP BY, HAVING, ORDER BY, conditions that stay) are re-pointed in a copy, found by position
         marked = select.copy()
         position = {id(c): i for i, c in enumerate(select.find_all(exp.Column))}
         copies = list(marked.find_all(exp.Column))
+        staying_copies = {i: copies[position[id(next(c for c in reads[name] if _under(c, parts[i])))]] for i in staying}
+        for i, column in staying_copies.items():  # the conjunct's root in the copy, found from one of its columns
+            depth, node = 0, next(c for c in reads[name] if _under(c, parts[i]))
+            while node is not parts[i]:
+                depth, node = depth + 1, node.parent
+            for _ in range(depth):
+                column = column.parent
+            staying_copies[i] = column
         for column in elsewhere:
             target = copies[position[id(column)]]
             item = target.parent is marked and target.arg_key == "expressions"
             target.replace(exp.alias_(other.copy(), target.name) if item else other.copy())
+        kept = [staying_copies[i] if i in staying_copies else parts[i].copy() for i in range(len(parts)) if i not in [links[0]] + local]
         result = exp.Select(expressions=[item.copy() for item in marked.expressions])
         for clause in ("distinct", "group", "having", "order"):
             if marked.args.get(clause) is not None:
@@ -216,5 +260,7 @@ def join_to_membership(select: exp.Select, schema: dict | None, types: dict | No
         if remaining[1:]:
             result.set("joins", [exp.Join(this=source) for source in remaining[1:]])
         result.set("where", exp.Where(this=_and_all(kept + [membership])))
+        if not _reads_only_keys(result, schema):
+            continue  # with x.c read as y.d, a column outside the aggregates is still not a GROUP BY column
         return result
     return None

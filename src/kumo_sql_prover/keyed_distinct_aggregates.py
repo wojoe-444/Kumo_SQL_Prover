@@ -22,16 +22,22 @@ NULL, and a ``GROUP BY`` puts the NULLs of a grouping column in one group, where
 For the tuple count every counted tuple is free of NULLs by declaration, so every row of the group is
 counted, and by the same argument no two rows of the group hold the same tuple.
 
-**What is read.** A select with exactly one source, a plain base table (no join, no derived table, no CTE of
-that name, no ``LATERAL``, no sample); a plain ``GROUP BY`` (no ``ROLLUP``, ``CUBE`` or grouping sets, whose
-super-groups mix the groups) whose every item is a column of that table, or no ``GROUP BY``; an aggregate of
+**What is read.** A select with exactly one source: a plain base table (no join, no CTE of that name, no
+``LATERAL``, no sample), or a derived table that only filters one such table and lists columns of it
+(``(SELECT t.a, t.b AS v FROM t WHERE p) AS d``: no ``DISTINCT``, grouping, join, ``LIMIT`` or expression, so
+each of its rows is one row of ``t`` and ``d.v`` is ``t.b``; the key columns the rule needs must be among those
+listed, since they are read through the select's grouping and argument); a plain ``GROUP BY`` (no ``ROLLUP``,
+``CUBE`` or grouping sets, whose super-groups mix the groups) whose every item is a column of that table, or no
+``GROUP BY``; an aggregate of
 the select itself (``SELECT`` list, ``HAVING`` or ``ORDER BY``; not one inside a nested select, not a window's,
 none with ``FILTER``) whose ``DISTINCT`` argument is a column of the table. A column counts as the table's when
 it is qualified with the table's name in this select, or bare and listed for the table in the supplied schema
-(the innermost select binds a name first). ``MIN`` and ``MAX`` ignore ``DISTINCT`` anyway and are left alone.
+(the innermost select binds a name first); a bare name that a select alias gives to another expression is not
+read, since ``GROUP BY``, ``HAVING`` and ``ORDER BY`` may mean the alias. ``MIN`` and ``MAX`` ignore ``DISTINCT``
+anyway and are left alone.
 
 **What is refused.** Everything else: joins (a join repeats the rows of a keyed table, and whether its other
-side is keyed is another rule's concern), derived tables, grouping by an expression, an argument that is an
+side is keyed is another rule's concern), any other derived table, grouping by an expression, an argument that is an
 expression, a key with a nullable column other than the argument, and tables without a declared key.
 """
 
@@ -51,35 +57,67 @@ def _unwrap(node: exp.Expression) -> exp.Expression:
     return node
 
 
-def _single_base_table(select: exp.Select) -> exp.Table | None:
-    source = select.args.get("from_") or select.args.get("from")
-    if source is None or select.args.get("joins") or select.args.get("laterals"):
-        return None
-    table = source.this
+def _base_table(table: exp.Expression) -> bool:
     if type(table) is not exp.Table or not isinstance(table.this, exp.Identifier):
-        return None
+        return False
     if any(value for key, value in table.args.items() if key not in _TABLE_ARGS):
-        return None
+        return False
     alias = table.args.get("alias")
     if alias is not None and alias.args.get("columns"):
-        return None
-    if not table.args.get("db") and table.name.lower() in visible_ctes(table):
-        return None
-    return table
+        return False
+    return bool(table.args.get("db")) or table.name.lower() not in visible_ctes(table)
 
 
-def _own_column(node: exp.Expression, table: exp.Table, listed: set[str]) -> str | None:
-    """The lower-cased name of ``node`` when it is a plain column of ``table`` as its select names it."""
+def _table_column(node: exp.Expression, name: str, listed: set[str]) -> str | None:
+    """The lower-cased name of ``node`` when it is a plain column of the one source ``name`` that lists it."""
 
     node = _unwrap(node)
     if type(node) is not exp.Column or isinstance(node.this, exp.Star) or node.args.get("db") or node.args.get("catalog"):
         return None
-    name = node.name.lower()
-    if name not in listed:
+    column = node.name.lower()
+    if column not in listed or (node.table and node.table.lower() != name):
         return None
-    if node.table:
-        return name if node.table.lower() == table.alias_or_name.lower() else None
-    return name
+    return column
+
+
+def _keyed_rows(select: exp.Select, schema: dict[str, list[str]]):
+    """``(table name, reader)`` when the rows ``select`` reads are rows of one base table: ``reader`` maps a
+    column of the select to the table column it shows, else to ``None``."""
+
+    source = select.args.get("from_") or select.args.get("from")
+    if source is None or select.args.get("joins") or select.args.get("laterals"):
+        return None
+    known = {k.lower(): {c.lower() for c in v} for k, v in schema.items()}
+    table = source.this
+    if _base_table(table):
+        listed = known.get(table.name.lower()) or set()
+        return table.name.lower(), lambda node: _table_column(node, table.alias_or_name.lower(), listed)
+    # a derived table that only filters one base table and shows some of its columns, each row once
+    if type(table) is not exp.Subquery or not table.alias or type(table.this) is not exp.Select:
+        return None
+    if any(value for key, value in table.args.items() if key not in ("this", "alias")) or table.args["alias"].args.get("columns"):
+        return None
+    inner = table.this
+    if any(value for key, value in inner.args.items() if key not in ("expressions", "from_", "from", "where")):
+        return None
+    inner_source = inner.args.get("from_") or inner.args.get("from")
+    if inner_source is None or not _base_table(inner_source.this):
+        return None
+    base = inner_source.this
+    listed = known.get(base.name.lower()) or set()
+    shown: dict[str, str] = {}
+    for item in inner.expressions:
+        column = _table_column(item.unalias(), base.alias_or_name.lower(), listed)
+        name = item.alias_or_name.lower()
+        if column is None or not name or name in shown:
+            return None
+        shown[name] = column
+
+    def reader(node: exp.Expression) -> str | None:
+        name = _table_column(node, table.alias.lower(), set(shown))
+        return shown[name] if name is not None else None
+
+    return base.name.lower(), reader
 
 
 def drop_keyed_aggregate_distinct(
@@ -92,13 +130,24 @@ def drop_keyed_aggregate_distinct(
 
     if not keys or not schema:
         return None
-    table = _single_base_table(select)
-    if table is None:
+    found = _keyed_rows(select, schema)
+    if found is None:
         return None
-    name = table.name.lower()
-    declared = [tuple(c.lower() for c in key) for key in (keys.get(name) or []) if key]
-    listed = {c.lower() for c in ({k.lower(): v for k, v in schema.items()}.get(name) or [])}
-    if not declared or not listed:
+    name, read = found
+    # a bare name that a select alias gives to something else may mean the alias in GROUP BY, HAVING or ORDER BY
+    renamed = {
+        item.alias.lower() for item in select.expressions
+        if isinstance(item, exp.Alias) and item.alias and not (type(_unwrap(item.this)) is exp.Column and _unwrap(item.this).name.lower() == item.alias.lower())
+    }
+
+    def reader(node: exp.Expression) -> str | None:
+        node = _unwrap(node)
+        if type(node) is exp.Column and not node.table and node.name.lower() in renamed:
+            return None
+        return read(node)
+
+    declared = [tuple(c.lower() for c in key) for key in ({k.lower(): v for k, v in keys.items()}.get(name) or []) if key]
+    if not declared:
         return None
     nonnull = {c.lower() for c in ({k.lower(): v for k, v in (not_null or {}).items()}.get(name) or ())}
     group = select.args.get("group")
@@ -107,7 +156,7 @@ def drop_keyed_aggregate_distinct(
         if extended_grouping(group) or any(value for key, value in group.args.items() if key != "expressions"):
             return None
         for item in group.expressions:
-            column = _own_column(item, table, listed)
+            column = reader(item)
             if column is None:
                 return None
             grouped.add(column)
@@ -124,7 +173,7 @@ def drop_keyed_aggregate_distinct(
         distinct = node.this
         if not isinstance(distinct, exp.Distinct) or distinct.args.get("on") or not distinct.expressions:
             continue
-        columns = [_own_column(e, table, listed) for e in distinct.expressions]
+        columns = [reader(e) for e in distinct.expressions]
         if None in columns:
             continue
         if len(columns) == 1:
