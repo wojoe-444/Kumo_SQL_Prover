@@ -139,6 +139,19 @@ def witness_problems(case: Case) -> list[str]:
 # -- the prover's verdict -------------------------------------------------------------------
 
 
+def search_difference(case: Case) -> bool:
+    """Whether the prover's executed search (``kumo_sql_prover.executed_refutation``, the BigQuery reading on DuckDB)
+    finds a database on which the two queries return different rows. Differences inside the last digits of a
+    FLOAT64 are not counted by it, so it decides none of the rounding traps."""
+
+    from kumo_sql_prover.executed_refutation import search_counterexample
+
+    try:
+        return search_counterexample(case.left, case.right, schema=SCHEMA, types=TYPES) is not None
+    except Exception:  # a crash is a failure to refute, never a refutation
+        return False
+
+
 def decide(case: Case) -> dict:
     from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
 
@@ -146,10 +159,14 @@ def decide(case: Case) -> dict:
     report = getattr(result, "errors", None)
     verdict = report.verdict if report is not None else None
     listed = [a for a in result.assumptions if any(a.startswith(v) for v in case.violates + case.discharged)]
+    searched = False
     if result.status is SmtStatus.NOT_EQUIVALENT:
         outcome = "refuted"
     elif result.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
         outcome = "assumed" if listed else "proven"
+    elif verdict is None and search_difference(case):
+        # no proof and no error verdict: a database built for the pair on which both queries succeed with different rows
+        outcome, searched = "refuted", True
     else:
         outcome = "unknown"
     wrong = False
@@ -171,6 +188,7 @@ def decide(case: Case) -> dict:
         "errors": verdict,
         "classified": classified,
         "wrong": wrong,
+        "searched": searched,
         "reason": result.reason,
         "assumptions": list(result.assumptions),
     }
@@ -183,7 +201,8 @@ def score(results: list[dict]) -> str:
     return (
         f"{sum(r['outcome'] == 'proven' for r in equivalent)}/{len(equivalent)} equivalent proved, "
         f"{sum(r['outcome'] == 'refuted' for r in different)}/{len(different)} differing refuted "
-        f"({sum(r['outcome'] == 'proven' for r in different)} proved, {sum(r['outcome'] == 'assumed' for r in different)} assumed), "
+        f"({sum(r.get('searched', False) for r in different)} by the executed search, "
+        f"{sum(r['outcome'] == 'proven' for r in different)} proved, {sum(r['outcome'] == 'assumed' for r in different)} assumed), "
         f"{sum(r['classified'] for r in errors)}/{len(errors)} error cases classified, {sum(r['wrong'] for r in results)} wrong"
     )
 
@@ -206,7 +225,7 @@ def results_row(results: list[dict], held_out: list[dict]) -> dict:
         "docs": "docs/evals/numeric-traps.md",
         "command": "python tools/numeric_traps_bench.py --write-results",
         "date": today(),
-        "caveats": "Written by the author of the numeric value layer from the issue's trap list; the cases were fixed before the prover changed and a quarter held out, but only the cases were, not the prover's rules, so this is a regression and honesty check, not an independent benchmark. Labels the author could not confirm in the documentation are marked in the case file. Three pairs that differ only on NaN are proved under the listed no-NaN assumption (not modelled yet); they count as unknown here, not as proofs, and are not wrong because the assumption is disclosed. Twenty float-sum-order cases were added in a later pass (15 development, 5 held out, fixed before the rule was run); their labels rest on the repo's own note that a FLOAT64 sum has no fixed order, which is unverified against the GoogleSQL aggregate page, and the INT64 ones on the unverified rule that a partial INT64 sum cannot overflow when the total fits. A proof that still lists the row-order assumption on a case that says it does not apply, or on one that violates it, counts as unknown, not as a proof. The 16 numeric-* cases (NUMERIC scale and rounding) came with the rounding model: four are held out, but their answers were seen during development (tuned on test), and several rest on the unverified rule that NUMERIC * and / round to nine decimal digits, half away from zero. A refutation that needs a nonlinear NUMERIC product can hit the solver's time limit on a loaded machine, so the refuted count can move by one or two between runs; it never produces a wrong answer. The 17 group-SUM cases (12 development, 5 held out) were written, with their labels, before the prover compared sums group by group; the held-out five were run only after it was written and nothing was changed in response. Two of them are window pairs the prover does not prove equal, so they stay unknown. Their labels rest on BigQuery adding up a group that HAVING then drops (unverified: an optimizer may push a key filter below the aggregation) and on SUM(DISTINCT) and window sums failing on INT64 overflow as SUM does (unverified); a regrouped or pre-aggregated sum has no case because BigQuery's rule for partial sums that overflow while the total does not is unverified.",
+        "caveats": "Written by the author of the numeric value layer from the issue's trap list; the cases were fixed before the prover changed and a quarter held out, but only the cases were, not the prover's rules, so this is a regression and honesty check, not an independent benchmark. Labels the author could not confirm in the documentation are marked in the case file. Three pairs that differ only on NaN are proved under the listed no-NaN assumption (not modelled yet); they count as unknown here, not as proofs, and are not wrong because the assumption is disclosed. Twenty float-sum-order cases were added in a later pass (15 development, 5 held out, fixed before the rule was run); their labels rest on the repo's own note that a FLOAT64 sum has no fixed order, which is unverified against the GoogleSQL aggregate page, and the INT64 ones on the unverified rule that a partial INT64 sum cannot overflow when the total fits. A proof that still lists the row-order assumption on a case that says it does not apply, or on one that violates it, counts as unknown, not as a proof. The 16 numeric-* cases (NUMERIC scale and rounding) came with the rounding model: four are held out, but their answers were seen during development (tuned on test), and several rest on the unverified rule that NUMERIC * and / round to nine decimal digits, half away from zero. A refutation that needs a nonlinear NUMERIC product can hit the solver's time limit on a loaded machine, so the refuted count can move by one or two between runs; it never produces a wrong answer. The 17 group-SUM cases (12 development, 5 held out) were written, with their labels, before the prover compared sums group by group; the held-out five were run only after it was written and nothing was changed in response. Two of them are window pairs the prover does not prove equal, so they stay unknown. Their labels rest on BigQuery adding up a group that HAVING then drops (unverified: an optimizer may push a key filter below the aggregation) and on SUM(DISTINCT) and window sums failing on INT64 overflow as SUM does (unverified); a regrouped or pre-aggregated sum has no case because BigQuery's rule for partial sums that overflow while the total does not is unverified. A later pass read the prover's reasons for the development cases still open and added three rules for them (a filter written inside a global aggregate's argument, x * 0.5 as x / 2, an INT64 sum over a UNION traced to its declared columns), so those development cases are tuned on test; the held-out quarter was looked at by verdict only. A pair the prover leaves unknown is then run through the executed counterexample search (DuckDB reading the queries the BigQuery way, on small generated databases, the difference confirmed with the optimizer off); the score says how many refutations came from it. The search refuses a query DuckDB would not run faithfully, and a refutation it reports on a pair labelled equivalent would count as wrong.",
     }
 
 
