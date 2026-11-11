@@ -116,6 +116,8 @@ from .expanded_not_in import drop_count_guards
 from .counted_groups import count_extra_key
 from .membership_joins import join_nested_membership
 from .computed_group_outputs import lift_computed_outputs
+from .keyed_join_groups import pull_up_keyed_join
+from .own_group_filters import filter_own_groups
 from .having_count_rules import rewrite_count_tests
 from .semijoin_shapes import rewrite_semijoin_shapes
 from .grouped_self_membership import read_grouped_self_membership
@@ -4958,6 +4960,8 @@ def normalize(
         lambda sel: count_extra_key(sel, schema, not_null),
         lambda sel: join_nested_membership(sel, schema),
         lift_computed_outputs,
+        lambda sel: filter_own_groups(sel, schema, keys, not_null, dialect),
+        lambda sel: pull_up_keyed_join(sel, schema, keys),
     ) if shapes else ()
 
     # shape rules that must read a select before ``_wrap_outer_join_aggregate`` wraps its outer joins
