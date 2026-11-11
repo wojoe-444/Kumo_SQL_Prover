@@ -11,10 +11,12 @@ For each pair KumoSQL:
 1. **parses** the source in its dialect and the translation in the target's (sqlglot has no MariaDB
    or MonetDB dialect: they are read as MySQL and PostgreSQL);
 2. **proves** the translation equal to the source in the source's dialect: the translation is
-   renamed back to the source's column names (BIRD's translations rename some columns, for example
-   ``Type`` to ``_Type``), written in the source dialect by sqlglot, and compared with
-   ``prove_equivalent_algebraic`` (no keys, output names ignored). As in Spider, a source ending in
-   ``ORDER BY`` is compared as a list.
+   renamed back to the source's column and table names (BIRD's translations respell some, for
+   example ``Type`` to ``_Type`` and ``Sales Orders`` to ``Sales_Orders``), written in the source
+   dialect by sqlglot, and compared with ``prove_equivalent_algebraic`` (no keys, output names
+   ignored). As in Spider, a source ending in ``ORDER BY`` is compared as a list. A MariaDB
+   translation that is its MySQL source token for token is also decided, when one run of the
+   statement says what another would (``same_statement``).
 
 A proof is about sqlglot's reading of each dialect. Where the two databases mean different things
 by the same text and sqlglot does not translate it, no proof is taken (``dialect gap``):
@@ -79,6 +81,16 @@ CASELESS_STRINGS = {"mysql", "mariadb"}
 INTEGER_DIVISION = {"sqlite", "postgresql", "monetdb"}
 EXACT_DECIMALS = {"postgresql", "monetdb", "mysql", "mariadb"}  # 1.0 is an exact decimal, so 1.0 / 3 is not a float
 DIVIDE_BY_ZERO = {"sqlite": "null", "mysql": "null", "mariadb": "null", "duckdb": "infinity", "clickhouse": "infinity"}  # the others raise an error
+SAME_READING = {"mysql", "mariadb"}  # one sqlglot dialect reads both, and no gap rule tells them apart
+# A statement that calls one of these, or reads a variable, need not return the same thing twice
+RERUN_DEPENDENT = {
+    "any_value", "benchmark", "connection_id", "curdate", "current_date", "current_role", "current_time",
+    "current_timestamp", "current_user", "curtime", "database", "found_rows", "get_lock", "group_concat",
+    "is_free_lock", "is_used_lock", "json_arrayagg", "json_objectagg", "last_insert_id", "load_file", "localtime",
+    "localtimestamp", "now", "over", "rand", "random_bytes", "release_all_locks", "release_lock", "row_count",
+    "schema", "session_user", "sleep", "sysdate", "system_user", "user", "utc_date", "utc_time", "utc_timestamp",
+    "uuid", "uuid_short", "version",
+}
 PROVER_TIMEOUT_MS = 3000
 CHECK_TRIALS = 300
 UNBOUNDED = 1_000_000_000
@@ -245,14 +257,56 @@ def parse(sql: str, dbms: str):
     return trees[0] if len(trees) == 1 and not isinstance(trees[0], exp.Command) else None
 
 
-def _plain(tree, renames: dict[str, str]):
-    """Translation's column names back to the source's; every name lower-case, quoted only when needed."""
+def _spelling(name: str) -> str:
+    """A name as a translated schema would spell it: lower-case, every other character an underscore."""
 
-    lowered = {k.lower(): v for k, v in renames.items()}
+    return re.sub(r"[^a-z0-9]", "_", name.lower())
+
+
+def _respelled(name: str, known: set[str]) -> str | None:
+    """The one name in ``known`` that ``name`` (not itself in it) is a translated spelling of, if any.
+
+    DLBench's translated schemas respell names the target would not take as written: a space or a
+    hyphen becomes an underscore (``Date received`` to ``Date_received``, ``current-terms`` to
+    ``current_terms``) and a reserved word gets an underscore in front (``date`` to ``_date``). The
+    fixture's ``renames.json`` only lists the tables a pair's schema text describes in the same order
+    on both sides, so a name it misses is matched this way, and only when one source name fits.
+    """
+
+    if name in known:
+        return None
+    spelled = name.lower()
+    fits = {k for k in known if spelled in (_spelling(k), "_" + _spelling(k))}
+    return fits.pop() if len(fits) == 1 else None
+
+
+def _plain(tree, renames: dict[str, str], schema: dict[str, dict[str, str]] | None = None):
+    """Translation's column and table names back to the source's; every name lower-case, quoted only when needed.
+
+    ``renames`` is the fixture's list (its keys keep the quotes the translated schema was written
+    with). With the source's ``schema``, a name the list misses is read back by its spelling
+    (``_respelled``).
+    """
+
+    lowered = {k.strip('"`').lower(): v.strip('"`') for k, v in renames.items()}
+    tables = set(schema or ())
+    columns = {c for cols in (schema or {}).values() for c in cols}
+    local = {n.alias_or_name.lower() for n in tree.find_all(exp.CTE, exp.TableAlias, exp.Subquery) if n.alias_or_name}
+    aliases = {a.alias.lower() for a in tree.find_all(exp.Alias) if a.alias}  # ORDER BY _date may name an output, not a column
+    table_names = {}
+    for table in tree.find_all(exp.Table):
+        name = table.name.lower()
+        if name and name not in local and not table.args.get("db") and (found := _respelled(name, tables)):
+            table_names[name] = found
     for identifier in tree.find_all(exp.Identifier):
         name = identifier.name
-        if isinstance(identifier.parent, exp.Column) and identifier.parent.this is identifier:
-            name = lowered.get(name.lower(), name)
+        parent = identifier.parent
+        if isinstance(parent, exp.Column) and parent.this is identifier:
+            if parent.args.get("table") is not None or name.lower() not in aliases:
+                name = lowered.get(name.lower(), name)
+                name = _respelled(name.lower(), columns) or name
+        elif (isinstance(parent, exp.Table) and parent.this is identifier) or (isinstance(parent, exp.Column) and parent.args.get("table") is identifier):
+            name = table_names.get(name.lower(), name)
         name = name.lower()
         identifier.set("this", name)
         identifier.set("quoted", not re.fullmatch(r"[a-z_][a-z0-9_]*", name))
@@ -266,7 +320,7 @@ def as_source(pair: Pair) -> tuple[str | None, str | None]:
     source, target = parse(pair.source_query, pair.source_dbms), parse(pair.target_query, pair.target_dbms)
     try:
         left = _plain(source, {}).sql(dialect=dialect) if source is not None else None
-        right = _plain(target, pair.renames).sql(dialect=dialect) if target is not None else None
+        right = _plain(target, pair.renames, schema_of(pair)).sql(dialect=dialect) if target is not None else None
     except Exception:  # a construct sqlglot cannot write in the source dialect
         return None, None
     return left, right
@@ -350,18 +404,75 @@ def prove(left: str, right: str, schema: dict[str, dict[str, str]], dialect: str
     return result.status is SmtStatus.PROVEN_EQUIVALENT
 
 
+# -- the same statement ---------------------------------------------------------------
+
+
+def _tokens(sql: str, dbms: str) -> list[tuple[str, str]] | None:
+    """The statement's tokens: comments and the closing semicolon dropped, everything but a literal lower-case."""
+
+    try:
+        tokens = sqlglot.tokenize(sql, read=SQLGLOT[dbms])
+    except Exception:
+        return None
+    while tokens and tokens[-1].token_type.name == "SEMICOLON":
+        tokens.pop()
+    return [(t.token_type.name, t.text if "STRING" in t.token_type.name else t.text.lower()) for t in tokens]
+
+
+def same_statement(pair: Pair) -> bool:
+    """Whether the translation is its source, token for token, and one run of it says what another would.
+
+    Only between MySQL and MariaDB, which this harness reads as one dialect: there the translation
+    often changes nothing but letter case and spacing, and the provers have nothing to read (a column
+    of a table whose definition was not published, an INSERT, a CREATE TABLE AS). The tokens are
+    compared, not the trees, so nothing rests on how sqlglot parses the statement. Refused: anything
+    that is not a query or a data change (EXPLAIN's output is the engine's own); a statement whose
+    answer can change between two runs (the clock, random values, the session, variables, locks,
+    ``GROUP_CONCAT`` and window functions, ``LIMIT`` without ``ORDER BY``); and a string literal that
+    ends in a space, because MySQL 8's default collation compares trailing spaces and MariaDB's
+    ignores them.
+    """
+
+    if pair.source_dbms not in SAME_READING or pair.target_dbms not in SAME_READING:
+        return False
+    left, right = _tokens(pair.source_query, pair.source_dbms), _tokens(pair.target_query, pair.target_dbms)
+    if not left or left != right:
+        return False
+    tree = parse(pair.source_query, pair.source_dbms)
+    if not isinstance(tree, (exp.Query, exp.Insert, exp.Create, exp.Update, exp.Delete)):
+        return False
+    for index, (kind, text) in enumerate(left):
+        if kind in ("PARAMETER", "SESSION_PARAMETER", "PLACEHOLDER") or text in RERUN_DEPENDENT:
+            return False
+        if text == "unix_timestamp" and left[index + 1:index + 3] == [("L_PAREN", "("), ("R_PAREN", ")")]:
+            return False
+        if "STRING" in kind and text != text.rstrip():
+            return False
+    from kumo_sql_prover.smt_equivalence import _NONDETERMINISTIC_NAMES, _NONDETERMINISTIC_TYPES
+
+    for node in tree.walk():
+        if type(node).__name__ in _NONDETERMINISTIC_TYPES or isinstance(node, (exp.Window, exp.Parameter, exp.SessionParameter, exp.Placeholder, exp.TableSample)):
+            return False
+        if isinstance(node, exp.Anonymous) and node.name.upper() in _NONDETERMINISTIC_NAMES:
+            return False
+        if (node.args.get("limit") or node.args.get("offset")) and not node.args.get("order"):
+            return False
+    return True
+
+
 # -- checking proofs by running them --------------------------------------------------
 
 
 def _random_rows(schema: dict[str, dict[str, str]], rng: random.Random, literals: list) -> dict[str, list[tuple]]:
     numbers = [0, 1, 2, 3, -1] + [v for v in literals if isinstance(v, (int, float))]
+    whole = [v for v in numbers if isinstance(v, int)]  # an INTEGER column holds no 0.1: the translation's could not
     texts = ["a", "b", "A"] + [v for v in literals if isinstance(v, str)]
     data = {}
     for table, columns in schema.items():
         rows = []
         for _ in range(rng.choice([0, 1, 2, 3, 4, 6])):
             rows.append(tuple(
-                None if rng.random() < 0.1 else (rng.choice(texts) if _texty(k) else rng.choice(numbers))
+                None if rng.random() < 0.1 else rng.choice(texts if _texty(k) else numbers if _fractional(k) else whole)
                 for k in columns.values()
             ))
         data[table] = rows
@@ -413,7 +524,7 @@ def check_proof(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
         try:
             import duckdb
 
-            native = _plain(parse(pair.target_query, "duckdb"), pair.renames).sql(dialect="duckdb")
+            native = _plain(parse(pair.target_query, "duckdb"), pair.renames, schema).sql(dialect="duckdb")
         except Exception:
             native = None
     for _ in range(CHECK_TRIALS):
@@ -461,10 +572,14 @@ def _create(table: str, columns: dict[str, str], typed) -> str:
     return f'CREATE TABLE "{table}" ({definitions})'
 
 
+def _fractional(declared: str) -> bool:
+    return any(w in declared.lower() for w in ("real", "float", "double", "dec", "num"))
+
+
 def _duck_type(declared: str) -> str:
     if _texty(declared):
         return "VARCHAR"
-    return "DOUBLE" if any(w in declared.lower() for w in ("real", "float", "double", "dec", "num")) else "BIGINT"
+    return "DOUBLE" if _fractional(declared) else "BIGINT"
 
 
 # -- deciding -------------------------------------------------------------------------
@@ -487,6 +602,8 @@ def decide(pair: Pair) -> dict:
             difference = check_proof(pair, left, right, schema)
             if difference is not None:
                 wrong, detail = True, difference
+        elif same_statement(pair):
+            outcome, detail = "proven", "same statement"
         else:
             outcome = "unknown"
     else:
@@ -530,6 +647,7 @@ def results_rows(results: list[dict]) -> dict[str, dict]:
     proven = sum(r["outcome"] == "proven" for r in exact)
     parsed = sum(r["parsed"] for r in results)
     gaps = sum(r["detail"].startswith("dialect gap") for r in results)
+    same = sum(r["outcome"] == "proven" and r["detail"] == "same statement" for r in exact)
     return {
         "dlbench": {
             "suite": "DLBench cross-dialect translations (pinned subset)",
@@ -538,13 +656,13 @@ def results_rows(results: list[dict]) -> dict[str, dict]:
             "score": f"{proven}/{len(exact)} exact pairs proved, {sum(r['wrong'] for r in results)} wrong; {parsed}/{len(results)} parsed",
             "metric": "Translations from SQLite, MySQL and PostgreSQL into six databases' dialects, proved equal to the source in the source's dialect after sqlglot reads both; parsed means both sides parse in their own dialect.",
             "evidence": "proof",
-            "correctness": f"Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); {gaps} pairs where the two databases read the same text differently (LIKE case, MySQL collation, integer division, SQLite type conversion) are left unproved. {sum(r['outcome'] == 'proven' for r in approx)}/{len(approx)} 'approximate' pairs are proved (listed in the docs).",
+            "correctness": f"Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); {gaps} pairs where the two databases read the same text differently (LIKE case, MySQL collation, integer division, SQLite type conversion) are left unproved. {sum(r['outcome'] == 'proven' for r in approx)}/{len(approx)} 'approximate' pairs are proved (listed in the docs). {same} of the exact proofs are a MariaDB translation that is its MySQL source token for token, where the provers have nothing to read (an INSERT, a table with no published definition); statements whose answer can change between two runs are refused.",
             "coverage": {k: counts[k] for k in ("proven", "unknown", "unsupported") if counts[k]},
             "held_out": f"{sum(r['outcome'] == 'proven' for r in held)}/{len(held)} exact pairs proved",
             "docs": "docs/evals/dlbench.md",
             "command": "python tools/dlbench_bench.py --write-results",
             "date": today(),
-            "caveats": f"Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test).",
+            "caveats": f"Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test). The 2026-11-11 harness changes (translated column and table spellings read back, the same-statement rule) were developed on the development split only.",
         },
     }
 
