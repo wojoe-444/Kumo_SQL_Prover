@@ -1,31 +1,34 @@
-"""A conditional count of a grouped query, written as a sum of ones and zeros.
+"""A conditional count of a grouped query, written one way.
 
 ``COUNT(CASE WHEN c THEN 1 END)`` counts the rows of a group where ``c`` is TRUE: the ``CASE`` is NULL for
 every other row, and ``COUNT`` skips NULLs. ``SUM(CASE WHEN c THEN 1 ELSE 0 END)`` adds a one for the same
 rows and a zero for the rest. The two differ only over no rows at all, where the count is 0 and the sum is
 NULL, and a group of a ``GROUP BY`` always has a row. Reports that bucket rows are written both ways, and
-the two spellings did not compare. This rule gives the count the sum's spelling.
+the two spellings did not compare. This rule gives the sum the count's spelling, which is the one the prover
+already uses for ``COUNT(*) FILTER (WHERE c)``.
 
-Read only when:
+Three readings, in this order:
 
-* the select has a ``GROUP BY`` with keys and no ``ROLLUP``, ``CUBE``, ``GROUPING SETS`` or empty grouping
-  set: each of those can make a grand-total row over no input rows, where 0 and NULL differ. A query with
-  aggregates and no ``GROUP BY`` is left alone for the same reason;
-* the ``COUNT`` is the select's own, has one argument, no ``DISTINCT``, no ``FILTER`` and no ``OVER`` (a
-  filter or a window frame can be empty);
-* its argument is a searched ``CASE`` whose every arm returns a literal that is not NULL, with no ``ELSE``
-  or ``ELSE NULL``. With several arms the ``CASE`` is not NULL exactly when some arm's condition is TRUE,
-  which is when the sum's ``CASE`` returns its one;
-* some column of the argument is the select's own: qualified with the name of one of its sources, or
-  unqualified and listed by name in a derived table that is one of its sources (the innermost name wins).
-  A column inside a subquery of the argument does not count. An aggregate that reads only columns of an
-  enclosing query belongs to that query, which may have no ``GROUP BY``.
+* **The literal of a count.** ``COUNT(CASE WHEN c THEN 'y' ELSE NULL END)`` is ``COUNT(CASE WHEN c THEN 1
+  END)``: a searched ``CASE`` with one arm that returns a literal (never NULL) and no ``ELSE`` or ``ELSE
+  NULL`` is not NULL exactly when ``c`` is TRUE, whatever the literal. True of any count, grouped or not.
+* **The sum of ones.** ``SUM(CASE WHEN c THEN 1 ELSE 0 END)`` is ``COUNT(CASE WHEN c THEN 1 END)``, read only
+  when the select has a ``GROUP BY`` with keys and no ``ROLLUP``, ``CUBE``, ``GROUPING SETS`` or empty
+  grouping set (each of those can make a grand-total row over no input rows, where 0 and NULL differ; a query
+  with aggregates and no ``GROUP BY`` is left alone for the same reason), and only when some column of the
+  argument is the select's own: qualified with the name of one of its sources, or unqualified and listed by
+  name in a derived table that is one of its sources. A column inside a subquery of the argument does not
+  count. An aggregate that reads only columns of an enclosing query belongs to that query, which may have no
+  ``GROUP BY``.
+* **The count of a NULL test.** ``COUNT(CASE WHEN x IS NOT NULL THEN 1 END)`` is ``COUNT(x)`` and
+  ``COUNT(CASE WHEN x IS NULL THEN 1 END)`` is ``COUNT(*) - COUNT(x)``, for a column ``x`` of the select's own
+  (``COUNT(*)`` belongs to the select it is written in, so ``x`` must too). Over no rows all of them are 0, so
+  no ``GROUP BY`` is needed here; the sums of the same tests get there through the reading above, under its
+  conditions.
 
-The count of the rows where a column is, or is not, NULL has a shorter spelling still, and is given it:
-``SUM(CASE WHEN x IS NOT NULL THEN 1 ELSE 0 END)`` is ``COUNT(x)`` and ``SUM(CASE WHEN x IS NULL THEN 1 ELSE 0
-END)`` is ``COUNT(*) - COUNT(x)``, again only inside a group, which has a row. This is read under the same
-conditions, for a sum with no ``DISTINCT``, ``FILTER`` or ``OVER`` whose one arm tests one of the select's own
-columns and returns the number 1, with ``ELSE 0``.
+Every aggregate read is the select's own, has one argument and no ``DISTINCT``, ``FILTER`` or ``OVER`` (a
+filter or a window frame can be empty). ``SUM`` of integers and ``COUNT`` have the same type in PostgreSQL and
+BigQuery; elsewhere the value is the same.
 """
 
 from __future__ import annotations
@@ -69,59 +72,65 @@ def _is_number(node: exp.Expression | None, text: str) -> bool:
     return isinstance(node, exp.Literal) and not node.is_string and node.name == text
 
 
-def _null_counts(select: exp.Select, own: set[str], listed: set[str]) -> bool:
-    changed = False
-    for total in list(select.find_all(exp.Sum)):
-        if total.find_ancestor(exp.Select) is not select or isinstance(total.parent, (exp.Window, exp.Filter)):
-            continue
-        case = total.this
-        if not isinstance(case, exp.Case) or case.this is not None:
-            continue
-        arms = case.args.get("ifs") or []
-        if len(arms) != 1 or not _is_number(arms[0].args.get("true"), "1") or not _is_number(case.args.get("default"), "0"):
-            continue
-        test = _null_test(arms[0].this)
-        if test is None or not _is_own(test[0], own, listed):
-            continue
-        column, is_null = test
-        if not is_null:
-            total.replace(exp.Count(this=column.copy()))
-        else:
-            missing = exp.Sub(this=exp.Count(this=exp.Star()), expression=exp.Count(this=column.copy()))
-            total.replace(missing if isinstance(total.parent, (exp.Alias, exp.Select)) else exp.Paren(this=missing))
-        changed = True
-    return changed
+def _plain_call(call: exp.Expression, select: exp.Select) -> bool:
+    """One of the select's own aggregate calls, with nothing on it but its argument."""
+
+    if call.find_ancestor(exp.Select) is not select or isinstance(call.parent, (exp.Window, exp.Filter)):
+        return False
+    return not any(value for key, value in call.args.items() if key not in ("this", "big_int") and value)
+
+
+def _one_arm(case: exp.Expression | None) -> exp.If | None:
+    """The arm of a searched ``CASE`` with one ``WHEN``."""
+
+    if not isinstance(case, exp.Case) or case.this is not None:
+        return None
+    arms = case.args.get("ifs") or []
+    return arms[0] if len(arms) == 1 and isinstance(arms[0], exp.If) else None
+
+
+def _counted(condition: exp.Expression) -> exp.Count:
+    return exp.Count(this=exp.Case(ifs=[exp.If(this=condition.copy(), true=exp.Literal.number(1))]))
 
 
 def grouped_conditional_counts(select: exp.Select) -> exp.Expression | None:
-    """Rewrite the grouped select's own ``COUNT(CASE WHEN c THEN 1 END)`` as a sum of ones and zeros, in place."""
+    """Rewrite the select's own conditional counts to ``COUNT(CASE WHEN c THEN 1 END)`` or shorter, in place."""
 
     group = select.args.get("group")
-    if group is None or not group.expressions or extended_grouping(group):
-        return None
-    if any(group.args.get(key) for key in ("all", "rollup", "cube", "grouping_sets", "totals")):
-        return None
+    grouped = (
+        group is not None
+        and bool(group.expressions)
+        and not extended_grouping(group)
+        and not any(group.args.get(key) for key in ("all", "rollup", "cube", "grouping_sets", "totals"))
+    )
     own, listed = _own_names(select)
     changed = False
+    if grouped:
+        for total in list(select.find_all(exp.Sum)):
+            arm = _one_arm(total.this) if _plain_call(total, select) else None
+            if arm is None or not _is_number(arm.args.get("true"), "1") or not _is_number(total.this.args.get("default"), "0"):
+                continue
+            if not any(_is_own(node, own, listed) and node.find_ancestor(exp.Select) is select for node in total.this.walk()):
+                continue
+            total.replace(_counted(arm.this))
+            changed = True
     for count in list(select.find_all(exp.Count)):
-        if count.find_ancestor(exp.Select) is not select or isinstance(count.parent, (exp.Window, exp.Filter)):
+        arm = _one_arm(count.this) if _plain_call(count, select) else None
+        if arm is None:
             continue
-        case = count.this
-        if count.expressions or not isinstance(case, exp.Case) or case.this is not None:
+        default = count.this.args.get("default")
+        if not isinstance(arm.args.get("true"), exp.Literal) or (default is not None and not isinstance(default, exp.Null)):
             continue
-        arms = case.args.get("ifs") or []
-        default = case.args.get("default")
-        if not arms or (default is not None and not isinstance(default, exp.Null)):
-            continue
-        if any(not isinstance(arm, exp.If) or not isinstance(arm.args.get("true"), exp.Literal) for arm in arms):
-            continue
-        if not any(_is_own(node, own, listed) and node.find_ancestor(exp.Select) is select for node in case.walk()):
-            continue
-        ones = exp.Case(
-            ifs=[exp.If(this=arm.this.copy(), true=exp.Literal.number(1)) for arm in arms],
-            default=exp.Literal.number(0),
-        )
-        count.replace(exp.Sum(this=ones))
-        changed = True
-    changed = _null_counts(select, own, listed) or changed
+        test = _null_test(arm.this)
+        if test is not None and _is_own(test[0], own, listed):
+            column, is_null = test
+            if not is_null:
+                count.replace(exp.Count(this=column.copy()))
+            else:
+                missing = exp.Sub(this=exp.Count(this=exp.Star()), expression=exp.Count(this=column.copy()))
+                count.replace(missing if isinstance(count.parent, (exp.Alias, exp.Select)) else exp.Paren(this=missing))
+            changed = True
+        elif default is not None or not _is_number(arm.args.get("true"), "1"):
+            count.replace(_counted(arm.this))
+            changed = True
     return select if changed else None
