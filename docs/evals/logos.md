@@ -67,26 +67,36 @@ Without the generated databases, the data check falls back to the small database
 
 ## Scores
 
-Measured on 2026-11-10 on commit a861879 with this harness (`--jobs 4`, 4 cores, nothing else running), with both generated databases.
+Measured on 2026-11-11 on commit `9d417ef` (whole run, `--jobs 1`, 4 cores, nothing else running), with both generated databases.
 
 | Results file | Score | Held out |
 | --- | --- | --- |
-| `logos-core-proof` | **40/69 proved, 0 wrong** (4 label failures set aside; 21 unknown, 7 unsupported, 1 timeout) | 7/11 proved, 1 refuted, 0 wrong |
+| `logos-core-proof` | **50/69 proved, 0 wrong** (4 label failures set aside; 13 unknown, 6 unsupported, no timeout) | 7/11 proved, 1 refuted, 0 wrong |
 | `logos-core-executed` | **4/73 shown different, 0 wrong** (3 on a small database, 1 on the generated data) | 1/12 |
 
 By family:
 
 | Family | Proved | Refuted | Unknown | Unsupported | Timeout |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `rbot-tpch` (22) | 19/21 | 1 | 1 | 1 | 0 |
-| `rbot-dsb` (37) | 17/36 | 1 | 16 | 2 | 1 |
+| `rbot-tpch` (22) | 21/21 | 1 | 0 | 0 | 0 |
+| `rbot-dsb` (37) | 25/36 | 1 | 9 | 2 | 0 |
 | `tpcds-variants` (14, all adapted) | 4/12 | 2 | 4 | 4 | 0 |
 
 Every proof's two queries also return the same rows on the generated data and on every small database.
 
 **History.** The **baseline**, before either harness fix, was 23/69 proved, 4 refuted and 0 wrong (5/11 held out). Both fixes were developed on the dev split, but the baseline listing showed the failure reason of every pair, held-out ones included. That exposure is recorded as "tuned on test" in the results files; the held-out score did not move. With the fixes and no prover change, master `0f13b9a` measured 36/69 on 2026-10-04 (16, 18 and 2 by family; 5/11 held out).
 
-No rule was written for this eval. The 40 come from the rules written for the R-Bot, Singh and QUITE pairs on 2026-11-10 (see [the QUITE page](quite.md)), which carry over. Main without them (839906d), measured the same way on the same machine an hour earlier, proved 33/69 (16, 15 and 2 by family, 5/11 held out) with 10 unknown, 24 unsupported and 2 timeouts. Against that run, seven pairs moved from unsupported to proved (two of them held out), ten from unsupported to unknown and one from timeout to unknown; no pair moved the other way. That same-machine run of main is three DSB proofs short of the October measurement, which was taken with an older Python and z3, and the branch's 17 DSB proofs are one short of it; the difference predates these rules and was not traced.
+**Hardest-cases batch 3 (2026-11-11, commit `9d417ef`, [draft PR 20](https://github.com/wojoe-444/Kumo_SQL_Prover/pull/20)): 40 to 50 of 69.** Ten development pairs moved from unknown to proved, none the other way, and the held-out part stayed at 7 of 11 (read by count only; the pairs were not read). The pairs and what proves them:
+
+- `rbot-dsb/query001`, `030`, `032`, `081`, `084`, `092`: a comparison with a decimal literal beside a column of a grouped derived table (`1.3 * d.avg_amt`), filters moved into a joined grouped derived table, and `CAST(c AS STRING)` of a `CHAR(n)` column read as the column on the BigQuery route;
+- `rbot-tpch/query13`: the harness now names an output that Calcite's alias column list names and the derived table leaves unnamed, so the pair converts;
+- `rbot-tpch/query16`: Calcite's two-step `COUNT(DISTINCT x)` under `ORDER BY` and `LIMIT`;
+- `rbot-dsb/query054`: a grouping over a join that reads a derived `UNION`;
+- `rbot-dsb/query058`: two rules that kept re-adding each other's filter now stop.
+
+Three more pairs prove on other open branches (`rbot-dsb/query031` and `tpcds-variants/query018` on draft PR 14, `rbot-dsb/query039` on draft PR 19) and are not counted here. Still open: `rbot-dsb/query094` (an unpadded date literal and grouping sets with `FILTER`), `tpcds-variants/query077` and `query080` (a hand-written `ROLLUP`), `query005`, `rbot-dsb/query064` (times out), `query018`, `023` and `075` (`AVG` written as `CAST(SUM / COUNT AS DECIMAL)`, not the same value as BigQuery's `AVG` of an `INT64` column), `query087` (an `EXCEPT` chain), and the unsupported pairs above.
+
+Before that, the 40 of 2026-11-10 come from the rules written for the R-Bot, Singh and QUITE pairs on 2026-11-10 (see [the QUITE page](quite.md)), which carry over. Main without them (839906d), measured the same way on the same machine an hour earlier, proved 33/69 (16, 15 and 2 by family, 5/11 held out) with 10 unknown, 24 unsupported and 2 timeouts. Against that run, seven pairs moved from unsupported to proved (two of them held out), ten from unsupported to unknown and one from timeout to unknown; no pair moved the other way. That same-machine run of main is three DSB proofs short of the October measurement, which was taken with an older Python and z3, and the branch's 17 DSB proofs are one short of it; the difference predates these rules and was not traced.
 
 The timeouts depend on load: the 120-second limit is wall-clock time. An earlier measurement on a busier machine (2026-10-03, master `a481075`) recorded 4 timeouts with the same 36 proofs and the same 4 label failures as the run of 2026-10-04, so the split among the unproved DSB pairs is load-sensitive. Without the generated databases (see above) the harness cannot show the one label failure that only the TPC-DS data separates, and it reports 3 refuted of 70 scored.
 
