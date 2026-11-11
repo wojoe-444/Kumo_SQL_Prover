@@ -41,7 +41,9 @@ Conditions, all checked:
 * every column resolves: qualified with a source's name, or bare and owned by exactly one of the sources in scope
   (in an ``ON``, the sources joined so far); a bare name in ``ORDER BY`` that is an output name is left to mean
   the output;
-* a source of the derived table whose name the select already uses gets a fresh alias.
+* a source of the derived table whose name the select already uses gets a fresh alias;
+* the select is not inside an ``IN`` or ``EXISTS``: the prover reads a membership query without grouping, so there
+  the pre-aggregated table is the better spelling.
 """
 
 from __future__ import annotations
@@ -208,6 +210,8 @@ def pull_up_keyed_join(select: exp.Select, schema: dict | None, keys: dict | Non
 
     if not schema or not keys or not select.args.get("joins"):
         return None
+    if select.find_ancestor(exp.In, exp.Exists) is not None:
+        return None  # inside IN / EXISTS the grouped relation stays a derived table: the prover reads no grouping there
     if any(value for key, value in select.args.items() if key not in _OUTER_ARGS) or not plain_joins(select):
         return None
     sources = select_sources(select)

@@ -4,6 +4,7 @@ import random
 
 import pytest
 import sqlglot
+from sqlglot import exp
 
 pytest.importorskip("z3")
 
@@ -115,6 +116,17 @@ def test_the_join_becomes_a_grouped_join():
 ])
 def test_shapes_left_alone(sql):
     assert pulled(sql) is None
+
+
+def test_inside_a_membership_test_the_join_stays():
+    # the prover reads the query of an IN or EXISTS without grouping, so the pre-aggregated table stays there
+    tree = sqlglot.parse_one(
+        "SELECT c.name FROM c WHERE c.ck IN (SELECT o.ck FROM o JOIN (SELECT l.k, SUM(l.q) AS total FROM l GROUP BY l.k) AS g ON o.k = g.k WHERE o.price > g.total)",
+        read="postgres",
+    )
+    inner = tree.find(exp.In).args["query"].this
+    assert pull_up_keyed_join(inner, SCHEMA, KEYS) is None
+    assert pull_up_keyed_join(inner.copy(), SCHEMA, KEYS) is not None  # the same select on its own is read
 
 
 TARGETS = [
