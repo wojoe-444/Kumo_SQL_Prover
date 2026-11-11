@@ -19,6 +19,9 @@ this. Two rules, both for a select whose sources are joined by inner or cross jo
     table by the same value, which is where an optimizer leaves the inferred filter in a decorrelated
     ``> (SELECT AVG(..) FROM (grouped) ..)``.
 
+Both rules read only a derived table that computes an aggregate (``SUM``, ``AVG``, ..): a ``GROUP BY`` or
+``DISTINCT`` with none is a duplicate removal that other rules already read.
+
 Neither rule fires through an outer join, a ``LIMIT``, a window, ``DISTINCT ON`` or an extended grouping,
 and a condition that is moved holds nothing but columns, literals, comparisons, ``BETWEEN``, ``IN`` lists,
 ``IS [NOT] NULL`` and ``AND``/``OR``/``NOT``: nothing that can fail or that is evaluated a different number
@@ -77,6 +80,14 @@ def _and_all(parts: list[exp.Expression]) -> exp.Expression:
     return and_all(parts)
 
 
+def _aggregates(body: exp.Select) -> bool:
+    """Whether ``body`` computes an aggregate of its own. A ``GROUP BY`` or ``DISTINCT`` with none is a duplicate
+    removal, which the semi-join and ``DISTINCT`` rules read in their own way: moving a filter into it first took a
+    proof away (QED ``testJoinPushTransitivePredicatesRule2``), so both rules leave it alone."""
+
+    return any(node.find_ancestor(exp.Select) is body for node in body.find_all(exp.AggFunc))
+
+
 def _holders(select: exp.Select) -> list[tuple[exp.Expression, str]]:
     """The nodes of ``select`` that hold a condition every result row satisfies: its WHERE and each join's ON."""
 
@@ -100,7 +111,7 @@ def push_filter_into_grouped_source(select: exp.Select) -> exp.Expression | None
         return None
     keyed = {}
     for alias, source in sources.items():
-        if isinstance(source, exp.Subquery) and isinstance(source.this, exp.Select) and _from(source.this) is not None:
+        if isinstance(source, exp.Subquery) and isinstance(source.this, exp.Select) and _from(source.this) is not None and _aggregates(source.this):
             outputs = _derived_key_outputs(source.this)
             if outputs:
                 keyed[alias] = outputs
@@ -228,7 +239,11 @@ def drop_rejected_null_filter(select: exp.Select) -> exp.Expression | None:
     sources = _inner_sources(select)
     if sources is None or not any(isinstance(s, exp.Subquery) for s in sources.values()):
         return None
-    targets = [(alias, name) for alias, name in sorted(_rejected(select, sources)) if isinstance(sources[alias], exp.Subquery)]
+    targets = [
+        (alias, name)
+        for alias, name in sorted(_rejected(select, sources))
+        if isinstance(sources[alias], exp.Subquery) and isinstance(sources[alias].this, exp.Select) and _aggregates(sources[alias].this)
+    ]
     if not targets:
         return None
     copy = select.copy()

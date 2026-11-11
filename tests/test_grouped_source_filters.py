@@ -40,6 +40,9 @@ def test_a_group_key_filter_moves_into_the_grouped_source():
         "SELECT u.y FROM u JOIN (SELECT k, c, x AS s FROM t) AS d ON d.k = u.k WHERE d.c = 1",  # not grouped: nothing to cross
         "SELECT u.y FROM u JOIN (SELECT k, c, SUM(x) OVER (PARTITION BY k) AS s FROM t) AS d ON d.k = u.k WHERE d.c = 1",
         "SELECT u.y FROM u JOIN (SELECT k, c, SUM(x) AS s FROM t GROUP BY ROLLUP (k, c)) AS d ON d.k = u.k WHERE d.c = 1",
+        # a duplicate removal with no aggregate is left to the DISTINCT and semi-join rules
+        "SELECT u.y FROM u JOIN (SELECT k, c FROM t GROUP BY k, c) AS d ON d.k = u.k WHERE d.c = 1",
+        "SELECT u.y FROM u JOIN (SELECT DISTINCT k, c FROM t) AS d ON d.k = u.k WHERE d.c = 1",
     ],
 )
 def test_other_filters_stay(sql):
@@ -67,6 +70,7 @@ def test_a_null_filter_the_join_repeats_is_dropped():
         "SELECT u.y FROM u JOIN (SELECT k, SUM(x) AS s FROM t WHERE k IS NOT NULL GROUP BY k ORDER BY k LIMIT 3) AS d ON u.k = d.k",
         "SELECT u.y FROM u JOIN (SELECT MAX(k) AS k, c FROM t WHERE k IS NOT NULL GROUP BY c) AS d ON u.k = d.k",  # not a key
         f"SELECT u.y FROM u JOIN {GROUPED.format(where=' WHERE x IS NOT NULL')} ON u.k = d.k",  # another column's filter
+        "SELECT u.y FROM u JOIN (SELECT DISTINCT k, c FROM t WHERE k IS NOT NULL) AS d ON u.k = d.k",  # no aggregate
     ],
 )
 def test_other_null_filters_stay(sql):
@@ -88,7 +92,7 @@ def _database(rng):
 
 SOURCES = [
     "(SELECT k, c, SUM(x) AS s FROM t {w} GROUP BY k, c) AS d",
-    "(SELECT DISTINCT k, c, 1 AS s FROM t {w}) AS d",
+    "(SELECT k, c, COUNT(*) AS s FROM t {w} GROUP BY k, c) AS d",
     "(SELECT k, MIN(c) AS c, SUM(x) AS s FROM t {w} GROUP BY k HAVING COUNT(*) > 1) AS d",
     "(SELECT d2.k, d2.k AS c, MAX(d2.s) AS s FROM (SELECT k, c, SUM(x) AS s FROM t {w} GROUP BY k, c) AS d2 GROUP BY d2.k) AS d",
     "(SELECT k + 1 AS k, c, MIN(x) AS s FROM t {w} GROUP BY k + 1, c) AS d",
