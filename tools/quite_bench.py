@@ -1189,6 +1189,7 @@ def results_rows(report: Report, date: str) -> dict[str, dict]:
     held_un = report.counts(label="unequal", held_out=True)
     mixed = sum(report.counts(label="mixed").values())
     rewrites = sum(sum(p.systems.values()) for p in report.pairs)
+    directed = sum(1 for _, v in report.select(label="equal") if v.outcome == "refuted" and (v.source or "").startswith("directed"))
     common = {"docs": "docs/evals/quite.md", "command": "python tools/quite_bench.py --write-results", "date": date}
 
     def coverage(c: Counter) -> dict:
@@ -1201,14 +1202,17 @@ def results_rows(report: Report, date: str) -> dict[str, dict]:
         "score": f"{eq['proven']}/{total_eq - eq['refuted']} proved, {eq['wrong']} wrong",
         "metric": (
             f"Distinct (query, rewrite) pairs, from {rewrites:,} rewrites by 13 systems of TPC-H, DSB, Calcite and SQLStorm "
-            f"queries, that the authors' PostgreSQL run flagged equal, proved equivalent as result bags; "
-            f"{eq['refuted']} more are refuted by a replayed database (instance-label disagreements, left out of the denominator)."
+            f"queries, that the authors' PostgreSQL run flagged equal, proved equivalent as result bags. Of the {total_eq:,} "
+            f"flagged pairs, {eq['refuted']} are refuted by a replayed database and left out of the denominator "
+            f"(instance-label disagreements): {directed} by the directed search added on 2026-11-11 "
+            f"(tools/witness_search.py), {eq['refuted'] - directed} by the earlier sources of databases. No pair leaves the "
+            f"denominator for another reason; over all flagged pairs the score reads {eq['proven']}/{total_eq}."
         ),
         "evidence": "proof",
         "correctness": (
-            f"{eq['wrong']} wrong: every proof is replayed on the prover's counterexample, KumoSQL's targeted databases and, "
-            "for TPC-H, a generated scale-0.01 instance; a difference counts only when DuckDB agrees with its optimizer off "
-            "and, for order-sensitive queries, in three row orders"
+            f"{eq['wrong']} wrong: every proof is replayed on the prover's counterexample, KumoSQL's targeted databases, "
+            "for TPC-H a generated scale-0.01 instance, and one second of the directed search; a difference counts only "
+            "when DuckDB agrees with its optimizer off and, for order-sensitive queries, in three row orders"
         ),
         "coverage": coverage(eq),
         "held_out": f"{held['proven']}/{sum(held.values()) - held['refuted']} proved, {held['wrong']} wrong (a fifth of the queries, by hash, with all their rewrites)",
@@ -1225,7 +1229,13 @@ def results_rows(report: Report, date: str) -> dict[str, dict]:
             "fifth was not: its pairs were run for scoring only and never read one by one, and no proof was lost on either "
             "part. Earlier harness history: FETCH FIRST read as LIMIT (the 100 development pairs that use it, 81 flagged "
             "equal, went from 16/67 to 7/67 proved, 0 wrong, at the time) and a 30 s limit on replaying a TPC-H instance "
-            "without the optimizer, both from development pairs."
+            "without the optimizer, both from development pairs. On 2026-11-11 seventeen more rule modules were written "
+            "against the unknown DSB development pairs (docs/provers.md, shape rules for planner-written rewrites), a column "
+            "the DSB queries name differently from the published DDL was mapped (customer.c_last_review_date_sk), and the "
+            "directed search was built on the same development pairs; the held-out fifth was again run for scoring only. "
+            "Before that batch (main 22fed36): 1659/2609 proved with 65 refuted. The directed search has a time budget "
+            "(8 s for an unproved pair), so the refuted count can move by a few pairs between runs and machines; "
+            "KUMOSQL_DIRECTED=0 turns it off."
         ),
         **common,
     }
