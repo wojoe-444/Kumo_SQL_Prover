@@ -51,6 +51,7 @@ from .fk_rules import drop_fk_join
 from .exists_constant_rules import exists_constant_rules
 from .decorrelation_rules import decorrelation_step
 from .constraint_normalization import keyed_join_to_exists, normalize_key_counts
+from .counted_presence import read_counted_presence
 from .grouping_expansion import collapse_grouping_expansion
 from .grouping_sets import expand_grouping_sets, grouping_sets_to_union
 from .named_windows import inline_named_windows
@@ -4983,6 +4984,7 @@ def normalize(
         group_over_union_join_to_distinct,
         lambda sel: inner_join_own_groups(sel, not_null, types_map),
         lambda sel: regroup_duplicate_self_join(sel, keys, not_null, types_map),
+        lambda sel: read_counted_presence(sel, not_null, types_map, schema),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:

@@ -677,7 +677,8 @@
   "tests/test_keyed_union.py::test_the_conditional_verdict_names_the_key": 4.8,
   "tests/test_duplicate_self_joins.py::test_the_conditional_verdict_names_the_key": 3.5,
   "tests/test_conditional_fewer_candidates.py::test_the_verdict_names_the_one_not_null_fact": 2.3,
-  "tests/test_conditional_fewer_candidates.py::test_a_pair_that_differs_under_the_not_null_facts_stays_unproved": 4.7
+  "tests/test_conditional_fewer_candidates.py::test_a_pair_that_differs_under_the_not_null_facts_stays_unproved": 4.7,
+  "tests/test_counted_presence.py::test_the_conditional_verdict_names_the_column": 2.3
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,
