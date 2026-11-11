@@ -6,8 +6,8 @@ Principles that carry over from KumoSQL:
 
 - **Unknown is better than wrong.** Every scoreboard row says "0 wrong" only when it is true. A false proof, an incorrect counterexample or a rewrite that changes results is a bug.
 - **Nothing in this package imports KumoSQL.** The import graph runs one way. `tests/test_package_boundary.py` fails the gate on a `kumosql` import. Scripting, the rule registry, Dataform project loading and the UI live in KumoSQL.
-- **`sqlglot==30.21.0` is the only supported version.** Routine CI uses the matching compiled `sqlglotc==30.21.0` build. Pure Python is for focused diagnostics. A version change needs explicit validation and an intentional update to the pin, CI and docs.
-- **Benchmarks report, they do not gate.** The pull-request gate runs `python -m pytest -m "not eval" --quick`. The scheduled workflow runs the eval floors (`-m eval`) and the slow tier, checks that the README scoreboard matches `benchmarks/results/*.json` (`python tools/scoreboard.py --check`; it never rewrites anything) and opens an issue when a floor drops or the scoreboard is stale. A person moves a score by editing the results file and running `python tools/scoreboard.py` in the same pull request.
+- **`sqlglot==30.21.0` is the only supported version.** The gate is measured with the matching compiled `sqlglotc==30.21.0` build (no CI runs through GitHub; the gate is local). Pure Python is for focused diagnostics. A version change needs explicit validation and an intentional update to the pin, CI and docs.
+- **Benchmarks report, they do not gate.** The gate is `python -m pytest -m "not eval" --quick`, run locally on the exact candidate. The periodic local run covers the eval floors (`-m eval`) and the slow tier and checks that the README scoreboard matches `benchmarks/results/*.json` (`python tools/scoreboard.py --check`; it never rewrites anything); nothing opens an issue automatically, so someone has to look at the result. A person moves a score by editing the results file and running `python tools/scoreboard.py` in the same pull request.
 
 Working rules:
 
