@@ -50,7 +50,9 @@ other loses the proofs the other shape rules gave that pair. Rerun the developme
 
 From QUITE's SQLStorm development pairs, the same day: ``quoted_names``, ``joined_key_restrictions``,
 ``timestamp_shifts``, ``equality_orientation`` (passes over the whole query), ``preserved_counts``,
-``preserved_join_sources``, ``windowed_output_pruning`` and ``counted_subqueries`` (rules of one select). Three
+``preserved_join_sources``, ``windowed_output_pruning``, ``never_null_cases`` and ``counted_subqueries`` (rules of
+one select; the last also runs as a pass before ``counted_outer_groups``, so that a ``COUNT`` subquery and a left
+join to counts written by hand take one road). Three
 more modules of that batch are not normalizations. ``window_inputs``, ``derived_table_proofs`` and
 ``grouped_aggregate_spellings`` run in ``_prove_algebraic`` on the two normalized texts, only on the attempt with
 the shape rules on and only after the solver has failed on those texts, so they cannot take a verdict away.

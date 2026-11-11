@@ -177,3 +177,28 @@ def count_subquery_as_join(select: exp.Select) -> exp.Select | None:
         result.set("joins", list(result.args.get("joins") or []) + [join])
         return result
     return None
+
+
+def count_subqueries_as_joins(tree: exp.Expression) -> exp.Expression:
+    """``tree`` with ``count_subquery_as_join`` applied to its selects until none changes (at most 32 subqueries).
+
+    Run as a pass before ``counted_outer_groups``, which reads a left join to counts per key as a count over the
+    outer join when the preserved table has a key: the subquery spelling then takes the same road as a join written
+    by hand, and the two end in one form.
+    """
+
+    if tree.find(exp.Count) is None:
+        return tree
+    for _ in range(32):
+        for select in tree.find_all(exp.Select):
+            joined = count_subquery_as_join(select)
+            if joined is None:
+                continue
+            if select is tree:
+                tree = joined
+            else:
+                select.replace(joined)
+            break
+        else:
+            break
+    return tree

@@ -5,8 +5,10 @@ import sqlglot
 
 pytest.importorskip("z3")
 
-from _made_up_posts import differ_on_duckdb, proved, random_databases
-from kumo_sql_prover.counted_subqueries import count_subquery_as_join
+from _made_up_posts import SCHEMA, TYPES, differ_on_duckdb, proved, random_databases
+from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+from kumo_sql_prover.counted_subqueries import count_subqueries_as_joins, count_subquery_as_join
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
 COUNTED = "SELECT p.id, (SELECT COUNT(*) FROM c AS x WHERE x.post = p.id AND x.score = 5) AS n FROM p"
 JOINED = "SELECT p.id, COALESCE(d.n, 0) AS n FROM p LEFT JOIN (SELECT c.post, COUNT(*) AS n FROM c WHERE c.score = 5 GROUP BY c.post) AS d ON d.post = p.id"
@@ -121,3 +123,32 @@ def test_the_join_gives_the_same_rows(sql):
     assert "(SELECT COUNT" not in out
     for rows in random_databases(len(sql), count=20):
         assert not differ_on_duckdb(sql, out, rows)
+
+
+KEYED = {name: TableConstraints(not_null=frozenset({"id"}), keys=(("id",),)) for name in SCHEMA}
+GROUPED = "SELECT p.id, COUNT(x.id) AS n FROM p LEFT JOIN c AS x ON x.post = p.id AND x.score = 5 GROUP BY p.id"
+
+
+def proved_with_keys(left, right):
+    return prove_equivalent_algebraic(left, right, schema=SCHEMA, types=TYPES, constraints=KEYED, dialect="postgres", compare_names=False).proven
+
+
+def test_every_subquery_of_a_query_is_read_in_one_pass():
+    sql = "SELECT d.id, d.n, (SELECT COUNT(*) FROM u WHERE u.id = d.owner) AS m FROM (SELECT p.id, p.owner, (SELECT COUNT(*) FROM c AS x WHERE x.post = p.id) AS n FROM p) AS d"
+    out = count_subqueries_as_joins(sqlglot.parse_one(sql, read="postgres")).sql(dialect="postgres")
+    assert "(SELECT COUNT" not in out and "AS kqc0" in out and "AS kqc1" in out
+    for rows in random_databases(len(sql)):
+        assert not differ_on_duckdb(sql, out, rows)
+
+
+def test_with_a_key_the_subquery_meets_the_grouped_outer_join():
+    # ``counted_outer_groups`` reads the left join to counts as a count over the outer join when ``p.id`` is a key;
+    # the subquery is read as that left join first, so the three spellings end in one form
+    assert proved_with_keys(COUNTED, JOINED)
+    assert proved_with_keys(COUNTED, GROUPED)
+    assert not differ_on_duckdb(COUNTED, GROUPED)  # the made-up rows have one row per ``p.id``
+    assert not proved(COUNTED, GROUPED)  # without the key a repeated post is one group and two rows
+    assert differ_on_duckdb(COUNTED, GROUPED, {"p": [(1, 1, 1, 1), (1, 1, 1, 1)], "c": [(1, 1, 5)]})
+    padded = GROUPED.replace("COUNT(x.id)", "COUNT(*)")  # counts the padded row of a post without such comments
+    assert not proved_with_keys(COUNTED, padded)
+    assert differ_on_duckdb(COUNTED, padded)

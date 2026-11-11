@@ -4941,6 +4941,9 @@ def normalize(
     if shapes:
         tree = separate_disjoint_unions(tree)
         tree = merge_exclusive_unions(tree)  # a UNION ALL of one query under exclusive filters is one select
+        from .counted_subqueries import count_subqueries_as_joins
+
+        tree = count_subqueries_as_joins(tree)  # a COUNT subquery is the left join to counts that the next pass reads
         tree = count_outer_groups(tree, schema, keys)  # before COALESCE(count, 0) is lifted out of its select
     if shapes:
         tree = group_by_named_outputs(tree, schema)  # pre-pass: before any rule reads a key as a column
