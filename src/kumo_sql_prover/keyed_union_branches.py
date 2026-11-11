@@ -15,8 +15,9 @@ has every ``UNION`` in it written as ``UNION ALL`` when
   include, as plain columns, every column of a declared key of each of its tables, each of those columns declared
   NOT NULL; and
 * every two branches differ at an output position where every branch of the tree writes a string literal, or
-  every branch writes a whole number: two strings that still differ when case and trailing spaces are ignored,
-  or two different numbers.
+  every branch writes a whole number: two strings that still differ when case, spaces and punctuation are
+  ignored, or two different numbers (the reading of literals :mod:`kumo_sql_prover.disjoint_union` uses for
+  branches of one row).
 
 **Why it is sound.** ``UNION`` keeps one copy of each row, where two rows are the same when they agree at every
 position (two NULLs agree). Two different rows of a base table differ in a column of its key, and a key column
@@ -25,8 +26,8 @@ table returns no row twice, and a branch over several tables returns one row per
 passes its filters, each combination told apart by the keys of the tables. Rows of two different branches differ
 at the position of their two literals. So no two rows of the whole tree agree, every ``UNION`` inside it has
 nothing to remove whatever the nesting, and the tree returns the rows of its branches once each, as ``UNION ALL``
-does. The strings are compared more strictly than the engines compare them (case and trailing spaces ignored,
-plain ASCII only), so two literals an engine's collation treats as the same never count as different. A
+does. The strings are compared more strictly than the engines compare them (case, spaces and punctuation
+ignored, plain ASCII only), so two literals an engine's collation treats as the same never count as different. A
 position counts only when all branches write literals of one kind there, because a column or a literal of
 another kind in some branch can change the type the engine gives the position, and with it what ``'1'`` and
 ``'01'``, or two spellings of a date, are converted to before the rows are compared. For the key columns the
@@ -47,6 +48,7 @@ from sqlglot import exp
 
 from .aggregate_membership import _base_table, _table_key
 from .ast_utils import select_sources
+from .disjoint_union import _tag
 from .union_all_counts import _BRANCH_ARGS, _owner, _plain_joins, _row_value
 
 
@@ -90,7 +92,7 @@ def _rows_never_repeat(query: exp.Expression, known, declared_keys, declared) ->
     for branch in branches:
         if len(branch.expressions) != width or not _keyed(branch, known, declared_keys, declared):
             return False
-        literals.append([_literal(item.unalias()) for item in branch.expressions])
+        literals.append([_tag(item) for item in branch.expressions])
     # a position tells branches apart only when every branch writes a literal of one kind there: the column then
     # has that kind in every dialect, and no literal is converted to another type before the rows are compared
     usable = [
@@ -150,14 +152,3 @@ def _keyed(branch: exp.Select, known, declared_keys, declared) -> bool:
         any(key and set(key) <= returned[alias] and set(key) <= declared.get(table, set()) for key in declared_keys.get(table, ()))
         for alias, table in tables.items()
     )
-
-
-def _literal(node: exp.Expression) -> tuple[str, object] | None:
-    """A literal as (kind, value to compare); ``None`` for anything that is not a plain string or whole number."""
-
-    if not isinstance(node, exp.Literal):
-        return None
-    text = node.this
-    if node.is_string:
-        return ("string", text.rstrip(" ").lower()) if text.isascii() and text.isprintable() else None
-    return ("number", int(text)) if text.isdigit() else None
