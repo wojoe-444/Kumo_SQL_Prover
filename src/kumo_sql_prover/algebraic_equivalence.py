@@ -121,6 +121,7 @@ from .string_spelling_rules import string_spelling_rules
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
+from .windowed_inputs import spell_windowed_input
 from .wrapped_join_filters import push_filter_into_wrapped_join
 from .smt_equivalence import SmtEquivalenceResult, SmtStatus, prove_equivalent_smt
 
@@ -4950,6 +4951,7 @@ def normalize(
         wrap_tailed_outer_join_aggregate,
         push_filter_into_wrapped_join,
         drop_one_row_tail,
+        lambda sel: spell_windowed_input(sel, types_map),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
