@@ -116,6 +116,8 @@ from .semijoin_shapes import rewrite_semijoin_shapes
 from .grouped_self_membership import read_grouped_self_membership
 from .disjoint_union import separate_disjoint_unions
 from .one_row_tails import drop_one_row_tail
+from .counted_union_branches import ungroup_counted_branches
+from .grouped_join_keys import join_before_grouping
 from .indicator_sums import indicator_sum_rules
 from .union_all_counts import count_over_union_all
 from .string_spelling_rules import string_spelling_rules
@@ -4964,6 +4966,8 @@ def normalize(
         drop_one_row_tail,
         lambda sel: count_over_union_all(sel, schema, keys, not_null),
         lambda sel: indicator_sum_rules(sel, schema, keys, not_null),
+        lambda sel: ungroup_counted_branches(sel, schema, keys, not_null),
+        lambda sel: join_before_grouping(sel, schema, keys),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:

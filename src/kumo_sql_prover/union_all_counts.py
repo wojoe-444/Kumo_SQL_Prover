@@ -198,6 +198,22 @@ class _Branch:
                 column.set("table", exp.to_identifier(mapping[column.table.lower()]))
 
 
+    def equal_to(self, column: exp.Column) -> set[tuple[str, str]]:
+        """The columns (source, name) this branch's conditions make equal to ``column`` on each of its rows."""
+
+        found = {(column.table, column.name)}
+        grew = True
+        while grew:
+            grew = False
+            for part in self.conditions:
+                if isinstance(part, exp.EQ) and isinstance(part.this, exp.Column) and isinstance(part.expression, exp.Column):
+                    pair = {(part.this.table, part.this.name), (part.expression.table, part.expression.name)}
+                    if pair & found and not pair <= found:
+                        found |= pair
+                        grew = True
+        return found
+
+
 def _qualified(node: exp.Expression, columns: dict[str, list[str]], spelling: dict[str, str]) -> exp.Expression | None:
     """A copy of a row expression with each column named by its source's alias; ``None`` when one cannot be."""
 
@@ -334,6 +350,15 @@ class _Site:
         for branch in self.branches:
             branch.renamed(aliases)
         self.position = {name: i for i, name in enumerate(first.names)}
+        for i in range(width):
+            # a column every branch's own conditions equate with one and the same column is that column
+            values = [b.outputs[i] for b in self.branches]
+            if all(isinstance(value, exp.Column) for value in values) and len({value.sql() for value in values}) > 1:
+                shared = set.intersection(*[b.equal_to(value) for b, value in zip(self.branches, values)])
+                if shared:
+                    table, name = min(shared)
+                    for b in self.branches:
+                        b.outputs[i] = exp.column(name, table)
         self.uniform = {
             name: first.outputs[i] for name, i in self.position.items() if all(b.outputs[i].sql() == first.outputs[i].sql() for b in self.branches)
         }
@@ -390,6 +415,7 @@ class _Site:
             for mine, other in ((part.this, part.expression), (part.expression, part.this)):
                 if isinstance(mine, exp.Column) and mine.table.lower() == self.alias and not self._varying(other):
                     equal.setdefault(mine.name.lower(), self._in_branch(other, None))
+        same = _equated(linking + kept)
         conditions = [[self._in_branch(part, branch) for part in linking] + [c.copy() for c in branch.conditions] for branch in self.branches]
         compared = [
             {side.sql() for part in parts if isinstance(part, _COMPARISONS) for side in (part.this, part.expression) if isinstance(side, exp.Column)}
@@ -444,6 +470,8 @@ class _Site:
                         return None  # the output of that name or the source column: the dialects disagree
                     continue
                 owner = _owner(column, self.columns)
+                if owner is None and not column.table:
+                    owner = _equated_owner(name, self.columns, same)
                 if owner is None:
                     return None
                 if owner != self.alias:
@@ -556,6 +584,32 @@ def _fixed(read: list[exp.Expression], group_keys: list[exp.Expression], keys, d
         return all(fixed(child) for child in node.iter_expressions())
 
     return all(fixed(node) for node in read)
+
+
+def _equated(parts: list[exp.Expression]) -> set[frozenset[str]]:
+    """The pairs of columns (as printed, lower case) that a top-level ``=`` of the conditions equates."""
+
+    pairs = set()
+    for part in parts:
+        if isinstance(part, exp.EQ) and isinstance(part.this, exp.Column) and isinstance(part.expression, exp.Column):
+            pairs.add(frozenset({part.this.sql().lower(), part.expression.sql().lower()}))
+    return pairs
+
+
+def _equated_owner(name: str, columns: dict[str, list[str]], same: set[frozenset[str]]) -> str | None:
+    """The source to read a bare column from when several have it: any, if the conditions make them all equal.
+
+    ``GROUP BY id`` over ``a JOIN b ON a.id = b.id`` names the same value whichever source it is read from, on
+    every row the select keeps.
+    """
+
+    owners = [alias for alias, listed in columns.items() if name in listed]
+    if len(owners) < 2:
+        return None
+    first = owners[0]
+    if all(frozenset({f"{first}.{name}", f"{other}.{name}"}) in same for other in owners[1:]):
+        return first
+    return None
 
 
 def _inside(node: exp.Expression, ancestor: exp.Expression) -> bool:
