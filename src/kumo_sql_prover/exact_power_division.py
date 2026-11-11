@@ -44,7 +44,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from .aggregate_membership import _unwrap
-from .exact_rounding import _arms, _attached, _decimals, _exact, _integer, _typer
+from .exact_rounding import _arms, _attached, _decimals, _exact, _integer, _own_rounds, _typer
 
 _FACTORS = {"10": "0.1", "100": "0.01", "1000": "0.001", "10000": "0.0001"}
 
@@ -54,7 +54,7 @@ def divide_by_power_of_ten(select: exp.Select, types: dict[str, dict[str, str]] 
 
     if dialect != "mysql" or not types:
         return None
-    rounds = [node for node in select.find_all(exp.Round) if node.find_ancestor(exp.Select) is select]
+    rounds = _own_rounds(select)
     if not rounds:
         return None
     column_type = _typer(select, types)

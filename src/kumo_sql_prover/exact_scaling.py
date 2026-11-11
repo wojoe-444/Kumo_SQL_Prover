@@ -52,7 +52,7 @@ import re
 from sqlglot import exp
 
 from .aggregate_membership import _unwrap
-from .exact_rounding import _arms, _attached, _decimals, _typer
+from .exact_rounding import _arms, _attached, _decimals, _own_rounds, _typer
 
 _INTEGER_TYPE = re.compile(r"^\s*(TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT)\b(\s*\(\s*\d+\s*\))?\s*(UNSIGNED)?\s*$", re.I)
 _POWERS = ("10", "100", "1000", "10000")
@@ -65,7 +65,7 @@ def scale_after_division(select: exp.Select, types: dict[str, dict[str, str]] | 
 
     if dialect != "mysql" or not types:
         return None
-    rounds = [node for node in select.find_all(exp.Round) if node.find_ancestor(exp.Select) is select]
+    rounds = _own_rounds(select)
     if not rounds:
         return None
     column_type = _typer(select, types)

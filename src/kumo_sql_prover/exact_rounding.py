@@ -28,17 +28,28 @@ nearest even digit on most platforms. A string arm brings the same conversion. S
 
 A missing ``ELSE`` is a NULL arm, and ``ROUND(NULL, d)`` is NULL.
 
+The ``CASE`` may also stand inside exact arithmetic: ``ROUND(pay - CASE WHEN c THEN pay * 0.5 ELSE 0 END, d)`` is
+``CASE WHEN c THEN ROUND(pay - pay * 0.5, d) ELSE ROUND(pay - 0, d) END``. Between the ``ROUND`` and the ``CASE``
+there are only parentheses, ``+``, ``-``, ``*`` and unary minus, and the whole argument is exact: these operators
+are computed exactly on exact numbers, so the argument's value is the same expression with the chosen arm in
+the ``CASE``'s place, and they give NULL for a NULL operand, which is what a missing ``ELSE`` gives. The other
+operands are columns, literals and arithmetic, so writing them once per arm changes nothing. (At most three
+``CASE``/``IF`` in one argument are read this way.)
+
 **Rule 2: ROUND of a whole number is the number.** ``ROUND(e)`` and ``ROUND(e, d)`` with ``d`` a literal ``0``
 or more are ``e`` when ``e`` is an exact whole number: an integer column, a plain number literal with a whole
 value (``7``, ``1.0``), or ``+``, ``-``, ``*`` and unary minus over those. MySQL returns the same number (an
 integer for an integer, a ``DECIMAL`` without decimals for ``pay * 1.0``; the prover compares numbers by value,
 as it does for ``pay * 1.0`` and ``pay``), and NULL for NULL.
 
-**What is read.** Only on MySQL (BigQuery's ``ROUND`` of an ``INT64`` is a ``FLOAT64``). The number of decimals
-is absent or a non-negative integer literal. A column is typed through the select the ``ROUND`` is in: its
-qualifier names a base-table source of that select (or it is bare and the select has that one base table as its
-only source), and the caller declared the column's type. A column of a derived table, of an outer query or of
-unknown type is not exact, and the ``ROUND`` is left as written.
+**What is read.** Only on MySQL (BigQuery's ``ROUND`` of an ``INT64`` is a ``FLOAT64``). The ``ROUND`` stands in
+the select list, the ``WHERE`` or an ``ON`` condition of its select (in ``GROUP BY``, ``HAVING`` and
+``ORDER BY`` a bare name may be an output of the select, with another type). The number of decimals is absent
+or a non-negative integer literal. A column is typed through the select the ``ROUND`` is in: its qualifier
+names a base-table source of that select, or it is bare, every source of the select lists its columns (base
+tables with declared types, derived tables whose outputs all have names, no ``USING``) and exactly one, a base
+table, has the name; and the caller declared the column's type. A column of a derived table, of an outer query
+or of unknown type is not exact, and the ``ROUND`` is left as written.
 """
 
 from __future__ import annotations
@@ -54,6 +65,7 @@ from .ast_utils import select_sources, visible_ctes
 _INTEGER = re.compile(r"^\s*(TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT|INT64)\b(\s*\(\s*\d+\s*\))?\s*(UNSIGNED)?\s*$", re.I)
 _DECIMAL = re.compile(r"^\s*(DECIMAL|NUMERIC|DEC|FIXED)\b", re.I)
 _PLAIN_NUMBER = re.compile(r"^(\d+\.?\d*|\.\d+)$")
+_MOST_CHOICES = 3
 
 
 def exact_rounding(select: exp.Select, types: dict[str, dict[str, str]] | None, dialect: str) -> exp.Expression | None:
@@ -61,7 +73,7 @@ def exact_rounding(select: exp.Select, types: dict[str, dict[str, str]] | None, 
 
     if dialect != "mysql" or not types:
         return None
-    rounds = [node for node in select.find_all(exp.Round) if node.find_ancestor(exp.Select) is select]
+    rounds = _own_rounds(select)
     if not rounds:
         return None
     column_type = _typer(select, types)
@@ -78,6 +90,19 @@ def exact_rounding(select: exp.Select, types: dict[str, dict[str, str]] | None, 
         node.replace(replacement)
         changed = True
     return select if changed else None
+
+
+def _own_rounds(select: exp.Select) -> list[exp.Round]:
+    """The ``ROUND`` calls of ``select``'s own scope in its select list, ``WHERE`` and ``ON`` conditions.
+
+    A bare name there is a column of a source. In ``GROUP BY``, ``HAVING`` and ``ORDER BY`` it may be an output of
+    the select instead, whose type is not the column's, so those clauses are not read."""
+
+    places = list(select.expressions)
+    if select.args.get("where") is not None:
+        places.append(select.args["where"])
+    places += [join.args["on"] for join in select.args.get("joins") or [] if join.args.get("on") is not None]
+    return [node for place in places for node in place.find_all(exp.Round) if node.find_ancestor(exp.Select) is select]
 
 
 def _attached(node: exp.Expression, root: exp.Expression) -> bool:
@@ -103,35 +128,52 @@ def _decimals(node: exp.Round) -> int | None:
 
 
 def _typer(select: exp.Select, types: dict[str, dict[str, str]]):
-    """A function from a column of ``select``'s own scope to its declared type, or None."""
+    """A function from a column read in ``select``'s own scope to its declared type, or None.
+
+    A qualified column is typed through its qualifier. A bare column is typed when every source of the select
+    lists its columns (a base table with declared types, or a derived table whose outputs all have names) and
+    exactly one of them has the name: that one is a base table, and the type is the declared one."""
 
     sources = select_sources(select)
     tables: dict[str, dict[str, str]] = {}
-    plain = True
+    listed: dict[str, set[str]] = {}
+    complete = True
     for source in sources:
         name = source.alias_or_name.lower()
-        if isinstance(source, exp.Table) and isinstance(source.this, exp.Identifier) and name and name not in tables:
+        if not name or name in listed:
+            complete = False
+            continue
+        listed[name] = set()
+        tables[name] = {}
+        if isinstance(source, exp.Table) and isinstance(source.this, exp.Identifier):
             alias = source.args.get("alias")
-            if (alias is not None and alias.args.get("columns")) or (not source.args.get("db") and source.name.lower() in visible_ctes(source)):
-                plain = False
-                tables[name] = {}
+            declared = types.get(_table_key(source))
+            if (alias is not None and alias.args.get("columns")) or (not source.args.get("db") and source.name.lower() in visible_ctes(source)) or not declared:
+                complete = False
                 continue
-            tables[name] = {c.lower(): t for c, t in (types.get(_table_key(source)) or {}).items()}
+            tables[name] = {c.lower(): t for c, t in declared.items()}
+            listed[name] = set(tables[name])
+        elif isinstance(source, exp.Subquery) and isinstance(source.this, exp.Select) and not (source.args.get("alias") is not None and source.args["alias"].args.get("columns")):
+            outputs = [item.alias_or_name.lower() for item in source.this.expressions]
+            if any(isinstance(item, exp.Star) or (isinstance(item, exp.Column) and isinstance(item.this, exp.Star)) for item in source.this.expressions) or "" in outputs:
+                complete = False
+                continue
+            listed[name] = set(outputs)
         else:
-            plain = False
-            if name:
-                tables[name] = {}
+            complete = False
+    if any(join.method or join.args.get("using") for join in select.args.get("joins") or []):
+        complete = False  # a merged column belongs to no single source
 
     def column_type(column: exp.Column) -> str | None:
         if isinstance(column.this, exp.Star) or column.args.get("db") or column.args.get("catalog"):
             return None
-        if column.find_ancestor(exp.Select) is not select:
-            return None
+        name = column.name.lower()
         if column.table:
-            return (tables.get(column.table.lower()) or {}).get(column.name.lower())
-        if plain and len(sources) == 1:
-            return next(iter(tables.values()), {}).get(column.name.lower())
-        return None
+            return (tables.get(column.table.lower()) or {}).get(name)
+        if not complete:
+            return None
+        owners = [source for source, columns in listed.items() if name in columns]
+        return tables[owners[0]].get(name) if len(owners) == 1 else None
 
     return column_type
 
@@ -195,6 +237,21 @@ def _arms(node: exp.Expression) -> list[exp.Expression] | None:
     return None
 
 
+def _choice(node: exp.Expression) -> exp.Expression | None:
+    """The first ``CASE`` or ``IF`` whose value reaches ``node`` through parentheses, ``+``, ``-``, ``*`` and unary
+    minus only."""
+
+    node = _unwrap(node)
+    if _arms(node) is not None:
+        return node
+    if type(node) in (exp.Add, exp.Sub, exp.Mul):
+        found = _choice(node.this)
+        return found if found is not None else _choice(node.expression)
+    if isinstance(node, exp.Neg):
+        return _choice(node.this)
+    return None
+
+
 def _rounded(value: exp.Expression, call: exp.Round, decimals: int, column_type, top: bool = False) -> exp.Expression | None:
     """``ROUND(value, decimals)`` in the rule's form; at the top, None when that is the call as written.
 
@@ -209,6 +266,20 @@ def _rounded(value: exp.Expression, call: exp.Round, decimals: int, column_type,
     if arms is not None and all(_exact(arm, column_type) for arm in arms):
         rounded = [_rounded(arm, call, decimals, column_type) for arm in arms]
         result = inner.copy()
+        for arm, replacement in zip(_arms(result), rounded):
+            arm.replace(replacement)
+        return result
+    choice = _choice(inner)
+    if choice is not None and choice is not inner and _exact(inner, column_type) and sum(1 for node in inner.find_all(exp.Case, exp.If) if _arms(node) is not None) <= _MOST_CHOICES:
+        # f(CASE WHEN c THEN a .. END) is CASE WHEN c THEN f(a) .. END for exact +, - and *: round each
+        rounded = []
+        for index in range(len(_arms(choice))):
+            whole = exp.Paren(this=inner.copy())
+            there = _choice(whole.this)
+            arm = _arms(there)[index].copy()
+            there.replace(arm if isinstance(arm, (exp.Column, exp.Literal, exp.Null, exp.Paren)) else exp.Paren(this=arm))
+            rounded.append(_rounded(whole.this, call, decimals, column_type))
+        result = choice.copy()
         for arm, replacement in zip(_arms(result), rounded):
             arm.replace(replacement)
         return result

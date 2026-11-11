@@ -55,12 +55,29 @@ def test_round_moves_into_exact_arms():
     )
 
 
+def test_round_moves_into_a_case_inside_exact_arithmetic():
+    assert rewritten("SELECT ROUND(c - CASE WHEN b > 100 THEN c * 0.5 WHEN b > 10 THEN a * 0.24 WHEN b > 1 THEN NULL ELSE 0 END, 1) FROM t") == (
+        "SELECT CASE WHEN b > 100 THEN ROUND(c - (c * 0.5), 1) WHEN b > 10 THEN ROUND(c - (a * 0.24), 1) WHEN b > 1 THEN ROUND(c - NULL, 1) ELSE ROUND(c - 0, 1) END FROM t"
+    )
+    # no ELSE stays no ELSE (the arithmetic of a NULL is NULL); an integer result loses its ROUND
+    assert rewritten("SELECT ROUND(a * (1 - IF(b > 1, 0.25, 0)) * 2) FROM t") == "SELECT IF(b > 1, ROUND(a * (1 - 0.25) * 2), (a * (1 - 0) * 2)) FROM t"
+    assert rewritten("SELECT ROUND(-(CASE WHEN b > 1 THEN c END) + a, 2) FROM t") == "SELECT CASE WHEN b > 1 THEN ROUND(-(c) + a, 2) END FROM t"
+    # two of them: one after the other
+    assert rewritten("SELECT ROUND(IF(b > 1, c, 1) * IF(a > 1, 0.5, 2)) FROM t") == (
+        "SELECT IF(b > 1, IF(a > 1, ROUND(c * 0.5), ROUND(c * 2)), IF(a > 1, ROUND(1 * 0.5), (1 * 2))) FROM t"
+    )
+
+
 def test_round_of_an_integer_is_the_integer():
     assert rewritten("SELECT ROUND(a), ROUND(x.b, 0), ROUND(a * 2 - b, 3) * 2, ROUND(-a), ROUND(7) FROM t AS x") == "SELECT a, x.b, (a * 2 - b) * 2, -a, 7 FROM t AS x"
     assert rewritten("SELECT ROUND(CASE WHEN b > 100 THEN a * 0.5 ELSE a END, 0) AS a FROM t") == "SELECT CASE WHEN b > 100 THEN ROUND(a * 0.5, 0) ELSE a END AS a FROM t"
     assert rewritten("SELECT CASE WHEN b > 100 THEN ROUND(a * 0.5) ELSE ROUND(a) END FROM t") == "SELECT CASE WHEN b > 100 THEN ROUND(a * 0.5) ELSE a END FROM t"
     # a whole number written with decimals
     assert rewritten("SELECT ROUND(a * (1 - 0.0), 0), ROUND(b * 1.00 - 2.0) FROM t") == "SELECT (a * (1 - 0.0)), (b * 1.00 - 2.0) FROM t"
+    # a bare column that only one source has, the others listing their columns
+    assert rewritten("SELECT ROUND(b), ROUND(e), ROUND(k) FROM t JOIN u ON u.a = t.a JOIN (SELECT c AS k FROM t) AS x ON x.k = t.c WHERE ROUND(e) > 1") == (
+        "SELECT b, e, ROUND(k) FROM t JOIN u ON u.a = t.a JOIN (SELECT c AS k FROM t) AS x ON x.k = t.c WHERE e > 1"
+    )
     # a column is typed through the sources of its own select
     assert rewritten("SELECT ROUND(t.a), ROUND(u.e) FROM t JOIN u ON u.a = t.a") == "SELECT t.a, u.e FROM t JOIN u ON u.a = t.a"
 
@@ -82,8 +99,18 @@ def test_round_of_an_integer_is_the_integer():
     "SELECT ROUND(CASE WHEN b > 0 THEN c ELSE (SELECT MAX(e) FROM u) END) FROM t",
     "SELECT ROUND(IF(b > 0, c, d)) FROM t",
     "SELECT ROUND(COALESCE(c, a)) FROM t",
+    "SELECT ROUND(c - CASE WHEN b > 0 THEN c ELSE d END) FROM t",  # a DOUBLE arm
+    "SELECT ROUND(d - CASE WHEN b > 0 THEN c ELSE a END) FROM t",  # a DOUBLE beside the CASE
+    "SELECT ROUND(c / CASE WHEN b > 0 THEN 2 ELSE 4 END) FROM t",  # below a division: not read
+    "SELECT ROUND(ABS(CASE WHEN b > 0 THEN c ELSE -c END)) FROM t",
+    "SELECT ROUND(IF(b > 1, c, 1) * IF(a > 1, 0.5, 2) * IF(b > 2, c, 1) * IF(a > 2, 0.5, 2)) FROM t",  # four
+    "SELECT a FROM t GROUP BY a HAVING ROUND(a) > 1",  # not in the select list, WHERE or ON
+    "SELECT a * 0.5 AS a FROM t ORDER BY ROUND(a)",  # a: the output, not the column
     "SELECT ROUND(z) FROM t",  # no declared type
     "SELECT ROUND(a) FROM t JOIN u ON u.e = t.b",  # a: t's or u's
+    "SELECT ROUND(b) FROM t JOIN u USING (a)",  # USING: names are not read
+    "SELECT ROUND(b) FROM t JOIN (SELECT * FROM u) AS x ON x.a = t.a",  # x may have a b
+    "SELECT ROUND(b) FROM t JOIN v ON v.a = t.a",  # v's columns are not declared
     "SELECT ROUND(x.a) FROM (SELECT c AS a FROM t) AS x",  # a derived table's column: here a decimal
     "SELECT (SELECT ROUND(t.a + u.e) FROM u LIMIT 1) FROM t",  # t.a is an outer query's column
     "SELECT ROUND(CASE WHEN b > 0 THEN c ELSE a END, b) FROM t",
@@ -105,6 +132,8 @@ PROOFS = [
     ("SELECT ROUND(CASE WHEN b > 100 THEN a * 0.5 ELSE a END, 0) FROM t", "SELECT CASE WHEN NOT b > 100 OR b IS NULL THEN ROUND(a, 0) ELSE ROUND(a - a * 0.5, 0) END FROM t"),
     ("SELECT ROUND(IF(b > 100, c, a), 1) FROM t", "SELECT CASE WHEN b > 100 THEN ROUND(c, 1) ELSE a END FROM t"),
     ("SELECT ROUND(a + b) FROM t", "SELECT a + b FROM t"),
+    ("SELECT ROUND(a - CASE WHEN b > 100 THEN a * 0.5 ELSE 0 END) FROM t", "SELECT CASE WHEN b > 100 THEN ROUND(a * 0.5) ELSE a END FROM t"),
+    ("SELECT ROUND(a - CASE WHEN b > 100 THEN a * 0.5 ELSE 0 END) FROM t", "SELECT ROUND(CASE WHEN b > 100 THEN a * 0.5 ELSE a END, 0) FROM t"),
     ("SELECT ROUND(CASE WHEN b > 100 THEN a * 0.5 ELSE a END, 0) FROM t", "SELECT ROUND(a * (1 - CASE WHEN b > 100 THEN 0.5 ELSE 0.0 END)) FROM t"),
 ]
 
@@ -142,6 +171,10 @@ QUERIES = [
     "SELECT CASE WHEN b > 1 THEN ROUND(a * 0.25, 1) ELSE ROUND(a, 1) END FROM t",
     "SELECT ROUND(CASE WHEN b > 1 THEN a * 1.5 WHEN b = 1 THEN c ELSE a + b END, 1) FROM t",
     "SELECT ROUND(a * (1 - 0.0), 0), ROUND(b * 1.00 - 2.0) FROM t",
+    "SELECT ROUND(c - CASE WHEN b > 2 THEN c * 0.5 WHEN b > 1 THEN a * 0.24 WHEN b > 0 THEN NULL ELSE 0 END, 1) FROM t",
+    "SELECT ROUND(a * (1 - IF(b > 1, 0.25, 0)) * 2) FROM t",
+    "SELECT ROUND(-(CASE WHEN b > 1 THEN c END) + a, 1) FROM t",
+    "SELECT ROUND(IF(b > 1, c, 1) * IF(a > 1, 0.5, 2)) FROM t",
 ]
 
 
