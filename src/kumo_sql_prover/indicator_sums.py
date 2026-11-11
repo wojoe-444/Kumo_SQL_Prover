@@ -59,7 +59,7 @@ from sqlglot import exp
 
 from .aggregate_membership import _base_table, _table_key
 from .ast_utils import FROM_KEY, conjuncts, extended_grouping, select_sources
-from .union_all_counts import _SELECT_ARGS, _all, _fixed, _integer_value, _owner, _plain_joins, _row_value
+from .union_all_counts import _SELECT_ARGS, _all, _fixed, _integer_value, _owner, _plain_joins, _row_value, _with_positive
 
 
 def indicator_sum_rules(
@@ -316,7 +316,7 @@ def disjunction_to_having(
         where = _all(pool[:position] + pool[position + 1 :])
         copy.set("where", exp.Where(this=where) if where is not None else None)
         copy.set("group", exp.Group(expressions=group_keys))
-        copy.set("having", exp.Having(this=test if having is None else exp.And(this=exp.Paren(this=having), expression=test)))
+        copy.set("having", exp.Having(this=test if having is None else _with_positive(having, test, copy.expressions)))
         for term, value in zip(copy.args["order"].expressions if ordered else [], ordered):
             term.set("this", value)
         return copy

@@ -533,7 +533,7 @@ class _Site:
             having = finished(having)
             if having is None:
                 return None
-            test = exp.And(this=exp.Paren(this=having), expression=test)
+            test = _with_positive(having, test, outputs)
         for position, value in enumerate(ordered):
             value = finished(value)
             if value is None:
@@ -584,6 +584,39 @@ def _fixed(read: list[exp.Expression], group_keys: list[exp.Expression], keys, d
         return all(fixed(child) for child in node.iter_expressions())
 
     return all(fixed(node) for node in read)
+
+
+def _with_positive(having: exp.Expression, test: exp.GT, outputs: list[exp.Expression]) -> exp.Expression:
+    """``having AND test``, without the parts of ``having`` that say what ``test`` says.
+
+    ``test`` is ``s > 0`` for a sum ``s`` of indicators, an integer that is never negative, so ``s >= 1``,
+    ``s <> 0`` and ``s > 0`` again (``s`` written out, or read by the name of the output that is exactly ``s``)
+    add nothing to it.
+    """
+
+    total = test.this.sql()
+    named = {item.alias.lower() for item in outputs if isinstance(item, exp.Alias) and item.this.sql() == total}
+
+    def is_total(node: exp.Expression) -> bool:
+        node = node.unnest()
+        return node.sql() == total or (isinstance(node, exp.Column) and not node.table and node.name.lower() in named)
+
+    def number(node: exp.Expression) -> str | None:
+        node = node.unnest()
+        return node.this if isinstance(node, exp.Literal) and not node.is_string else None
+
+    def implied(part: exp.Expression) -> bool:
+        if not isinstance(part, (exp.GT, exp.GTE, exp.LT, exp.LTE, exp.NEQ)):
+            return False
+        if is_total(part.this):
+            return (type(part), number(part.expression)) in ((exp.GT, "0"), (exp.GTE, "1"), (exp.NEQ, "0"))
+        if is_total(part.expression):
+            return (type(part), number(part.this)) in ((exp.LT, "0"), (exp.LTE, "1"), (exp.NEQ, "0"))
+        return False
+
+    kept = [part for part in conjuncts(having) if not implied(part)]
+    rest = _all(kept)
+    return test if rest is None else exp.And(this=exp.Paren(this=rest) if isinstance(rest, exp.Or) else rest, expression=test)
 
 
 def _equated(parts: list[exp.Expression]) -> set[frozenset[str]]:
