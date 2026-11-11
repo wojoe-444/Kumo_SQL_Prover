@@ -1,0 +1,401 @@
+"""Bounded equivalence: SQL the encoder learned after the first version, each construct against the replay engine.
+
+Every construct has (a) pairs that must come out bounded-equivalent, (b) pairs that must come out different with a replayed
+counterexample, and (c) the encoding compared with DuckDB on random small databases with NULLs, duplicates and empty tables
+(the query DuckDB runs is the one the replay runs, so an encoding that disagrees with the replay fails here).
+"""
+
+import random
+
+import pytest
+
+pytest.importorskip("z3")
+pytest.importorskip("duckdb")
+
+from kumo_sql_prover import bounded_equivalence as be  # noqa: E402
+from kumo_sql_prover.bounded_equivalence import BColumn, BoundedSchema, BoundedStatus, BTable, check_bounded  # noqa: E402
+
+
+def schema() -> BoundedSchema:
+    t = BTable("t", [BColumn("a", "INT"), BColumn("b", "INT")])
+    u = BTable("u", [BColumn("a", "INT", True), BColumn("c", "VARCHAR")])
+    e = BTable("e", [BColumn("id", "INT"), BColumn("d", "DATE")])
+    return BoundedSchema({"t": t, "u": u, "e": e})
+
+
+def check(left, right, rows=2, **kwargs):
+    return check_bounded(left, right, schema(), rows=rows, dialect="mysql", **kwargs)
+
+
+def same(left, right, rows=2):
+    result = check(left, right, rows)
+    assert result.status is BoundedStatus.BOUNDED_EQUIVALENT and result.bound == rows, (left, right, result.reason, result.counterexample)
+
+
+def different(left, right, rows=2):
+    result = check(left, right, rows)
+    assert result.status is BoundedStatus.DIFFERENT and result.counterexample is not None, (left, right, result.reason)
+    return result.counterexample
+
+
+def unsupported(left, right, word=""):
+    result = check(left, right)
+    assert result.status is BoundedStatus.UNKNOWN and "unsupported" in result.reason and word in result.reason, (left, right, result.reason)
+
+
+DATES = [None, "2020-01-31", "2020-02-01", "2020-02-29", "2019-12-31", "2021-01-01"]
+
+
+def concrete(rng):
+    return {
+        "t": [(rng.choice([None, 1, 2, 3]), rng.choice([None, 0, 1, 3])) for _ in range(rng.randint(0, 3))],
+        "u": [(rng.choice([1, 2, 3]), rng.choice([None, "a", "ab", "b"])) for _ in range(rng.randint(0, 3))],
+        "e": [(rng.randint(1, 3), rng.choice(DATES)) for _ in range(rng.randint(0, 3))],
+    }
+
+
+def norm(rows):
+    def cell(value):
+        if isinstance(value, bool):
+            return int(value)
+        if hasattr(value, "is_finite") or isinstance(value, float):
+            return round(float(value), 6)
+        return value
+
+    return sorted((tuple(cell(v) for v in row) for row in rows), key=repr)
+
+
+def agrees_with_replay(sql, trials=6, seed=1):
+    """The encoding's rows for ``sql`` equal the rows of the query the replay runs, on random databases."""
+
+    s = schema()
+    replay = be.DuckDBReplay(s, sql, sql, "mysql")
+    rng = random.Random(seed)
+    compared = 0
+    for trial in range(trials):
+        data = concrete(rng) if trial else {"t": [], "u": [], "e": []}  # the empty database first
+        mine = be.evaluate(sql, s, data, "mysql")
+        theirs, _ = replay._run(data)
+        assert norm(mine) == norm(theirs), (sql, data, mine, theirs)
+        compared += 1
+    return compared
+
+
+# --- parentheses in FROM ---------------------------------------------------------------------------
+
+
+def test_a_parenthesized_join_keeps_its_joins():
+    same("select x.a from ((select a from t) x join (select a from u) y on x.a = y.a)", "select t.a from t join u on t.a = u.a")
+    same("select t.a from t join (u join e on u.a = e.id) on t.a = u.a", "select t.a from t join u on t.a = u.a join e on u.a = e.id")
+    same("select t.a from (t left join u on t.a = u.a)", "select t.a from t left join u on t.a = u.a")
+    # the join inside the parentheses used to be dropped, which made these two "equivalent"
+    different("select x.a from ((select a from t) x join (select a from u) y on true)", "select a from t")
+    # an inner join inside a left join is not the same as two left joins
+    different(
+        "select t.a, e.id from t left join (u join e on u.a = e.id) on t.a = u.a",
+        "select t.a, e.id from t left join u on t.a = u.a left join e on u.a = e.id",
+    )
+
+
+@pytest.mark.parametrize("sql", [
+    "select t.a, u.c, e.id from t left join (u join e on u.a = e.id) on t.a = u.a",
+    "select x.a, y.c from ((select a from t) x join (select a, c from u) y on x.a = y.a)",
+    "select t.b from (t join u on t.a = u.a)",
+])
+def test_parenthesized_joins_match_the_replay(sql):
+    assert agrees_with_replay(sql)
+
+
+def test_a_clause_on_a_parenthesized_query_is_not_dropped():
+    # ``(SELECT ..) LIMIT 1`` used to compile as the inner query alone
+    unsupported("(select a from t order by a) limit 1", "select a from t", "limit")
+    same("(select a from t) order by a", "select a from t")
+    unsupported("select t.a from (t join u on t.a = u.a) as j", "select t.a from t join u on t.a = u.a", "alias")
+
+
+# --- parsing and scoping ---------------------------------------------------------------------------
+
+
+def test_is_binds_after_a_comparison():
+    # sqlglot reads ``a = 2 IS TRUE`` as ``a = (2 IS TRUE)``; the engines read ``(a = 2) IS TRUE``
+    same("select a from t where a = 2 is true", "select a from t where a = 2")
+    same("select a from t where a < b is null", "select a from t where a is null or b is null")
+    cx = different("select a from t where a = 2 is true", "select a from t where a = 1")
+    assert cx["t"][0][0] in (1, 2)
+    for sql in ("select a, b from t where a = 2 is true or b < 1 is false", "select a from t where a >= b is null"):
+        assert agrees_with_replay(sql)
+    # ``a = 2 IS NOT TRUE`` goes to the replay as ``a = NOT 2 IS TRUE``, which means something else there
+    unsupported("select a from t where a = 2 is not true", "select a from t where a <> 2 or a is null", "IS NOT")
+
+
+def test_an_unknown_function_is_a_predicate_only_where_a_condition_is_expected():
+    same("select a from t where p(a) and not p(a)", "select a from t where false")
+    same("select a from t where case when p(a) then b > 1 else b < 1 end", "select a from t where (p(a) and b > 1) or (not p(a) and b < 1)")
+    # in a select list or HAVING the name may be an aggregate, which is not a predicate on a row
+    unsupported("select case when p(a) then 1 else 0 end from t", "select if(p(a), 1, 0) from t", "function P")
+    unsupported("select a from t group by a having p(a)", "select a from t group by a having p(a)", "function P")
+    same("select t.a from t join u on p(t.a, u.a)", "select t.a from t, u where p(t.a, u.a)")
+    # ``YEARWEEK(a) = 201901`` used to compare a truth value with a number, which is never true
+    unsupported("select a from t where yearweek(a) = 201901", "select a from t where false", "function YEARWEEK")
+    unsupported("select unix_timestamp(c) from u", "select unix_timestamp(c) from u", "function UNIX_TIMESTAMP")
+    unsupported("select a from t where f(a) + 1 > 0", "select a from t", "function F")
+
+
+def test_a_window_inside_a_subquery_does_not_make_the_outer_query_windowed():
+    inner = "select a, lead(a) over (order by a) as nxt from t"
+    same(f"select min(nxt - a) from ({inner}) x", f"select min(d) from (select nxt - a as d from ({inner}) y) z")
+    same(f"with w as ({inner}) select count(*), max(nxt) from w", "select count(*), case when count(a) > 1 or count(a) < count(*) then max(a) end from t")
+    different(f"with w as ({inner}) select count(nxt) from w", "select count(a) from t")
+    assert agrees_with_replay(f"with w as ({inner}) select count(nxt), max(a) from w")
+
+
+def test_single_value_is_the_value_of_the_only_row():
+    # Calcite's SINGLE_VALUE: the row's value, NULL without rows; several rows are a runtime error (not modeled, the
+    # first row is taken, as for the scalar subquery it replaces)
+    same("select t.a, (select b from t x where x.a = 1) from t", "select t.a, s.v from t left join (select single_value(b) as v from t where a = 1) s on true")
+    same("select single_value(a) from t where a > 5 and a < 5", "select max(a) from t where false")
+    unsupported("select a from t where single_value(a, b) = 1", "select a from t", "function SINGLE_VALUE")
+    # DuckDB has no SINGLE_VALUE, so the replay cannot confirm a difference: unknown, never a verdict
+    result = check("select single_value(a) from t", "select count(a) from t")
+    assert result.status is BoundedStatus.UNKNOWN
+
+
+# --- names that a select item and several FROM columns share -----------------------------------------
+
+
+def test_a_group_by_name_two_tables_share_is_the_select_item():
+    # MySQL: ``GROUP BY a`` with ``a`` in both tables groups by the select item named ``a`` (the replay rewrites it so)
+    joined = "from t join u on t.b = u.a"
+    same(f"select t.a, count(*) {joined} group by a", f"select t.a, count(*) {joined} group by t.a")
+    same(f"select t.b as a, count(*) {joined} group by a", f"select t.b, count(*) {joined} group by t.b")
+    different(f"select t.a, count(*) {joined} group by a", f"select u.a, count(*) {joined} group by u.a")
+    # no select item of that name, two of them, or a use the replay engine rejects: still ambiguous
+    unsupported(f"select t.a as k, count(*) {joined} group by a", f"select t.a, count(*) {joined} group by t.a", "ambiguous")
+    unsupported(f"select t.a, u.a, count(*) {joined} group by a", f"select t.a, u.a, count(*) {joined} group by t.a, u.a", "ambiguous")
+    unsupported(f"select t.a, count(*) {joined} group by t.a having a > 1", f"select t.a, count(*) {joined} group by t.a having t.a > 1", "ambiguous")
+
+
+def test_order_by_reads_a_select_item_before_a_from_column():
+    joined = "from t join u on t.b = u.a"
+    same(f"select t.a, u.c {joined} order by a limit 1", f"select t.a, u.c {joined} order by t.a limit 1")
+    same(f"select t.*, u.c {joined} order by a limit 1", f"select t.a, t.b, u.c {joined} order by t.a limit 1")
+    unsupported(f"select t.a, u.a {joined} order by a limit 1", f"select t.a, u.a {joined} order by t.a limit 1", "ambiguous")
+    # an alias after a star used to be paired with the wrong output column
+    same("select *, -a as x from t where a is not null order by x limit 1", "select a, b, -a from t where a is not null order by a desc limit 1")
+    different("select *, -a as x from t where a is not null and b is not null order by x limit 1", "select a, b, -a from t where a is not null and b is not null order by b limit 1")
+
+
+@pytest.mark.parametrize("sql", [
+    "select t.a, count(*), max(u.c) from t join u on t.b = u.a group by a",
+    "select t.b as a, count(u.c) from t left join u on t.b = u.a group by a",
+    "select u.a, t.b from t join u on t.b = u.a order by a, b limit 2",
+    "select *, -a as x from t order by x, b limit 1",
+    "select t.*, u.c from t left join u on t.a = u.a order by a, b, c limit 2",
+])
+def test_shared_names_match_the_replay(sql):
+    assert agrees_with_replay(sql)
+
+
+# --- FILTER, FETCH, explicit window frames ---------------------------------------------------------
+
+
+def test_an_aggregate_filter_restricts_the_rows_aggregated():
+    same("select count(*) filter (where a > 1), sum(b) filter (where a > 1) from t", "select count(case when a > 1 then 1 end), sum(case when a > 1 then b end) from t")
+    same("select a, count(distinct b) filter (where b > 0) from t group by a", "select a, count(distinct case when b > 0 then b end) from t group by a")
+    same("select a, sum(b) filter (where b > 0) over (partition by a) from t", "select a, sum(case when b > 0 then b end) over (partition by a) from t")
+    # a NULL condition filters the row out; an empty filtered group sums to NULL, not 0
+    different("select sum(b) filter (where a > 1) from t", "select coalesce(sum(b) filter (where a > 1), 0) from t", rows=1)
+    different("select count(*) filter (where a > 1) from t", "select count(*) filter (where not (a <= 1)) + count(*) filter (where a is null) from t", rows=1)
+    unsupported("select row_number() filter (where a > 1) over (order by a) from t", "select 1 from t", "FILTER")
+
+
+def test_fetch_first_is_limit():
+    same("select a from t order by a fetch next 1 rows only", "select a from t order by a limit 1")
+    same("select a from t order by a offset 1 rows fetch next 2 rows only", "select a from t order by a limit 2 offset 1")
+    different("select a from t order by a fetch first 1 rows only", "select a from t order by a limit 2")
+    unsupported("select a from t order by a fetch first 1 rows with ties", "select a from t order by a limit 1", "WITH TIES")
+
+
+def test_the_two_frames_that_do_not_depend_on_ties():
+    whole = "range between unbounded preceding and unbounded following"
+    same(f"select a, sum(b) over (partition by a {whole}) from t", "select a, sum(b) over (partition by a) from t")
+    same(f"select a, count(b) over (partition by a order by b rows between unbounded preceding and unbounded following) from t", "select a, count(b) over (partition by a) from t")
+    same("select a, sum(b) over (partition by a order by b range between unbounded preceding and current row) from t", "select a, sum(b) over (partition by a order by b) from t")
+    # with ORDER BY the default frame ends at the current row's peers, the whole-partition frame does not
+    different(f"select sum(b) over (order by b {whole}) from t", "select sum(b) over (order by b) from t")
+    unsupported("select sum(b) over (order by b rows between unbounded preceding and current row) from t", "select sum(b) over (order by b) from t", "window frame")
+    unsupported("select sum(b) over (order by b rows between 1 preceding and current row) from t", "select sum(b) over (order by b) from t", "window frame")
+
+
+@pytest.mark.parametrize("sql", [
+    "select a, count(*) filter (where b > 0), sum(b) filter (where b <> 1), min(b) filter (where a is null), avg(b) filter (where b > 0) from t group by a",
+    "select count(*) filter (where a > 1), count(distinct b) filter (where a > 1), max(a) filter (where b is null) from t",
+    "select a, b, sum(b) filter (where b > 0) over (partition by a), count(*) filter (where a > 1) over () from t",
+    "select a, b from t order by a, b offset 1 rows fetch next 2 rows only",
+    "select a, b, sum(b) over (partition by a order by b range between unbounded preceding and current row) from t",
+    "select a, b, count(*) over (order by b rows between unbounded preceding and unbounded following), max(b) over (partition by a order by b range between unbounded preceding and unbounded following) from t",
+    "select a, b, first_value(b) over (partition by a order by b, a range between unbounded preceding and unbounded following) from t where b is not null",
+])
+def test_filter_fetch_and_frames_match_the_replay(sql):
+    assert agrees_with_replay(sql)
+
+
+# --- ROLLUP, CUBE, GROUPING SETS, GROUPING() ---------------------------------------------------------
+
+
+def test_rollup_is_the_union_of_its_groupings():
+    same("select a, sum(b) from t group by rollup (a)", "select a, sum(b) from t group by a union all select null, sum(b) from t")
+    same("select a, b, count(*) from t group by cube (a, b)", "select a, b, count(*) from t group by grouping sets ((a, b), (a), (b), ())")
+    same("select a, b, count(*) from t group by a, rollup (b)", "select a, b, count(*) from t group by grouping sets ((a, b), (a))")
+    same(
+        "select a, b, count(*), grouping(a, b) from t group by rollup (a, b)",
+        "select a, b, count(*), 0 from t group by a, b union all select a, null, count(*), 1 from t group by a union all select null, null, count(*), 3 from t",
+    )
+    # the grand total exists over an empty table; a plain GROUP BY returns nothing there
+    assert different("select a, sum(b) from t group by rollup (a)", "select a, sum(b) from t group by a", rows=1)["t"] == []
+    # a NULL key and a rolled-up key look alike; GROUPING tells them apart
+    different("select a, count(*) from t group by rollup (a)", "select a, count(*) from t group by a union all select a, count(*) from t group by a", rows=1)
+    different("select grouping(a) from t group by rollup (a)", "select 0 from t group by rollup (a)", rows=1)
+    # a duplicated grouping set repeats its rows
+    different("select a from t group by grouping sets (a, a)", "select a from t group by a", rows=1)
+    unsupported("select a, count(*) from t group by a with rollup", "select a, count(*) from t group by rollup (a)", "WITH ROLLUP")
+    unsupported("select grouping(b) from t group by rollup (a)", "select 0 from t group by rollup (a)", "GROUPING")
+
+
+@pytest.mark.parametrize("sql", [
+    "select a, b, count(*), sum(b), grouping(a), grouping(a, b), grouping(b, a) from t group by rollup (a, b)",
+    "select a, b, count(*), max(a) from t group by cube (a, b)",
+    "select a, b, min(b), grouping(b) from t group by grouping sets ((a, b), a, ())",
+    "select t.a, count(u.c), grouping(t.a) from t left join u on t.a = u.a group by grouping sets ((t.a), ())",
+    "select a + 1, count(*) from t group by rollup (a) having count(*) > 1 or grouping(a) = 1",
+    "select a, b, count(*) from t group by a, rollup (b)",
+    "select a, count(*) from t group by grouping sets (a, a, ())",
+    "select a, count(distinct b) filter (where b > 0), grouping(a) from t group by rollup (a)",
+])
+def test_grouping_sets_match_the_replay(sql):
+    assert agrees_with_replay(sql)
+
+
+# --- window functions over the rows of a grouped query -----------------------------------------------
+
+
+def test_a_window_function_runs_over_the_groups():
+    same("select a, sum(count(*)) over () from t group by a", "select a, (select count(*) from t) from t group by a")
+    same("select a, count(*) over () from t group by a", "select a, (select count(distinct a) + max(case when a is null then 1 else 0 end) from t) from t group by a")
+    same("select a, rank() over (order by count(*) desc, a) from t group by a having count(*) > 0", "select a, row_number() over (order by c desc, a) from (select a, count(*) as c from t group by a) x")
+    same("select sum(b), count(*) over () from t", "select sum(b), 1 from t")
+    # HAVING removes groups before the window sees them
+    different("select a, count(*) over () from t group by a having a > 0", "select a, n from (select a, count(*) over () as n from t group by a) x where a > 0")
+    different("select a, sum(sum(b)) over () from t group by a", "select a, sum(b) from t group by a")
+
+
+@pytest.mark.parametrize("sql", [
+    "select a, count(*), sum(count(*)) over (), count(*) over (), max(sum(b)) over (order by a) from t group by a",
+    "select a, b, row_number() over (partition by a order by b), dense_rank() over (order by a), lag(b) over (partition by a order by b) from t group by a, b",
+    "select a, sum(b), rank() over (order by sum(b), a) from t group by a having count(*) > 1 or a is null",
+    "select count(*), sum(a), count(*) over (), sum(sum(a)) over () from t",
+    "select a, count(*) over (partition by count(*)) from t group by a",
+])
+def test_windows_over_groups_match_the_replay(sql):
+    assert agrees_with_replay(sql)
+
+
+def test_dense_rank_counts_the_distinct_keys_before_a_row():
+    # DENSE_RANK used to fail on its own sort keys
+    same("select a, dense_rank() over (order by a) from t where a is not null", "select a, (select count(distinct x.a) from t x where x.a <= t.a) from t where a is not null")
+    different("select a, dense_rank() over (order by a) from t", "select a, rank() over (order by a) from t", rows=3)
+    assert agrees_with_replay("select a, b, dense_rank() over (partition by a order by b desc), dense_rank() over (order by a, b) from t")
+
+
+# --- dates, intervals, numbers written as strings, casts ---------------------------------------------
+
+
+def test_date_literals_and_intervals():
+    same("select id from e where d = '2020-2-1'", "select id from e where d = '2020-02-01'")
+    same("select id from e where d < date('2020-02-01 +08')", "select id from e where d < '2020-02-01'")
+    same("select id from e where d >= date_sub('2020-03-01', interval 29 day)", "select id from e where d >= '2020-02-01'")
+    same("select id from e where d = date_add('2020-03-01', interval -1 day)", "select id from e where d = '2020-02-29'")
+    same("select id from e where d = subdate('2020-03-01', interval 1 day) or d = adddate('2020-01-30', 1)", "select id from e where d in ('2020-02-29', '2020-01-31')")
+    same("select id from e where d < date '2020-01-31' + interval '1' month", "select id from e where d < '2020-02-29'")  # clamped to the month's end
+    same("select id from e where d < date('2019-02-28') + interval 1 year and d >= date '2020-03-31' - interval 1 quarter", "select id from e where d < '2020-02-28' and d >= '2019-12-31'")
+    same("select id, d + interval 2 week from e", "select id, date_add(d, interval 14 day) from e")
+    different("select id from e where d < date '2020-01-31' + interval '1' month", "select id from e where d < '2020-03-02'")
+    different("select id from e where d = '2020-2-1'", "select id from e where d = '2020-01-02'", rows=1)
+    # a month added to a date that is not a literal needs the month-end rule on a symbolic date: not modeled
+    unsupported("select id from e where d + interval 1 month > '2020-02-01'", "select id from e", "interval arithmetic")
+    unsupported("select id from e where d = '2020-02-30'", "select id from e where false", "date")
+
+
+@pytest.mark.parametrize("sql", [
+    "select id, d = '2020-2-1', d < date('2020-02-29 +08'), d >= date_sub('2020-03-01', interval 29 day) from e",
+    "select id from e where d between subdate('2020-03-01', interval 30 day) and adddate('2020-01-30', 2)",
+    "select id, d < date '2020-01-31' + interval '1' month, d > date('2021-01-01') - interval 1 year, d = '2019-11-30' + interval 1 month from e",
+    "select id, d + interval 1 week, subdate(d, 1), adddate(d, interval 3 day), date_add(d, interval '2' day) from e",
+])
+def test_dates_match_the_replay(sql):
+    assert agrees_with_replay(sql)
+
+
+def test_a_number_written_as_a_string_literal_compares_as_the_number():
+    same("select a from t where a <> '2'", "select a from t where a <> 2")
+    same("select a from t where a in ('1', '3') and b between '0' and '2'", "select a from t where a in (1, 3) and b between 0 and 2")
+    different("select a from t where a = '2'", "select a from t where a = 3", rows=1)
+    # any other string against a number is left alone (MySQL reads 'x' as 0, DuckDB fails)
+    unsupported("select a from t where a = 'x'", "select a from t where a = 0", "compare")
+    unsupported("select a from t where a = '2.5'", "select a from t where false", "compare")
+    unsupported("select t.a from t join u on t.a = u.c", "select t.a from t join u on t.a = u.a", "compare")
+    for sql in ("select a, a = '2', b < '1', a in ('1', '3'), b between '0' and '2' from t", "select a from t where a <> '-1' or b >= '03'"):
+        if "'03'" in sql:
+            unsupported(sql, sql, "compare")  # a leading zero is not the way either engine prints the number
+        else:
+            assert agrees_with_replay(sql)
+
+
+def test_casts_between_dates_timestamps_booleans_and_integers():
+    same("select cast(a > 1 as signed) from t", "select case when a > 1 then 1 when a <= 1 then 0 end from t")
+    same("select id from e where cast(d as datetime) >= '2020-02-01 00:00:00'", "select id from e where d >= '2020-02-01'")
+    same("select id, cast(cast(d as datetime) as date) from e", "select id, d from e")
+    different("select cast(a > 1 as signed) from t", "select 1 from t", rows=1)
+    for sql in ("select a, cast(a > 1 as signed), cast(b is null as signed) + 1 from t", "select id, cast(d as datetime), cast(cast(d as datetime) as date) from e"):
+        assert agrees_with_replay(sql)
+
+
+def test_a_table_alias_can_rename_columns():
+    same("select x, y from t as r (x, y) where x > 1", "select a, b from t where a > 1")
+    same("select r.x, r.b from t as r (x)", "select a, b from t")
+    same("with w as (select a, b from t) select p, q from w as v (p, q)", "select a, b from t")
+    different("select x from t as r (y, x)", "select a from t", rows=1)
+    unsupported("select a from t as r (x, y)", "select a from t", "unknown column")
+    unsupported("select x from t as r (x, y, z)", "select a from t", "column aliases")
+
+
+def test_bool_and_and_bool_or_skip_nulls_and_are_null_over_nothing():
+    same("select a, bool_and(b > 1) from t group by a", "select a, not bool_or(not b > 1) from t group by a")
+    same("select a, bool_or(b > 1) from t group by a", "select a, max(case when b > 1 then 1 when b <= 1 then 0 end) = 1 from t group by a")
+    same("select a from t group by a having bool_and(b > 1)", "select a from t group by a having min(b) > 1")
+    # a NULL condition is skipped, so one true row and one NULL row give TRUE, not NULL
+    different("select bool_and(b > 1) from t", "select count(*) = count(case when b > 1 then 1 end) from t", rows=1)
+    different("select a, bool_and(b > 1) from t group by a", "select a, bool_or(b > 1) from t group by a")
+    different("select coalesce(bool_or(b > 1), false) from t", "select bool_or(b > 1) from t", rows=1)  # the empty table
+    unsupported("select bool_and(b) from t", "select bool_and(b) from t", "BOOL_AND")
+    for sql in (
+        "select a, bool_and(b > 1), bool_or(b > 1), bool_and(b is null) from t group by a",
+        "select bool_and(b > 1), bool_or(a = b) from t",
+        "select a, bool_and(b > 1) over (partition by a), bool_or(b > 0) filter (where a > 1) over () from t",
+    ):
+        assert agrees_with_replay(sql)
+
+
+def test_the_replay_keeps_a_moved_date_a_date():
+    # DuckDB types DATE + INTERVAL as TIMESTAMP; MySQL (and the encoding) keep a DATE, so the replay casts it back and a
+    # date column and the same day computed with an interval compare equal in the replayed results
+    s = schema()
+    sql = "select d + interval 1 day, date_sub(d, interval 1 week), subdate(d, 2), date_add('2020-01-31', interval 1 month) from e"
+    replay = be.DuckDBReplay(s, sql, "select d from e", "mysql")
+    data = {"t": [], "u": [], "e": [(1, "2020-02-29"), (2, None)]}
+    moved, plain = replay._run(data)
+    assert all(type(value) is type(plain[0][0]) for value in moved[0]), moved
+    assert sorted(moved, key=repr) == sorted(be.evaluate(sql, s, data, "mysql"), key=repr)
+    same("select id, date_add(d, interval 0 day) from e", "select id, d from e")
+    same("select id from e where date_add(d, interval 1 day) in (select d from e)", "select x.id from e x where exists (select 1 from e y where y.d = x.d + interval 1 day)")
+    different("select date_add(d, interval 1 day) from e", "select d from e", rows=1)

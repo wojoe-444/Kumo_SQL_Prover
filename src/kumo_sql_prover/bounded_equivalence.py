@@ -43,7 +43,7 @@ import sqlglot
 from sqlglot import exp
 
 from . import bounded_keyed_joins
-from .ast_utils import MAX_EXPANDED_READS, UnmodeledConstruct, distinct_on, drop_case_conflicts, expand_group_by_all, expanded_reads, extended_grouping, is_call, spell_for_duckdb, star_modified
+from .ast_utils import MAX_EXPANDED_READS, UnmodeledConstruct, distinct_on, drop_case_conflicts, expand_group_by_all, expanded_reads, is_call, spell_for_duckdb, star_modified
 from .duckdb_load import small_database
 from .set_operations import positional_sql_pair
 from .solver_lock import Z3_MISSING, bounded_solver, serialized
@@ -389,13 +389,39 @@ def to_kind(v: V, kind: str) -> V:
     if kind in ("date", "time", "datetime") and v.kind == "str" and isinstance(v.lit, str):
         try:
             if kind == "date":
-                return const(_dt.date.fromisoformat(v.lit), "date")
+                return const(_date_literal(v.lit), "date")
             if kind == "time":
                 return const(_dt.time.fromisoformat(v.lit if len(v.lit) > 5 else v.lit + ":00"), "time")
             return const(_dt.datetime.fromisoformat(v.lit), "datetime")
         except ValueError:
             raise Unsupported("unparseable date or time literal")
     raise Unsupported(f"cannot treat {v.kind} as {kind}")
+
+
+_LOOSE_DATE = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
+_DATE_WITH_OFFSET = re.compile(r"(\d{4}-\d{1,2}-\d{1,2}) [+-]\d{2}")
+
+
+def _date_literal(text: str) -> _dt.date:
+    """The date a string literal names: ``2019-07-04``, or ``2019-7-4`` (MySQL and DuckDB read a month or day without
+    its leading zero). Raises ``ValueError`` for anything else."""
+
+    loose = _LOOSE_DATE.fullmatch(text)
+    if loose:
+        return _dt.date(int(loose.group(1)), int(loose.group(2)), int(loose.group(3)))
+    return _dt.date.fromisoformat(text)
+
+
+def _add_months(day: _dt.date, months: int) -> _dt.date:
+    """``day`` moved by whole months; a day past the end of the new month becomes its last day (as MySQL and DuckDB do)."""
+
+    total = day.year * 12 + day.month - 1 + months
+    year, month = divmod(total, 12)
+    month += 1
+    if not 1 <= year <= 9999:
+        raise Unsupported("date out of range")
+    last = (_dt.date(year + (month == 12), month % 12 + 1, 1) - _dt.timedelta(days=1)).day if (year, month) != (9999, 12) else 31
+    return _dt.date(year, month, min(day.day, last))
 
 
 def unify(a: V, b: V) -> tuple[V, V]:
@@ -531,7 +557,8 @@ class Rel:
 
 
 class Scope:
-    def __init__(self, cols, parent=None, aliases=None, group=None, alias_first=False, hidden=(), window=None, index=None, picker=None, group_keys=None):
+    def __init__(self, cols, parent=None, aliases=None, group=None, alias_first=False, hidden=(), window=None, index=None, picker=None, group_keys=None, grouping=None):
+        self.grouping = grouping  # SQL text of every grouping key -> 1 when it is rolled up in this row's grouping set, else 0
         self.picker = picker  # position in ``cols`` -> the value of an ungrouped column (an arbitrary member of the group)
         self.group_keys = group_keys  # SQL text of each GROUP BY expression -> its value
         self.window = window  # WindowCtx of the select being projected
@@ -588,7 +615,7 @@ class Group:
     cache: dict = field(default_factory=dict)
 
 
-AGGREGATES = (exp.Count, exp.Sum, exp.Min, exp.Max, exp.Avg)
+AGGREGATES = (exp.Count, exp.Sum, exp.Min, exp.Max, exp.Avg, exp.LogicalAnd, exp.LogicalOr)
 
 
 class SymbolicDatabase:
@@ -720,13 +747,21 @@ class Compiler:
 
     def query(self, node: exp.Expression, outer: Scope | None) -> Rel:
         if isinstance(node, exp.Subquery):
-            inner = self.query(node.this, outer)
-            return inner
+            self._plain_wrapper(node)
+            return self.query(node.this, outer)
         if isinstance(node, exp.Select):
             return self._with(node, lambda: self.select(node, outer))
         if isinstance(node, (exp.Union, exp.Intersect, exp.Except)):
             return self._with(node, lambda: self.set_operation(node, outer))
         raise Unsupported(f"statement {type(node).__name__}")
+
+    def _plain_wrapper(self, node: exp.Subquery) -> None:
+        """A parenthesized query may carry clauses of its own (``(SELECT ..) LIMIT 1``, joins, a pivot): only an alias and
+        an ``ORDER BY`` (which keeps the bag) may be skipped when the inner query is compiled in its place."""
+
+        extra = sorted(k for k, v in node.args.items() if v and k not in ("this", "alias", "order"))
+        if extra:
+            raise Unsupported(f"parenthesized query with {', '.join(extra)}")
 
     def _with(self, node, run):
         clause = node.args.get("with_") or node.args.get("with")
@@ -815,8 +850,6 @@ class Compiler:
         source = Rel(source.cols, source.kinds, rows, source.hidden, source.first, source.keys)
         items = list(node.expressions)
         aggregated = self._aggregated(node)
-        if self._windowed(node) and (aggregated or node.args.get("group") is not None):
-            raise Unsupported("window function over a grouped query")
         if node.args.get("group") is not None or aggregated:
             out = self.grouped(node, source, items, outer)
         else:
@@ -827,7 +860,7 @@ class Compiler:
         return self.limited(node, out)
 
     def _windowed(self, node) -> bool:
-        return any(True for _ in node.find_all(exp.Window))
+        return any(found.find_ancestor(exp.Select) is node for found in node.find_all(exp.Window))
 
     def _aggregated(self, node: exp.Select) -> bool:
         targets = list(node.expressions) + [node.args[k] for k in ("having",) if node.args.get(k) is not None]
@@ -835,8 +868,10 @@ class Compiler:
         if order is not None:
             targets.append(order)
         for target in targets:
-            for found in target.find_all(*AGGREGATES, exp.GroupConcat, exp.AnyValue, exp.ArrayAgg):
-                if found.find_ancestor(exp.Select) is node and found.find_ancestor(exp.Window) is None:
+            for found in target.find_all(*AGGREGATES, exp.GroupConcat, exp.AnyValue, exp.ArrayAgg, exp.Anonymous):
+                if isinstance(found, exp.Anonymous) and not _single_value(found):
+                    continue
+                if found.find_ancestor(exp.Select) is node and not _window_call(found):
                     return True
         return False
 
@@ -858,9 +893,19 @@ class Compiler:
         return rel
 
     def table_factor(self, node, outer: Scope | None) -> Rel:
+        """One FROM item. Inside parentheses (``a JOIN (b JOIN c ON ..) ON ..``) the item carries its own joins."""
+
+        rel = self._factor(node, outer)
+        if isinstance(node, (exp.Table, exp.Subquery)):
+            for join in node.args.get("joins") or []:
+                rel = self.join(rel, join, outer)
+        return rel
+
+    def _factor(self, node, outer: Scope | None) -> Rel:
         if isinstance(node, exp.Table):
             alias = node.alias.lower() if node.alias else node.name.lower()
             name = node.name.lower()
+            renamed = [c.name.lower() for c in node.args["alias"].args.get("columns") or []] if node.args.get("alias") else []
             if not node.db and not node.catalog and name in self._ctes[-1]:
                 select, columns, frame = self._ctes[-1][name]
                 self._ctes.append(frame)
@@ -868,14 +913,27 @@ class Compiler:
                     inner = self.query(select, None)
                 finally:
                     self._ctes.pop()
-                return self._renamed(inner, alias, columns or None, node)
-            if isinstance(node.this, exp.Func) or node.args.get("joins") is not None and False:
+                return self._renamed(self._renamed(inner, alias, columns or None, node), alias, renamed or None, node)
+            if isinstance(node.this, exp.Func):
                 raise Unsupported("table function")
+            extra = sorted(k for k, v in node.args.items() if v and k not in ("this", "db", "catalog", "alias", "joins"))
+            if extra:  # a sample, a pivot, a time-travel version: not the table itself
+                raise Unsupported(f"table with {', '.join(extra)}")
             table, slots = self.db.table_for(node)
-            cols = [(alias, c.name.lower()) for c in table.columns]
-            kinds = [kind_of(c.type) or "unsupported" for c in table.columns]
-            return Rel(cols, kinds, [Row(r.present, list(r.vals)) for r in slots], keys=bounded_keyed_joins.table_keys(table))
+            base = Rel([(alias, c.name.lower()) for c in table.columns], [kind_of(c.type) or "unsupported" for c in table.columns], [Row(r.present, list(r.vals)) for r in slots],
+                       keys=bounded_keyed_joins.table_keys(table))
+            return self._renamed(base, alias, renamed or None, node)
+        inner = node.this if isinstance(node, exp.Subquery) else None
+        if isinstance(inner, exp.Table) or (isinstance(inner, exp.Subquery) and (inner.args.get("joins") or (inner.alias and not node.alias))):
+            # ``(a JOIN b ON ..)``: parentheses around a FROM item and its joins, not a derived table
+            extra = sorted(k for k, v in node.args.items() if v and k not in ("this", "joins"))
+            if extra:
+                raise Unsupported(f"parenthesized join with {', '.join(extra)}")
+            return self.table_factor(node.this, outer)
         if isinstance(node, exp.Subquery):
+            extra = sorted(k for k, v in node.args.items() if v and k not in ("this", "alias", "joins", "pivots", "sample"))
+            if extra:
+                raise Unsupported(f"derived table with {', '.join(extra)}")
             inner = self.query(node.this, outer)
             alias = node.alias.lower() if node.alias else None
             columns = [c.name.lower() for c in node.args["alias"].args.get("columns") or []] if node.args.get("alias") else None
@@ -905,7 +963,11 @@ class Compiler:
     def _renamed(self, inner: Rel, alias: str | None, columns, node) -> Rel:
         if node.args.get("pivots") or node.args.get("sample"):
             raise Unsupported("pivot or sample")
-        names = columns or [n for _, n in inner.cols]
+        names = [n for _, n in inner.cols]
+        if columns:  # ``AS x (a, b)`` renames the first columns and keeps the names of the rest
+            if len(columns) > len(names):
+                raise Unsupported("more column aliases than columns")
+            names[: len(columns)] = columns
         return Rel([(alias, n) for n in names], list(inner.kinds), [Row(r.present, r.vals) for r in inner.rows], keys=inner.keys)
 
     def _lateral(self, left: Rel, join: exp.Join, outer: Scope | None) -> Rel:
@@ -1092,6 +1154,7 @@ class Compiler:
 
     def projected(self, node, source: Rel, items, outer: Scope | None) -> Rel:
         names = self._output_names(items, source)
+        named = self._named_outputs(items, source)
         order = node.args.get("order")
         out_rows: list[Row] = []
         scopes = [self._scope(source, row, outer) for row in source.rows]
@@ -1102,7 +1165,7 @@ class Compiler:
                 item.alias.lower(): (lambda e=item.this, s=scope: self.expr(e, s)) for item in items if isinstance(item, exp.Alias)
             }
             cells = self._expand(items, source, row, scope)
-            keys = self._sort_keys(order, items, cells, scope, outer) if order is not None else None
+            keys = self._sort_keys(order, names, named, cells, scope, outer) if order is not None else None
             out_rows.append(Row(row.present, cells, keys))
         return self._finish(names, out_rows)
 
@@ -1120,7 +1183,33 @@ class Compiler:
         fixed = [Row(r.present, [to_kind(v, k) if k != "null" else v for v, k in zip(r.vals, kinds)], r.keys) for r in rows]
         return Rel(names, kinds, fixed)
 
-    def _sort_keys(self, order, items, cells, scope: Scope, outer) -> list:
+    def _named_outputs(self, items, source: Rel) -> list[bool]:
+        """For each output cell (stars expanded): does ORDER BY see it under its name (an alias or a plain column)."""
+
+        named = []
+        for item in items:
+            if isinstance(item, exp.Star):
+                named.extend([True] * len(self._star_order(source)))
+            elif isinstance(item, exp.Column) and isinstance(item.this, exp.Star):
+                named.extend([True] * len([q for q, _ in source.cols if q == item.table.lower()]))
+            else:
+                named.append(isinstance(item, (exp.Alias, exp.Column)))
+        return named
+
+    def _sort_keys(self, order, names, named, cells, scope: Scope, outer) -> list:
+        """The ORDER BY keys of one output row. An unqualified name is the select item of that name before it is a FROM
+        column (MySQL and DuckDB agree); a name two different select items share is ambiguous."""
+
+        outputs: dict[str, object] = {}
+        for (_, name), is_named, cell in zip(names, named, cells):
+            if not is_named:
+                continue
+            if name in outputs and outputs[name] is not cell:
+                def clash(name=name):
+                    raise Unsupported(f"ambiguous column {name}")
+                outputs[name] = clash
+            else:
+                outputs[name] = cell
         keys = []
         for item in order.expressions:
             target = item.this
@@ -1131,12 +1220,7 @@ class Compiler:
                     raise Unsupported("ORDER BY position")
                 value = cells[position]
             else:
-                ordering = Scope(scope.cols, scope.parent, {}, scope.group, alias_first=True, hidden=scope.hidden, window=scope.window, index=scope.index, picker=scope.picker, group_keys=scope.group_keys)
-                projected = [i for i in items if isinstance(i, exp.Alias)]
-                position = 0
-                for item_, cell in zip(items, cells):
-                    if isinstance(item_, exp.Alias):
-                        ordering.aliases[item_.alias.lower()] = cell
+                ordering = Scope(scope.cols, scope.parent, dict(outputs), scope.group, alias_first=True, hidden=scope.hidden, window=scope.window, index=scope.index, picker=scope.picker, group_keys=scope.group_keys, grouping=scope.grouping)
                 value = self.expr(target, ordering)
             keys.append((value, descending, item.args.get("nulls_first")))
         return keys
@@ -1152,46 +1236,147 @@ class Compiler:
         order = node.args.get("order")
         scopes = [self._scope(source, row, outer) for row in source.rows]
         alias_nodes = {i.alias.lower(): i.this for i in items if isinstance(i, exp.Alias)}
-        key_nodes = []
-        if group is not None:
-            if extended_grouping(group):
-                raise Unsupported("grouping sets")
-            for key in group.expressions:
-                if isinstance(key, exp.Literal) and not key.is_string and not self.group_constants:
-                    position = _whole(key) - 1
-                    if not 0 <= position < len(items):
-                        raise Unsupported("GROUP BY position")
-                    chosen = items[position]
-                    key = chosen.this if isinstance(chosen, exp.Alias) else chosen
-                key_nodes.append(key)
         for scope in scopes:
             scope.aliases = {k: (lambda e=e, s=scope: self.expr(e, s)) for k, e in alias_nodes.items()}
-        keys = []
-        for scope in scopes:
-            keys.append([self._group_key(k, scope) for k in key_nodes])
-        key_sql = [k.sql() for k in key_nodes]
+        # One grouping per grouping set: a plain GROUP BY has one, no GROUP BY has the empty one (a row even over no rows).
+        sets = self._grouping_sets(group, items, source)
+        if len(sets) * max(len(source.rows), 1) > MAX_ROWS:
+            raise Unsupported("grouping too large for the bound")
+        key_nodes = {k.sql(): k for keys in sets for k in keys}
+        key_values = {sql: [self._group_key(k, scope) for scope in scopes] for sql, k in key_nodes.items()}
+        entries: list[tuple[Scope, object]] = []
+        for keys in sets:
+            in_set = list(dict.fromkeys(k.sql() for k in keys))
+            # a key of another grouping set is NULL in this one's rows (unless it is one of this set's columns, spelled differently)
+            grouped_here = lambda sql: sql in in_set or bool(scopes) and any(key_values[sql][0] is key_values[other][0] for other in in_set)
+            rolled = [sql for sql in key_nodes if not grouped_here(sql)]
+            blanks = {sql: null_value(self._null_kind(key_values[sql])) for sql in rolled}
+            rolled_positions = {
+                position: blanks[sql]
+                for sql in rolled if scopes
+                for position, (_, _, value) in enumerate(scopes[0].cols) if value is key_values[sql][0]
+            }
+            bits = {sql: int(sql in rolled) for sql in key_nodes}
+            if in_set:
+                for i, row in enumerate(source.rows):
+                    mine = [key_values[sql][i] for sql in in_set]
+                    members = [z3.And(source.rows[j].present, *[same(a, key_values[sql][j]) for a, sql in zip(mine, in_set)]) for j in range(len(source.rows))]
+                    earlier = [members[j] for j in range(i)]
+                    exists = z3.And(row.present, z3.Not(z3.Or(*earlier))) if earlier else row.present
+                    known = {sql: key_values[sql][i] for sql in key_nodes if sql not in blanks}
+                    known.update(blanks)
+                    scope = Scope(scopes[i].cols, outer, None, Group(members, scopes), hidden=scopes[i].hidden,
+                                  picker=self._picker(scopes, i, members, mine, rolled_positions), group_keys=known or None, grouping=bits)
+                    entries.append((scope, exists))
+            else:
+                members = [r.present for r in source.rows]
+                # without keys one row always comes out, built from the (possibly empty) group
+                blank = [(q, n, null_value(k)) for (q, n), k in zip(source.cols, source.kinds)]
+                scope = Scope(blank, outer, None, Group(members, scopes), picker=self._picker(scopes, None, members, [], rolled_positions),
+                              group_keys=dict(blanks) or None, grouping=bits)
+                entries.append((scope, _true()))
+        for scope, _ in entries:
+            scope.aliases = {k: (lambda e=e, s=scope: self.expr(e, s)) for k, e in alias_nodes.items()}
+        # HAVING decides which groups exist; window functions then run over those groups
+        present = [z3.And(exists, truth(self.expr(having.this, scope))) if having is not None else exists for scope, exists in entries]
+        if self._windowed(node):
+            context = WindowCtx([Row(p, []) for p in present], [scope for scope, _ in entries])
+            for index, (scope, _) in enumerate(entries):
+                scope.window, scope.index = context, index
+        named = [isinstance(i, (exp.Alias, exp.Column)) for i in items]
         out_rows: list[Row] = []
-        if key_nodes:
-            for i, row in enumerate(source.rows):
-                members = [z3.And(source.rows[j].present, *[same(a, b) for a, b in zip(keys[i], keys[j])]) for j in range(len(source.rows))]
-                earlier = [members[j] for j in range(i)]
-                exists = z3.And(row.present, z3.Not(z3.Or(*earlier))) if earlier else row.present
-                scope = Scope(scopes[i].cols, outer, None, Group(members, scopes), hidden=scopes[i].hidden,
-                              picker=self._picker(scopes, i, members, keys[i]), group_keys=dict(zip(key_sql, keys[i])) or None)
-                scope.aliases = {k: (lambda e=e, s=scope: self.expr(e, s)) for k, e in alias_nodes.items()}
-                out_rows.append(self._group_row(items, scope, having, order, outer, exists))
-        else:
-            members = [r.present for r in source.rows]
-            # without GROUP BY one row always comes out, built from the (possibly empty) group
-            blank = [(q, n, null_value(k)) for (q, n), k in zip(source.cols, source.kinds)]
-            scope = Scope(blank, outer, {k: (lambda e=e: self.expr(e, scope)) for k, e in alias_nodes.items()}, Group(members, scopes),
-                          picker=self._picker(scopes, None, members, []))
-            out_rows.append(self._group_row(items, scope, having, order, outer, _true()))
+        for (scope, _), exists in zip(entries, present):
+            cells = [self.expr(i.this if isinstance(i, exp.Alias) else i, scope) for i in items]
+            keys = self._sort_keys(order, names, named, cells, scope, outer) if order is not None else None
+            out_rows.append(Row(exists, cells, keys))
         out = self._finish(names, out_rows)
-        out.keys = bounded_keyed_joins.group_keys(out, keys) if key_nodes else ()
+        if len(sets) == 1 and sets[0]:  # a plain GROUP BY: its keys, when all are in the output, are unique
+            plain = list(dict.fromkeys(k.sql() for k in sets[0]))
+            out.keys = bounded_keyed_joins.group_keys(out, [[key_values[sql][i] for sql in plain] for i in range(len(source.rows))])
         return out
 
-    def _picker(self, scopes: list[Scope], rep: int | None, members: list, keys: list[V]):
+    @staticmethod
+    def _null_kind(values: list[V]) -> str:
+        kind = values[0].kind if values else "null"
+        return "null" if kind == "unsupported" else kind
+
+    def _grouping_sets(self, group, items, source: Rel) -> list[list]:
+        """The key expressions of every grouping set of a GROUP BY: ``ROLLUP``, ``CUBE`` and ``GROUPING SETS`` items are
+        expanded and combined with the plain keys next to them (``GROUP BY a, ROLLUP (b)`` is ``(a, b), (a)``)."""
+
+        if group is None:
+            return [[]]
+        if any(group.args.get(k) for k in ("rollup", "cube", "grouping_sets", "totals")):
+            # MySQL's ``WITH ROLLUP``: what it returns over no rows is not what ROLLUP () returns in the replay engine
+            raise Unsupported("WITH ROLLUP, WITH CUBE or WITH TOTALS")
+
+        def key(node):
+            if isinstance(node, exp.Literal) and not node.is_string and not self.group_constants:
+                position = _whole(node) - 1
+                if not 0 <= position < len(items):
+                    raise Unsupported("GROUP BY position")
+                chosen = items[position]
+                node = chosen.this if isinstance(chosen, exp.Alias) else chosen
+            return self._select_item_for(node, items, source)
+
+        def unit(node) -> list:  # one element of a ROLLUP, CUBE or GROUPING SETS list: a key or a parenthesized list of keys
+            if isinstance(node, exp.Tuple):
+                return [key(e) for e in node.expressions]
+            return [key(node.this if isinstance(node, exp.Paren) else node)]
+
+        def sets_of(item) -> list[list]:
+            if isinstance(item, exp.Rollup):
+                units = [unit(e) for e in item.expressions]
+                return [[k for u in units[:n] for k in u] for n in range(len(units), -1, -1)]
+            if isinstance(item, exp.Cube):
+                units = [unit(e) for e in item.expressions]
+                if len(units) > 4:
+                    raise Unsupported("more than 16 grouping sets")
+                return [[k for n, u in enumerate(units) if mask >> n & 1 for k in u] for mask in range(2 ** len(units) - 1, -1, -1)]
+            if isinstance(item, exp.GroupingSets):
+                return [s for e in item.expressions for s in (sets_of(e) if isinstance(e, (exp.Rollup, exp.Cube, exp.GroupingSets)) else [unit(e)])]
+            if isinstance(item, exp.Tuple) and not item.expressions:
+                return [[]]
+            return [[key(item)]]
+
+        sets: list[list] = [[]]
+        for item in group.expressions:
+            sets = [left + right for left in sets for right in sets_of(item)]
+            if len(sets) > 16:
+                raise Unsupported("more than 16 grouping sets")
+        return sets
+
+    def _e_Grouping(self, node, scope):
+        """``GROUPING(a, b)``: one bit per argument, leftmost first, set when the argument is not a key of the row's grouping set."""
+
+        bits = scope.grouping
+        if bits is None:
+            raise Unsupported("GROUPING outside a grouped query")
+        value = 0
+        for argument in node.expressions:
+            if argument.sql() not in bits:
+                raise Unsupported("GROUPING of an expression that is not a grouping key")
+            value = value * 2 + bits[argument.sql()]
+        return const(value, "int")
+
+    def _select_item_for(self, key, items, source: Rel):
+        """MySQL reads an unqualified GROUP BY name that several FROM columns share as the select item of that name
+        (``SELECT p.id .. FROM p JOIN s .. GROUP BY id`` groups by ``p.id``, with a warning). The replay rewrites the
+        name the same way (``counterexample.relax_grouping``), so only its form is taken: a qualified column, alone
+        under that output name. Anything else stays an ambiguous column."""
+
+        if not (isinstance(key, exp.Column) and not key.table):
+            return key
+        name = key.name.lower()
+        if len([i for i, (_, n) in enumerate(source.cols) if n == name and i not in source.hidden]) < 2:
+            return key
+        named = [i.this if isinstance(i, exp.Alias) else i for i in items if (i.alias if isinstance(i, exp.Alias) else i.name).lower() == name]
+        chosen = [i for i in named if isinstance(i, exp.Column) and i.table and not isinstance(i.this, exp.Star)]
+        if not chosen or len(chosen) != len(named) or len({i.sql().lower() for i in chosen}) != 1:
+            return key
+        return chosen[0]
+
+    def _picker(self, scopes: list[Scope], rep: int | None, members: list, keys: list[V], rolled: Mapping[int, V] | None = None):
         """The value of a column that is neither grouped nor aggregated.
 
         SQL engines return it from an arbitrary row of the group, so the encoding picks a row freely
@@ -1208,6 +1393,8 @@ class Compiler:
             if own is not None and any(own is key for key in keys):
                 cache[position] = own
                 return own
+            if rolled and position in rolled:  # a key of another grouping set: NULL in this one's rows
+                return rolled[position]
             if own is not None and own.kind == "unsupported":
                 raise Unsupported(f"column type {own.lit}")
             cells = [s.cols[position][2] for s in scopes]
@@ -1235,14 +1422,6 @@ class Compiler:
                 pass
         return self.expr(node, scope)
 
-    def _group_row(self, items, scope: Scope, having, order, outer, exists) -> Row:
-        present = exists
-        if having is not None:
-            present = z3.And(present, truth(self.expr(having.this, scope)))
-        cells = [self.expr(i.this if isinstance(i, exp.Alias) else i, scope) for i in items]
-        keys = self._sort_keys(order, items, cells, scope, outer) if order is not None else None
-        return Row(present, cells, keys)
-
     # -- ORDER BY / LIMIT ----------------------------------------------------------------------
 
     def limited(self, node, rel: Rel) -> Rel:
@@ -1252,7 +1431,13 @@ class Compiler:
             return rel
         count = None
         if limit is not None:
-            target = limit.expression
+            if isinstance(limit, exp.Fetch):  # FETCH FIRST n ROWS ONLY is LIMIT n
+                options = limit.args.get("limit_options")
+                if options is not None and (options.args.get("percent") or options.args.get("with_ties")):
+                    raise Unsupported("FETCH with PERCENT or WITH TIES")
+                target = limit.args.get("count")
+            else:
+                target = limit.expression
             if not (isinstance(target, exp.Literal) and not target.is_string):
                 raise Unsupported("LIMIT must be a literal")
             count = _whole(target)
@@ -1320,9 +1505,17 @@ class Compiler:
         if method is not None:
             return method(node, scope)
         if isinstance(node, exp.Binary) and type(node) in _COMPARES:
+            # sqlglot reads ``a = b IS TRUE`` as ``a = (b IS TRUE)``; SQL (MySQL, DuckDB, PostgreSQL) reads ``(a = b) IS TRUE``
+            test = node.expression
+            if isinstance(test, exp.Not) and isinstance(test.this, exp.Is):
+                # ``a = b IS NOT TRUE`` is printed back as ``a = NOT b IS TRUE``, which the replay engine reads differently
+                raise Unsupported("a comparison followed by IS NOT")
+            if isinstance(test, exp.Is):
+                return self._is(compare(_COMPARES[type(node)], self.expr(node.this, scope), self.expr(test.this, scope)), test.expression)
             if isinstance(node.expression, (exp.Any, exp.All)):
                 return self._quantified(_COMPARES[type(node)], self.expr(node.this, scope), node.expression, scope)
-            return compare(_COMPARES[type(node)], self.expr(node.this, scope), self.expr(node.expression, scope))
+            left, right = self.expr(node.this, scope), self.expr(node.expression, scope)
+            return compare(_COMPARES[type(node)], _number_text(node.this, left, right), _number_text(node.expression, right, left))
         raise Unsupported(f"expression {type(node).__name__}")
 
     def _quantified(self, op: str, left: V, quantifier, scope: Scope) -> V:
@@ -1400,18 +1593,29 @@ class Compiler:
 
     def _shift(self, base: V, interval: exp.Interval, op: str, scope) -> V:
         unit = interval.args.get("unit")
-        name = (unit.name if unit is not None else "DAY").upper()
-        if name != "DAY" or base.kind != "date":
-            raise Unsupported("interval arithmetic other than days on dates")
-        amount = self.expr(interval.this, scope)
-        if amount.kind == "str" and isinstance(amount.lit, str):
-            try:
-                amount = const(int(amount.lit), "int")
-            except ValueError:
+        return self._moved(base, self.expr(interval.this, scope), unit.name if unit is not None else "DAY", op)
+
+    def _moved(self, base: V, amount: V, unit: str, op: str) -> V:
+        """A date moved by an interval. Days and weeks are exact for any date; months, quarters and years are computed
+        only for a literal date and a literal amount (the month-end rule on a symbolic date is not modeled)."""
+
+        unit = unit.upper()
+        if base.kind == "str" and isinstance(base.lit, str):  # DATE_ADD('2019-07-05', ..): the string is a date
+            base = to_kind(base, "date")
+        if amount.kind == "str" and isinstance(amount.lit, str):  # INTERVAL '3' MONTH
+            if not re.fullmatch(r"-?\d{1,9}", amount.lit):
                 raise Unsupported("interval literal")
-        if amount.kind != "int":
-            raise Unsupported("interval amount")
-        return V("date", base.val + amount.val if op == "add" else base.val - amount.val, z3.Or(base.null, amount.null))
+            amount = const(int(amount.lit), "int")
+        if base.kind != "date" or amount.kind != "int":
+            raise Unsupported("interval arithmetic other than days on dates" if base.kind != "date" else "interval amount")
+        sign = 1 if op == "add" else -1
+        days = {"DAY": 1, "WEEK": 7}.get(unit)
+        if days is not None:
+            return V("date", base.val + sign * days * amount.val, z3.Or(base.null, amount.null))
+        months = {"MONTH": 1, "QUARTER": 3, "YEAR": 12}.get(unit)
+        if months is None or not isinstance(base.lit, _dt.date) or not isinstance(amount.lit, int) or isinstance(amount.lit, bool):
+            raise Unsupported("interval arithmetic other than days on dates")
+        return const(_add_months(base.lit, sign * months * amount.lit), "date")
 
     def _e_DateAdd(self, node, scope):
         return self._date_function(node, scope, "add")
@@ -1421,15 +1625,7 @@ class Compiler:
 
     def _date_function(self, node, scope, op):
         unit = node.args.get("unit")
-        if unit is not None and unit.name.upper() != "DAY":
-            raise Unsupported("date arithmetic other than days")
-        base = self.expr(node.this, scope)
-        amount = self.expr(node.expression, scope)
-        if base.kind == "str":
-            base = to_kind(base, "date")
-        if base.kind != "date" or amount.kind != "int":
-            raise Unsupported("date arithmetic")
-        return V("date", base.val + amount.val if op == "add" else base.val - amount.val, z3.Or(base.null, amount.null))
+        return self._moved(self.expr(node.this, scope), self.expr(node.expression, scope), unit.name if unit is not None else "DAY", op)
 
     def _e_DateDiff(self, node, scope):
         unit = node.args.get("unit")
@@ -1469,8 +1665,9 @@ class Compiler:
         return logical_not(self.expr(node.this, scope))
 
     def _e_Is(self, node, scope):
-        value = self.expr(node.this, scope)
-        target = node.expression
+        return self._is(self.expr(node.this, scope), node.expression)
+
+    def _is(self, value: V, target) -> V:
         if isinstance(target, exp.Null):
             return V("bool", value.null, _false())
         if isinstance(target, exp.Boolean):
@@ -1480,6 +1677,7 @@ class Compiler:
     def _e_Between(self, node, scope):
         value = self.expr(node.this, scope)
         low, high = self.expr(node.args["low"], scope), self.expr(node.args["high"], scope)
+        low, high = _number_text(node.args["low"], low, value), _number_text(node.args["high"], high, value)
         return logical_and([compare("gte", value, low), compare("lte", value, high)])
 
     def _e_In(self, node, scope):
@@ -1495,7 +1693,7 @@ class Compiler:
         else:
             if node.args.get("unnest"):
                 raise Unsupported("IN UNNEST")
-            candidates = [(_true(), self.expr(e, scope)) for e in node.expressions]
+            candidates = [(_true(), _number_text(e, self.expr(e, scope), value)) for e in node.expressions]
         matches = []
         unknown = []
         for present, other in candidates:
@@ -1624,7 +1822,11 @@ class Compiler:
         return V("int", value, v.null)
 
     def _e_TsOrDsToDate(self, node, scope):
-        return self._day(self.expr(node.this, scope))
+        value = self.expr(node.this, scope)
+        if value.kind == "str" and isinstance(value.lit, str) and _DATE_WITH_OFFSET.fullmatch(value.lit):
+            # DATE('1995-03-21 +08'): MySQL and DuckDB read the date and drop what follows it
+            value = const(value.lit.split(" ")[0], "str")
+        return self._day(value)
 
     def _e_Year(self, node, scope):
         return self._part(self.expr(node.this, scope), "YEAR")
@@ -1700,6 +1902,12 @@ class Compiler:
             return to_kind(v, wanted)
         if v.kind == "null":
             return null_value(wanted)
+        if wanted == "int" and v.kind == "bool":  # TRUE is 1, FALSE is 0
+            return to_kind(v, "int")
+        if wanted == "datetime" and v.kind == "date":  # midnight of that day
+            return V("datetime", v.val * 86400, v.null)
+        if wanted == "date" and v.kind == "datetime":
+            return self._day(v)
         raise Unsupported(f"CAST from {v.kind} to {wanted}")
 
     def _e_Like(self, node, scope):
@@ -1714,10 +1922,13 @@ class Compiler:
         context = scope.window
         if context is None:
             raise Unsupported("window function outside a select list")
-        spec = node.args.get("spec")
-        if spec is not None and (spec.args.get("kind") or spec.args.get("start") or spec.args.get("end")):
-            raise Unsupported("explicit window frame")
+        whole = self._whole_partition(node.args.get("spec"))
         function = node.this
+        condition = None
+        if isinstance(function, exp.Filter):
+            function, condition = function.this, function.expression.this
+            if not isinstance(function, AGGREGATES):
+                raise Unsupported("FILTER on a function that is not an aggregate")
         index = scope.index
         partition = node.args.get("partition_by") or []
         order = node.args.get("order")
@@ -1742,7 +1953,7 @@ class Compiler:
                 total = []
                 for j in range(len(context.rows)):
                     first = z3.Not(z3.Or(*[
-                        z3.And(peers[k], before[k], *[same(x, y) for (x, _), (y, _) in zip(keyed[k][1], keyed[j][1])])
+                        z3.And(peers[k], before[k], *[same(x, y) for (x, *_), (y, *_) in zip(keyed[k][1], keyed[j][1])])
                         for k in range(j)
                     ])) if j else _true()
                     total.append(z3.If(z3.And(peers[j], before[j], first), 1, 0))
@@ -1757,12 +1968,13 @@ class Compiler:
         if isinstance(function, AGGREGATES):
             frame = []
             for j in range(len(context.rows)):
-                if order is None:
+                if order is None or whole:
                     frame.append(peers[j])
                 else:  # the default frame: from the partition start to the last row tied with this one
                     follows = self._precedes(Row(None, [], keyed[index][1]), Row(None, [], keyed[j][1]))
                     frame.append(z3.And(peers[j], z3.Not(follows)))
-            return self._aggregate_over(function, Group(frame, context.scopes))
+            group = Group(frame, context.scopes)
+            return self._aggregate_over(function, self._filtered(group, condition) if condition is not None else group)
         if isinstance(function, (exp.Lag, exp.Lead, exp.FirstValue)):
             if order is None:
                 raise Unsupported("LAG, LEAD or FIRST_VALUE without ORDER BY")
@@ -1799,8 +2011,49 @@ class Compiler:
             return result
         raise Unsupported(f"window function {type(function).__name__}")
 
+    def _whole_partition(self, spec) -> bool:
+        """Is the frame the whole partition? Two frames are modeled: ``RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT
+        ROW`` (the default frame, written out) and ``RANGE`` or ``ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED
+        FOLLOWING`` (the whole partition). A frame counted in rows up to the current one depends on how ties are placed."""
+
+        if spec is None or not (spec.args.get("kind") or spec.args.get("start") or spec.args.get("end")):
+            return False
+        if spec.args.get("exclude"):
+            raise Unsupported("window frame with EXCLUDE")
+        text = lambda key: str(spec.args.get(key) or "").upper()
+        kind, start, end = text("kind"), (text("start"), text("start_side")), (text("end"), text("end_side"))
+        if start == ("UNBOUNDED", "PRECEDING") and end == ("UNBOUNDED", "FOLLOWING") and kind in ("RANGE", "ROWS"):
+            return True
+        if start == ("UNBOUNDED", "PRECEDING") and end[0] in ("CURRENT ROW", "") and kind == "RANGE":
+            return False
+        raise Unsupported("explicit window frame")
+
+    def _filtered(self, group: "Group", condition) -> "Group":
+        """The group restricted to the rows an aggregate's ``FILTER (WHERE condition)`` keeps."""
+
+        return Group([z3.And(m, truth(self.expr(condition, s))) for m, s in zip(group.members, group.scopes)], group.scopes, group.cache)
+
+    def _e_Filter(self, node, scope):
+        if not isinstance(node.this, AGGREGATES) or not isinstance(node.expression, exp.Where):
+            raise Unsupported("FILTER on a function that is not an aggregate")
+        if scope.group is None:
+            raise Unsupported("aggregate outside a grouped query")
+        return self._aggregate_over(node.this, self._filtered(scope.group, node.expression.this))
+
     def _e_Anonymous(self, node, scope):
         name = str(node.this).upper()
+        if _single_value(node):
+            return self._first_member(node, scope)
+        if name in ("SUBDATE", "ADDDATE") and len(node.expressions) == 2:  # a day count or an INTERVAL
+            day, count = node.expressions
+            op = "sub" if name == "SUBDATE" else "add"
+            if isinstance(count, exp.Interval):
+                return self._shift(self.expr(day, scope), count, op, scope)
+            return self._moved(self.expr(day, scope), self.expr(count, scope), "DAY", op)
+        if not _is_condition(node):
+            # an unknown name is read as an uninterpreted *predicate* (VeriEQL's ``B(x)``): sound where a truth value is
+            # expected, wrong for a call whose value is compared, computed with or returned (``YEARWEEK(d) = 201901``)
+            raise Unsupported(f"function {name}")
         arguments: list[V] = []
         for argument in node.expressions:
             if isinstance(argument, exp.Column) and not argument.table:
@@ -1823,10 +2076,29 @@ class Compiler:
             call.extend([a.val, a.null])
         return V("bool", function(*call), _false())
 
+    def _first_member(self, node, scope: Scope) -> V:
+        """Calcite's ``SINGLE_VALUE(x)``: ``x`` of the group's only row, NULL for an empty group. More than one row is a
+        runtime error, which is not modeled: the first row is taken, as for a scalar subquery with several rows."""
+
+        if scope.group is None:
+            raise Unsupported("aggregate outside a grouped query")
+        values = [self.expr(node.expressions[0], s) for s in scope.group.scopes]
+        kinds = {v.kind for v in values} - {"null"}
+        if not kinds:
+            return null_value()
+        if len(kinds) > 1 and kinds != {"int", "real"}:
+            raise Unsupported("aggregate over mixed types")
+        kind = "real" if "real" in kinds else next(iter(kinds))
+        value, null = _default(kind), _true()
+        for member, cell in reversed(list(zip(scope.group.members, values))):
+            cell = to_kind(cell, kind)
+            value, null = z3.If(member, cell.val, value), z3.If(member, cell.null, null)
+        return V(kind, value, null)
+
     def _e_Count(self, node, scope):
         return self._aggregate(node, scope)
 
-    _e_Sum = _e_Min = _e_Max = _e_Avg = _e_Count
+    _e_Sum = _e_Min = _e_Max = _e_Avg = _e_LogicalAnd = _e_LogicalOr = _e_Count
 
     def _aggregate(self, node, scope: Scope) -> V:
         group = scope.group
@@ -1869,6 +2141,12 @@ class Compiler:
         counted = z3.Sum(*[z3.If(p, 1, 0) for p in present]) if present else z3.IntVal(0)
         if isinstance(node, exp.Count):
             return V("int", counted, _false())
+        if isinstance(node, (exp.LogicalAnd, exp.LogicalOr)):  # BOOL_AND / BOOL_OR: NULLs are skipped, NULL when nothing is left
+            if distinct or {v.kind for v in values} - {"null", "bool"}:
+                raise Unsupported("BOOL_AND or BOOL_OR of a non-boolean")
+            held = [z3.And(p, v.val) if isinstance(node, exp.LogicalOr) else z3.And(p, z3.Not(v.val)) for p, v in zip(present, values) if v.kind == "bool"]
+            found = z3.Or(*held) if held else _false()
+            return V("bool", found if isinstance(node, exp.LogicalOr) else z3.Not(found), z3.Not(z3.Or(*present)) if present else _true())
         if isinstance(node, (exp.Sum, exp.Avg)):
             values = [to_kind(v, "int") if v.kind == "bool" else v for v in values]
         kinds = {v.kind for v in values} - {"null"}
@@ -1897,6 +2175,51 @@ class Compiler:
             best = z3.If(take, v.val, best)
             have = z3.Or(have, p)
         return V(kind, best, z3.Not(have))
+
+
+def _number_text(node: exp.Expression, value: V, other: V) -> V:
+    """``id = '2'``: a string literal that spells a whole number, compared with a number, is that number (MySQL converts
+    the string, DuckDB casts the literal). Any other string against a number stays unsupported."""
+
+    while isinstance(node, exp.Paren):
+        node = node.this
+    if isinstance(node, exp.Literal) and node.is_string and other.kind in ("int", "real") and re.fullmatch(r"-?(0|[1-9]\d{0,17})", node.this):
+        return const(int(node.this), "int")
+    return value
+
+
+def _window_call(node: exp.Expression) -> bool:
+    """Is ``node`` the function of a window (``SUM(x) OVER (..)``), not an aggregate of the query? An aggregate inside a
+    window's argument, partition or order (``SUM(SUM(x)) OVER (PARTITION BY MAX(y))``) is an aggregate of the query."""
+
+    parent = node.parent
+    if isinstance(parent, exp.Filter) and parent.this is node:
+        node, parent = parent, parent.parent
+    return isinstance(parent, exp.Window) and parent.this is node
+
+
+def _single_value(node: exp.Expression) -> bool:
+    return isinstance(node, exp.Anonymous) and str(node.this).upper() == "SINGLE_VALUE" and len(node.expressions) == 1
+
+
+def _is_condition(node: exp.Expression) -> bool:
+    """Is ``node`` used only for its truth value, on single rows: a WHERE or ON condition (or a CASE condition inside
+    one), possibly under AND, OR, NOT. The select list, HAVING and ORDER BY are left out: an unknown name there may be
+    an aggregate, which is not a predicate on a row."""
+
+    clause = node.find_ancestor(exp.Where, exp.Join, exp.Having, exp.Qualify, exp.Order, exp.Group, exp.Select)
+    if not isinstance(clause, (exp.Where, exp.Join)):
+        return False
+    child, parent = node, node.parent
+    while isinstance(parent, (exp.Paren, exp.And, exp.Or, exp.Not)):
+        child, parent = parent, parent.parent
+    if isinstance(parent, exp.Where):
+        return True
+    if isinstance(parent, exp.Join):
+        return parent.args.get("on") is child
+    if isinstance(parent, exp.If):
+        return parent.this is child
+    return False
 
 
 _COMPARES = {
@@ -1977,9 +2300,9 @@ def bag_difference(left: Rel, right: Rel):
 
 
 def _model_value(model, v: V, kind: str):
-    if z3.is_true(model.eval(v.null, model_completion=True)):
+    if z3.is_true(z3.simplify(model.eval(v.null, model_completion=True))):
         return None
-    value = model.eval(v.val, model_completion=True)
+    value = z3.simplify(model.eval(v.val, model_completion=True))
     if kind in ("int",):
         return value.as_long()
     if kind == "date":
@@ -2061,7 +2384,7 @@ class DuckDBReplay:
     def _translate(self, sql: str, dialect: str) -> str:
         tree = sqlglot.parse_one(sql, read=dialect)
         if dialect == "mysql":
-            tree = self.cx.relax_grouping(self.cx._date_functions(tree))
+            tree = _dates_stay_dates(self.cx.relax_grouping(self.cx._date_functions(tree)))
         for table in tree.find_all(exp.Table):
             found = self.schema.lookup(table)
             if found is not None:
@@ -2153,6 +2476,23 @@ class SQLiteReplay:
             return True
         except self.sqlite3.Error:
             return None
+
+
+def _dates_stay_dates(tree: exp.Expression) -> exp.Expression:
+    """MySQL's ``d + INTERVAL 1 DAY`` and ``DATE_ADD(d, INTERVAL 1 MONTH)`` on a DATE are a DATE; DuckDB gives a TIMESTAMP
+    at midnight, which is a different value to a result comparison. The encoding compiles interval arithmetic only on
+    dates and only in days or longer units, so in every query that reaches the replay the result is cast back to DATE."""
+
+    moved = [
+        node
+        for node in tree.find_all(exp.Add, exp.Sub, exp.DateAdd, exp.DateSub)
+        if isinstance(node, (exp.DateAdd, exp.DateSub)) or isinstance(node.expression, exp.Interval) or isinstance(node.this, exp.Interval)
+    ]
+    for node in reversed(moved):  # innermost first; the node itself stays in the tree, under its cast
+        cast = exp.Cast(this=exp.Null(), to=exp.DataType.build("date"))
+        node.replace(cast)
+        cast.set("this", node)
+    return tree
 
 
 def _reorders(data: dict[str, list[tuple]], rng: random.Random, shuffles: int):
@@ -2335,7 +2675,7 @@ def evaluate(sql: str, schema: BoundedSchema, data: dict[str, list[tuple]], dial
     model = solver.model()
     out = []
     for row in rel.rows:
-        if z3.is_true(model.eval(row.present, model_completion=True)):
+        if z3.is_true(z3.simplify(model.eval(row.present, model_completion=True))):  # ``"" < "a"`` evaluates to ``Not("" == "a")``
             out.append(tuple(_model_value(model, v, k) if k != "null" else None for v, k in zip(row.vals, rel.kinds)))
     return out
 
