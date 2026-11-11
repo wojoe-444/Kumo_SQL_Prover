@@ -82,6 +82,83 @@ LogicalFilter(condition=[=($cor0.DEPTNO, $0)])
                                              "  LogicalTableScan(table=[[CATALOG, SALES, DEPT]])"))
 
 
+JAVA = """
+class T {
+  @Test void testLeftEmpty() {
+    check(JoinRelType.SEMI);
+  }
+
+  private void check(JoinRelType type) {
+    final Function<RelBuilder, RelNode> relFn = b -> b
+        .scan("EMP").empty()
+        .scan("DEPT")
+        .join(type, b.equals(b.field(2, 0, "DEPTNO"), b.field(2, 1, "DEPTNO")))
+        .build();
+    relFn(relFn).check();
+  }
+
+  @Test void testBothEmpty() {
+    relFn(correlated(JoinRelType.LEFT, true, true)).check();
+  }
+
+  @Test void testRightEmpty() {
+    relFn(correlated(JoinRelType.LEFT, false, true)).check();
+  }
+
+  @Test void testUndecided() {
+    relFn(correlated(JoinRelType.LEFT, flag(), true)).check();
+  }
+
+  @Test void testEmptyProjection() {
+    relFn(b -> b.scan("EMP").project(b.field("EMPNO")).empty().build()).check();
+  }
+
+  private static Function<RelBuilder, RelNode> correlated(JoinRelType joinType, boolean emptyLeft, boolean emptyRight) {
+    final Holder<RexCorrelVariable> v = Holder.empty();
+    return b -> {
+      b.scan("EMP").variable(v::set);
+      if (emptyLeft) {
+        b.empty();
+      }
+      b.scan("DEPT").filter(b.equals(b.field(v.get(), "DEPTNO"), b.field("DEPTNO")));
+      if (emptyRight) {
+        b.empty();
+      }
+      return b.correlate(joinType, v.get().id, b.field("EMP", "DEPTNO")).build();
+    };
+  }
+}
+"""
+
+
+def test_converter_reads_emptied_scans_from_the_java(tmp_path):
+    """``b.scan("EMP").empty()`` prints as ``LogicalValues(tuples=[[]])`` with no row type: the Java states it."""
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import calcite_plan_to_sql as conv
+
+    (tmp_path / "T.java").write_text(JAVA)
+    methods = conv.java_methods(tmp_path / "T.java")
+    emp, dept = ("scott", "EMP"), ("scott", "DEPT")
+    assert conv.java_empty_tables("testLeftEmpty", methods) == [emp]
+    assert conv.java_empty_tables("testBothEmpty", methods) == [emp, dept]
+    assert conv.java_empty_tables("testRightEmpty", methods) == [dept]
+    # a flag that is not a literal, and an empty() on more than a filtered scan, are not followed
+    assert conv.java_empty_tables("testUndecided", methods) is None
+    assert conv.java_empty_tables("testEmptyProjection", methods) is None
+    assert conv.java_empty_tables("testMissing", methods) is None
+
+    plan = """
+LogicalJoin(condition=[=($7, $8)], joinType=[semi])
+  LogicalValues(tuples=[[]])
+  LogicalTableScan(table=[[scott, DEPT]])
+"""
+    rel = conv.Converter(empty_tables=[emp]).top(conv.parse_plan(plan))
+    assert len(rel.types) == 8 and "WHERE 1 = 0" in rel.sql and "EXISTS" in rel.sql
+    with pytest.raises(conv.Skip):  # without the Java the width of the empty side is unknown
+        conv.Converter().top(conv.parse_plan(plan))
+
+
 def test_duckdb_runs_a_sample():
     duckdb = pytest.importorskip("duckdb")
     for case in CASES[:25]:

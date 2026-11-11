@@ -3,8 +3,6 @@
 {"name":"testAggregateRemove1","source":"RelOptRulesTest","reason":"unsupported aggregate BIT_AND","in_sqlsolver":false,"in_qed":true,"in_rbot":true,"new":false}
 {"name":"testAggregateRemoveLiteralAggRuleWithAnySubQuery","source":"RelOptRulesTest","reason":"CAST from VARCHAR to INTEGER","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testAggregateRemoveLiteralAggRuleWithOnlyLiteralAgg","source":"RelOptRulesTest","reason":"LITERAL_AGG without group keys","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testAntiCorrelateWithLeftEmpty","source":"RelOptRulesTest","reason":"empty LogicalValues under a correlate (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testAntiCorrelateWithRightEmpty","source":"RelOptRulesTest","reason":"empty LogicalValues under a correlate (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testAnyInProjectNullable","source":"RelOptRulesTest","reason":"CAST from VARCHAR to INTEGER","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testArrayConcat","source":"RelOptRulesTest","reason":"unsupported operator ARRAY","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testArrayRepeat","source":"RelOptRulesTest","reason":"unsupported operator ARRAY_REPEAT","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
@@ -40,7 +38,6 @@
 {"name":"testDoubleReduction2","source":"RelOptRulesTest","reason":"non-finite floating-point literal","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testDynamicStarWithUnion","source":"RelOptRulesTest","reason":"dynamic-star table (schema unknown)","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testEmptyAggregateEmptyKeyWithAggregateValuesRule","source":"RelOptRulesTest","reason":"VALUES column of untyped NULLs","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testEmptySort2","source":"RelOptRulesTest","reason":"both plans are empty relations of unknown row type","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testEmptyTable","source":"RelOptRulesTest","reason":"table is empty only by catalog convention (not expressible in a schema)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testEmptyTableTransformsComplexQueryToSingleTableScan","source":"RelOptRulesTest","reason":"table is empty only by catalog convention (not expressible in a schema)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testEmptyWindow","source":"RelOptRulesTest","reason":"unsupported relational operator LogicalWindow","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
@@ -70,8 +67,6 @@
 {"name":"testHypergraph0","source":"RelOptRulesTest","reason":"unsupported relational operator HyperGraph","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testHypergraph1","source":"RelOptRulesTest","reason":"unsupported relational operator HyperGraph","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testHypergraph2","source":"RelOptRulesTest","reason":"unsupported relational operator HyperGraph","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testInnerCorrelateWithLeftEmpty","source":"RelOptRulesTest","reason":"empty LogicalValues under a correlate (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testInnerCorrelateWithRightEmpty","source":"RelOptRulesTest","reason":"empty LogicalValues under a correlate (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testInnerJoinWithTimeStampSingleRowOnLeft","source":"RelOptRulesTest","reason":"non-deterministic function CURRENT_TIMESTAMP","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testInnerJoinWithTimeStampSingleRowOnRight","source":"RelOptRulesTest","reason":"non-deterministic function CURRENT_TIMESTAMP","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testInnerLeftSemiJoinTypeForDphyp","source":"RelOptRulesTest","reason":"unsupported relational operator HyperGraph","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
@@ -93,13 +88,6 @@
 {"name":"testJoinSubQueryRemoveRuleWithOrNotExists","source":"RelOptRulesTest","reason":"join with correlation variables","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testJoinToMultiJoinDoesNotMatchAntiJoin","source":"RelOptRulesTest","reason":"unsupported relational operator MultiJoin","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testJoinToMultiJoinDoesNotMatchSemiJoin","source":"RelOptRulesTest","reason":"unsupported relational operator MultiJoin","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testLeftCorrelateWithBothEmpty1","source":"RelOptRulesTest","reason":"empty LogicalValues under a correlate (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testLeftCorrelateWithBothEmpty2","source":"RelOptRulesTest","reason":"empty LogicalValues under a correlate (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testLeftCorrelateWithBothEmpty3","source":"RelOptRulesTest","reason":"empty LogicalValues under a correlate (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testLeftCorrelateWithLeftEmpty","source":"RelOptRulesTest","reason":"empty LogicalValues under a correlate (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testLeftCorrelateWithRightEmpty","source":"RelOptRulesTest","reason":"empty LogicalValues under a correlate (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testLeftEmptyAntiJoin","source":"RelOptRulesTest","reason":"empty LogicalValues under a join (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testLeftEmptySemiJoin","source":"RelOptRulesTest","reason":"empty LogicalValues under a join (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testLeftInnerSemiJoinTypeForDphyp","source":"RelOptRulesTest","reason":"unsupported relational operator HyperGraph","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testLeftJoinWithTimeStampSingleRowOnRight","source":"RelOptRulesTest","reason":"non-deterministic function CURRENT_TIMESTAMP","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testLeftMarkJoinWithSingleValues","source":"RelOptRulesTest","reason":"join type left_mark","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
@@ -196,15 +184,10 @@
 {"name":"testRemoveSemiJoinRightWithFilter","source":"RelOptRulesTest","reason":"custom catalog reader (tables not in MockCatalogReaderSimple)","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testRepeat","source":"RelOptRulesTest","reason":"unsupported operator REPEAT","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testReplace","source":"RelOptRulesTest","reason":"unsupported operator REPLACE","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testRightEmptyAntiJoin","source":"RelOptRulesTest","reason":"empty LogicalValues under a join (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testRightEmptyAntiJoinNonEqui","source":"RelOptRulesTest","reason":"empty LogicalValues under a join (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testRightEmptySemiJoin","source":"RelOptRulesTest","reason":"empty LogicalValues under a join (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testRightJoinWithTimeStampSingleRowOnLeft","source":"RelOptRulesTest","reason":"non-deterministic function CURRENT_TIMESTAMP","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testRpad","source":"RelOptRulesTest","reason":"unsupported operator RPAD","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testSampleToFilter","source":"RelOptRulesTest","reason":"unsupported relational operator Sample","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testSampleToFilterWithSeed","source":"RelOptRulesTest","reason":"unsupported relational operator Sample","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testSemiCorrelateWithLeftEmpty","source":"RelOptRulesTest","reason":"empty LogicalValues under a correlate (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testSemiCorrelateWithRightEmpty","source":"RelOptRulesTest","reason":"empty LogicalValues under a correlate (row width not in the digest)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testSemiJoinForDphyp","source":"RelOptRulesTest","reason":"unsupported relational operator HyperGraph","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testSomeWithTwoCorrelatedSubQueries","source":"RelOptRulesTest","reason":"LITERAL_AGG without group keys","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testSortJoinTranspose10","source":"RelOptRulesTest","reason":"non-literal LIMIT/OFFSET","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}

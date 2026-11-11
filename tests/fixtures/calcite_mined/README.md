@@ -99,8 +99,15 @@ catalogs (GEO, STRUCT, nested, custom) 17, `CURRENT_TIMESTAMP`/`RAND`/`USER` 10.
   NULLS FIRST. `OFFSET` without a fetch is `LIMIT 9223372036854775807 OFFSET n`.
 * An empty `LogicalValues` (`tuples=[[]]`) does not print its row type. At the plan root
   it takes the other plan's root types; under Project/Filter/Sort/Aggregate it is an
-  empty derived table wide enough for the columns referenced; under a join, correlate or
-  set operation the test is skipped.
+  empty derived table wide enough for the columns referenced. Under a join, correlate or
+  set operation the width matters, and the only place that states it is the test's Java:
+  a RelBuilder test writes `b.scan("EMP").empty()`, an empty relation with EMP's row
+  type. The converter reads those calls (through the test class's own helper methods,
+  deciding an `if (flag) { b.empty(); }` block from a literal `true`/`false` argument)
+  and types each empty relation of planBefore from the scan it was made from, in the
+  order RelBuilder builds them. It does so only when the Java accounts for every empty
+  relation of the plan and each `empty()` sits on a scan with nothing but filters above
+  it; otherwise the test is skipped as before.
 * DDL keeps Calcite's types (`VARCHAR(20)`, `TIMESTAMP`, scott's `DECIMAL(7, 2)`,
   `TINYINT`) and declares the catalog's keys (`PRIMARY KEY`, or `UNIQUE` on a nullable
   key such as `DEPTNULLABLES.DEPTNO`).

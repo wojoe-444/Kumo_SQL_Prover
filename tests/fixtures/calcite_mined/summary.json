@@ -10,14 +10,14 @@
   "core/src/test/resources/org/apache/calcite/test/OuterJoinToAntiJoinRuleTest.xml"
  ],
  "tests": 1016,
- "translated": 543,
+ "translated": 560,
  "unchanged": 182,
  "unchanged_identical_sql": 3,
- "skipped": 291,
+ "skipped": 274,
  "translated_coverage": {
   "new": 176,
   "in_sqlsolver": 189,
-  "in_qed": 365,
+  "in_qed": 382,
   "in_rbot": 36
  },
  "unchanged_coverage": {
@@ -29,14 +29,13 @@
  "skipped_coverage": {
   "new": 210,
   "in_sqlsolver": 10,
-  "in_qed": 77,
+  "in_qed": 60,
   "in_rbot": 9
  },
  "skip_reasons": {
   "window function": 23,
   "unsupported relational operator HyperGraph": 13,
   "unsupported relational operator Combine": 13,
-  "empty LogicalValues under a correlate (row width not in the digest)": 11,
   "aggregate WITHIN DISTINCT": 11,
   "non-literal LIMIT/OFFSET": 10,
   "LIMIT/OFFSET without ORDER BY (nondeterministic)": 10,
@@ -44,7 +43,6 @@
   "unsupported relational operator MultiJoin": 8,
   "unsupported relational operator LogicalWindow": 8,
   "non-deterministic function CURRENT_TIMESTAMP": 7,
-  "empty LogicalValues under a join (row width not in the digest)": 7,
   "unsupported relational operator Uncollect": 7,
   "table CATALOG.GEO.RESTAURANTS outside the modelled catalogs": 7,
   "unsupported aggregate SINGLE_VALUE": 6,
@@ -78,6 +76,7 @@
   "CAST from INTEGER to VARCHAR": 2,
   "custom catalog reader (tables not in MockCatalogReaderSimple)": 2,
   "unsupported operator LN": 2,
+  "empty LogicalValues under a join (row width not in the digest)": 2,
   "unsupported subquery operator UNIQUE": 2,
   "non-deterministic function RAND": 2,
   "unsupported relational operator LogicalTableModify": 2,
@@ -90,7 +89,6 @@
   "unsupported relational operator EnumerableValues": 1,
   "aggregate call shape 'COUNT(APPROXIMATE DISTINCT $1)'": 1,
   "non-finite floating-point literal": 1,
-  "both plans are empty relations of unknown row type": 1,
   "unsupported relational operator LogicalSortExchange": 1,
   "unsupported relational operator MyProject": 1,
   "CAST from DOUBLE to INTEGER": 1,
@@ -116,7 +114,7 @@
  "duckdb_validation": {
   "databases_per_pair": 8,
   "seed": 1,
-  "agree": 541,
+  "agree": 558,
   "differs": 1,
   "duckdb_unsupported": 1,
   "errors": 0,

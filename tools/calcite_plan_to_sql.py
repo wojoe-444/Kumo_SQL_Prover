@@ -576,7 +576,8 @@ ALLOWED_ATTRS = {
 
 
 class Converter:
-    def __init__(self, root_types_hint: list | None = None):
+    def __init__(self, root_types_hint: list | None = None, empty_tables: list | None = None):
+        self.empty_tables = list(empty_tables or [])  # catalog paths of the plan's empty LogicalValues, in order
         self.n = 0
         self.tables: dict = {}  # path -> catalog entry
         self.root_hint = root_types_hint
@@ -1359,6 +1360,11 @@ class Converter:
             raise Skip("values shape")
         inner = raw[1:-1].strip()
         if inner == "":
+            if self.empty_tables:
+                # the test's Java names the scan this empty relation was made from (java_empty_tables)
+                _, cols, _ = CATALOG[self.empty_tables.pop(0)]
+                exprs = [f"CAST(NULL AS {self.cast_name(t)})" for _, t, _ in cols]
+                return Rel(f"SELECT {self.select_list(exprs)} WHERE 1 = 0", [t for _, t, _ in cols], [n for n, _, _ in cols])
             return Rel(None, None, None, empty=True)
         rows = []
         for tup in split_top(inner, ", "):
@@ -1461,6 +1467,118 @@ def java_bodies(path: Path) -> dict:
     return out
 
 
+def _java_block_end(src: str, start: int) -> int:
+    """Index just past the ``}`` that closes the ``{`` at ``start`` (string and char literals and comments skipped)."""
+    depth, i, n = 0, start, len(src)
+    while i < n:
+        ch = src[i]
+        if ch in "\"'":
+            i += 1
+            while i < n and src[i] != ch:
+                i += 2 if src[i] == "\\" else 1
+        elif src.startswith("//", i):
+            i = src.find("\n", i)
+            if i < 0:
+                return n
+        elif src.startswith("/*", i):
+            i = src.find("*/", i) + 1
+            if i <= 0:
+                return n
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+JAVA_METHOD_RE = re.compile(r"\n  (?:@\w+(?:\([^)]*\))?\s+)*(?:(?:private|protected|public|static|final)\s+)*"
+                            r"[\w<>\[\], .?]+?\s+(\w+)\s*\(([^()]*)\)\s*(?:throws [\w, .]+)?\s*\{")
+
+
+def java_methods(path: Path) -> dict:
+    """Every method of the test class: name -> (parameter names, body text). Overloads are left out."""
+    if not path.exists():
+        return {}
+    src = path.read_text()
+    out, seen = {}, set()
+    for m in JAVA_METHOD_RE.finditer(src):
+        name = m.group(1)
+        if name in seen:
+            out.pop(name, None)
+            continue
+        seen.add(name)
+        params = [part.split()[-1] for part in m.group(2).split(",") if part.strip()]
+        out[name] = (params, src[m.end() - 1:_java_block_end(src, m.end() - 1)])
+    return out
+
+
+# RelBuilder calls that leave the relation on top of the stack with the row type it had
+JAVA_ROW_PRESERVING = {"filter", "variable", "field", "equals", "literal", "add", "get", "set", "and", "or", "not",
+                       "call", "isNull", "isNotNull", "as", "id"}
+JAVA_CALL_RE = re.compile(r"\.scan\(\"(\w+)\"\)|\.empty\(\)|\.(\w+)\(")
+
+
+def java_inline_helpers(body: str, methods: dict, self_name: str, depth: int = 3) -> str:
+    """The body with calls of the class's own helper methods replaced by the helper's body; a boolean literal
+    argument decides the helper's ``if (parameter) { .. }`` blocks."""
+    for _ in range(depth):
+        changed = False
+        for m in list(re.finditer(r"(?<![.\w])(\w+)\(", body))[::-1]:
+            name = m.group(1)
+            if name == self_name or name not in methods:
+                continue
+            end = match_close(body, m.end() - 1, "(", ")")
+            args = [a.strip() for a in split_top(body[m.end():end], ",")] if body[m.end():end].strip() else []
+            params, text = methods[name]
+            if len(args) != len(params):
+                continue
+            for param, arg in zip(params, args):
+                if arg not in ("true", "false"):
+                    continue
+                for cond in list(re.finditer(rf"if \((!?){re.escape(param)}\) \{{", text))[::-1]:
+                    stop = _java_block_end(text, cond.end() - 1)
+                    keep = (arg == "true") != bool(cond.group(1))
+                    if text[stop:].lstrip().startswith("else"):
+                        continue  # not modelled: left as written, which makes the scan below decline
+                    text = text[:cond.start()] + (text[cond.end():stop - 1] if keep else "") + text[stop:]
+            body = body[:m.start()] + " " + text + " " + body[end + 1:]
+            changed = True
+        if not changed:
+            break
+    return body
+
+
+def java_empty_tables(name: str, methods: dict) -> list | None:
+    """The scott tables a RelBuilder test empties with ``.empty()``, in the order it builds them, or ``None``.
+
+    ``b.scan("EMP").empty()`` is a ``LogicalValues`` with EMP's row type and no rows; the plan dump prints it as
+    ``LogicalValues(tuples=[[]])`` and drops the row type, so the Java is the only place that states it. RelBuilder
+    builds leaves left to right, which is the order the plan lists them. Anything this does not follow exactly (an
+    ``.empty()`` that is not on a scan, or on a scan with more than filters above it, a conditional it cannot
+    decide) gives ``None``.
+    """
+    if name not in methods:
+        return None
+    body = java_inline_helpers(methods[name][1], methods, name).replace("Holder.empty()", "")  # an empty variable holder
+    if "relFn" not in body or re.search(r"if \(\w+\) \{\s*\w+\.empty\(\)", body):
+        return None
+    out, last, clean = [], None, False
+    for m in JAVA_CALL_RE.finditer(body):
+        if m.group(1):
+            last, clean = m.group(1), True
+        elif m.group(0) == ".empty()":
+            if last is None or not clean or ("scott", last) not in CATALOG:
+                return None
+            out.append(("scott", last))
+            last, clean = None, False
+        elif m.group(2) not in JAVA_ROW_PRESERVING:
+            clean = False
+    return out
+
+
 JAVA_SKIPS = [
     (re.compile(r"withCatalogReaderFactory"), "custom catalog reader (tables not in MockCatalogReaderSimple)"),
     (re.compile(r"withDynamicTable"), "dynamic-star table (schema unknown)"),
@@ -1472,11 +1590,13 @@ def load_cases(calcite: Path):
     for stem, prefix in XML_FILES:
         xml = calcite / XML_DIR / f"{stem}.xml"
         bodies = java_bodies(calcite / JAVA_DIR / f"{stem}.java")
+        methods = java_methods(calcite / JAVA_DIR / f"{stem}.java")
         root = ET.parse(xml).getroot()
         for tc in root:
             res = {r.get("name"): (r.text or "") for r in tc}
             yield {"name": prefix + tc.get("name"), "test": tc.get("name"), "file": stem,
-                   "res": res, "java": bodies.get(tc.get("name"), "")}
+                   "res": res, "java": bodies.get(tc.get("name"), ""),
+                   "empty_tables": java_empty_tables(tc.get("name"), methods)}
 
 
 def convert_case(case: dict) -> dict:
@@ -1490,8 +1610,11 @@ def convert_case(case: dict) -> dict:
     if "hints=" in before_txt + after_txt:
         raise Skip("hints")
     pb, pa = parse_plan(before_txt), parse_plan(after_txt)
+    empties = case.get("empty_tables") or []
+    if len(empties) != before_txt.count("LogicalValues(tuples=[[]])"):
+        empties = []  # the Java does not account for every empty relation of the plan: none is typed from it
     try:
-        cb = Converter()
+        cb = Converter(empty_tables=empties)
         rb = cb.top(pb)
         ca = Converter(root_types_hint=rb.types)
         ra = ca.top(pa)
@@ -1501,7 +1624,7 @@ def convert_case(case: dict) -> dict:
             ra = ca.top(pa)
         except NeedHint:
             raise Skip("both plans are empty relations of unknown row type") from None
-        cb = Converter(root_types_hint=ra.types)
+        cb = Converter(root_types_hint=ra.types, empty_tables=empties)
         rb = cb.top(pb)
     if len(rb.types) != len(ra.types):
         raise Skip("plans differ in width")
