@@ -4879,6 +4879,7 @@ def normalize(
     from .keyed_self_membership import keyed_self_membership
     from .own_group_joins import inner_own_group_join, own_group_join
     from .exact_rounding import exact_rounding
+    from .exact_power_division import divide_by_power_of_ten
     from .exact_scaling import scale_after_division
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
@@ -4973,6 +4974,7 @@ def normalize(
         lambda sel: inner_own_group_join(sel, schema, not_null),
         lambda sel: exact_rounding(sel, types_map, dialect),
         lambda sel: scale_after_division(sel, types_map, dialect),
+        lambda sel: divide_by_power_of_ten(sel, types_map, dialect),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
