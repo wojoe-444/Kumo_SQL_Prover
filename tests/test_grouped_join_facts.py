@@ -25,6 +25,22 @@ def test_filter_on_projected_group_key_transfers(predicate):
     assert proves(left, right)
 
 
+def test_a_between_is_read_as_its_two_comparisons():
+    left = "SELECT g.k,b.k FROM (SELECT a.k FROM t a WHERE a.k BETWEEN 3 AND 7 GROUP BY a.k) g JOIN u b ON g.k=b.k"
+    result = rewrite(left)
+    assert result is not None and result.sql(dialect="duckdb").endswith("WHERE b.k >= 3 AND b.k <= 7")
+    assert proves(left, left + " WHERE b.k >= 3 AND b.k <= 7")
+    assert not proves(left, left + " WHERE b.k >= 4")
+
+
+def test_a_fact_already_there_under_quoted_names_is_not_added_again():
+    sql = 'SELECT g.k,b.k FROM (SELECT a.k FROM t a WHERE a.k>7 GROUP BY a.k) g JOIN u b ON g.k=b.k WHERE "b"."k" > 7'
+    assert rewrite(sql) is None
+    # a fact one grouped source gives about another that filters on it itself
+    both = "SELECT g.k FROM (SELECT a.k FROM t a WHERE a.k>7 GROUP BY a.k) g JOIN (SELECT a.k FROM t a WHERE a.k>7 GROUP BY a.k) h ON g.k=h.k"
+    assert rewrite(both) is None
+
+
 def test_transitive_fact_crosses_projection_and_second_join():
     left = "SELECT d.k,c.k FROM (SELECT b.k FROM (SELECT a.k FROM t a WHERE a.k>7 GROUP BY a.k) g JOIN u b ON g.k=b.k) d JOIN v c ON d.k=c.k"
     right = "SELECT d.k,c.k FROM (SELECT b.k FROM (SELECT a.k FROM t a WHERE a.k>7 GROUP BY a.k) g JOIN u b ON g.k=b.k WHERE b.k>7) d JOIN v c ON d.k=c.k WHERE c.k>7"

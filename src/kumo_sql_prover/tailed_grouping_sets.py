@@ -65,7 +65,14 @@ def _output_identifier(item: exp.Expression) -> exp.Identifier | None:
 
 
 def _isolated(select: exp.Select) -> exp.Select | None:
-    if not any(select.args.get(k) for k in _TAIL) or not _has_grouping_sets(select):
+    return isolate_tail(select) if _has_grouping_sets(select) else None
+
+
+def isolate_tail(select: exp.Select) -> exp.Select | None:
+    """``select`` as its row tail over a derived table ``kqt`` that holds the select without the tail (any grouping).
+    ``None`` when there is no tail or one of the cases the module declines."""
+
+    if not any(select.args.get(k) for k in _TAIL):
         return None
     if any(value for key, value in select.args.items() if key not in _PLAIN):
         return None  # DISTINCT, QUALIFY, WITH, named windows, locks, hints, ...

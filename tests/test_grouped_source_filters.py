@@ -27,6 +27,22 @@ def test_a_group_key_filter_moves_into_the_grouped_source():
     )
 
 
+def test_a_filter_the_grouped_source_already_has_is_only_dropped():
+    # an optimizer's transitive-predicate rule leaves a copy of the source's own filter above the join
+    sql = f"SELECT u.y FROM {GROUPED.format(where=' WHERE c >= 2 AND x > 0')}, u WHERE d.k = u.k AND `d`.`c` >= 2"
+    assert rewritten(rules.push_filter_into_grouped_source, sql) == (
+        "SELECT u.y FROM (SELECT k, c, SUM(x) AS s FROM t WHERE c >= 2 AND x > 0 GROUP BY k, c) AS d CROSS JOIN u WHERE d.k = u.k"
+    )
+    # each half of the source's BETWEEN, and the same condition twice outside
+    sql = f"SELECT u.y FROM u JOIN {GROUPED.format(where=' WHERE c BETWEEN 2 AND 5')} ON d.k = u.k WHERE d.c >= 2 AND d.c <= 5 AND d.k > 1 AND d.k > 1"
+    assert rewritten(rules.push_filter_into_grouped_source, sql) == (
+        "SELECT u.y FROM u JOIN (SELECT k, c, SUM(x) AS s FROM t WHERE c BETWEEN 2 AND 5 AND k > 1 GROUP BY k, c) AS d ON d.k = u.k"
+    )
+    # a different bound is a different condition
+    sql = f"SELECT u.y FROM {GROUPED.format(where=' WHERE c >= 2')}, u WHERE d.k = u.k AND d.c >= 3"
+    assert "WHERE c >= 2 AND c >= 3 GROUP BY" in rewritten(rules.push_filter_into_grouped_source, sql)
+
+
 @pytest.mark.parametrize(
     "sql",
     [
@@ -97,10 +113,10 @@ SOURCES = [
     "(SELECT d2.k, d2.k AS c, MAX(d2.s) AS s FROM (SELECT k, c, SUM(x) AS s FROM t {w} GROUP BY k, c) AS d2 GROUP BY d2.k) AS d",
     "(SELECT k + 1 AS k, c, MIN(x) AS s FROM t {w} GROUP BY k + 1, c) AS d",
 ]
-FILTERS = ["", "WHERE k IS NOT NULL", "WHERE x > 0 AND NOT k IS NULL", "WHERE c IS NOT NULL AND k IS NOT NULL"]
+FILTERS = ["", "WHERE k IS NOT NULL", "WHERE x > 0 AND NOT k IS NULL", "WHERE c IS NOT NULL AND k IS NOT NULL", "WHERE k > 1 AND c BETWEEN 1 AND 2", "WHERE NOT (c > 1)"]
 CONDITIONS = [
     "d.k = u.k", "d.k > 1", "d.c BETWEEN 1 AND 2", "d.k IN (0, 2)", "(d.k = 1 OR d.k IS NULL)", "d.c IS NOT NULL", "u.y < d.k",
-    "d.s > 1", "d.k IS NULL", "NOT (d.c > 1)", "d.k = d.c", "d.c <> u.y",
+    "d.s > 1", "d.k IS NULL", "NOT (d.c > 1)", "d.k = d.c", "d.c <> u.y", "d.c >= 1", "d.c <= 2",
 ]
 
 

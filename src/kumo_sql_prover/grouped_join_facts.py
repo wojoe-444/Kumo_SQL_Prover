@@ -54,6 +54,32 @@ def _type(column, select, types, depth=0):
     return None
 
 
+def _key(predicate):
+    """``predicate`` as text that does not depend on quoting or the letter case of names: a fact is built from bare
+    names, the query may quote them, and a fact not recognised as already there was added again on every pass."""
+
+    copy = exp.Paren(this=predicate.copy())
+    for identifier in copy.find_all(exp.Identifier):
+        identifier.set("quoted", False)
+        identifier.set("this", identifier.name.lower())
+    return copy.this.sql()
+
+
+def _comparisons(condition):
+    """The conjuncts of ``condition``, a plain ``x BETWEEN low AND high`` as its two comparisons: an optimizer writes
+    the range either way, and a fact read from one spelling only would be added on one side of a pair."""
+
+    found = []
+    for predicate in _conjuncts(condition):
+        inner = predicate.unnest() if isinstance(predicate, exp.Paren) else predicate
+        if isinstance(inner, exp.Between) and not inner.args.get("symmetric"):
+            found.append(exp.GTE(this=inner.this.copy(), expression=inner.args["low"].copy()))
+            found.append(exp.LTE(this=inner.this.copy(), expression=inner.args["high"].copy()))
+        else:
+            found.append(predicate)
+    return found
+
+
 def _facts(source):
     if not isinstance(source, exp.Subquery) or not source.alias or not isinstance(source.this, exp.Select):
         return []
@@ -73,7 +99,7 @@ def _facts(source):
     outputs = {item.unalias().sql(): item.alias_or_name for item in inner.expressions if isinstance(item.unalias(), exp.Column)}
     grouped = {key.sql() for key in group.expressions} if group is not None else None
     facts = []
-    for predicate in _conjuncts(where.this):
+    for predicate in _comparisons(where.this):
         if not isinstance(predicate, _COMPARISONS):
             continue
         cols = list(predicate.find_all(exp.Column))
@@ -117,7 +143,7 @@ def propagate_grouped_join_facts(select: exp.Select, types: dict) -> exp.Express
         graph.setdefault(a, set()).add(b); graph.setdefault(b, set()).add(a)
         columns[a], columns[b] = predicate.this, predicate.expression
     facts = [fact for source in sources.values() for fact in _facts(source)]
-    existing = {p.sql() for p in predicates} | {p.sql() for _, p in facts}
+    existing = {_key(p) for p in predicates} | {_key(p) for _, p in facts}
     added = []
     for column, predicate in facts:
         key = _column_id(column)
@@ -134,8 +160,8 @@ def propagate_grouped_join_facts(select: exp.Select, types: dict) -> exp.Express
             rewritten = predicate.copy()
             for col in list(rewritten.find_all(exp.Column)):
                 col.replace(columns[target].copy())
-            if rewritten.sql() not in existing:
-                added.append(rewritten); existing.add(rewritten.sql())
+            if _key(rewritten) not in existing:
+                added.append(rewritten); existing.add(_key(rewritten))
     if not added:
         return None
     result = select.copy()

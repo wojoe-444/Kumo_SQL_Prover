@@ -117,6 +117,9 @@ from .grouped_self_membership import read_grouped_self_membership
 from .disjoint_union import separate_disjoint_unions
 from .keyed_union import separate_keyed_unions
 from .self_key_membership import read_self_key_membership
+from .tailed_regroups import regroup_under_tail
+from .union_join_grouping import group_over_union_join_to_distinct
+from .own_group_joins import inner_join_own_groups
 from .one_row_tails import drop_one_row_tail
 from .string_spelling_rules import bigquery_string_column, string_spelling_rules
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
@@ -4975,6 +4978,9 @@ def normalize(
         drop_one_row_tail,
         push_filter_into_grouped_source,
         drop_rejected_null_filter,
+        lambda sel: regroup_under_tail(sel, (_collapse_aggregate, _roll_up_aggregate, _regroup_distinct)),
+        group_over_union_join_to_distinct,
+        lambda sel: inner_join_own_groups(sel, not_null, types_map),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:

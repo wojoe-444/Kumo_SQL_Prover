@@ -19,6 +19,10 @@ this. Two rules, both for a select whose sources are joined by inner or cross jo
     table by the same value, which is where an optimizer leaves the inferred filter in a decorrelated
     ``> (SELECT AVG(..) FROM (grouped) ..)``.
 
+A condition the derived table already filters on (by its text, a ``BETWEEN`` also read as its two comparisons)
+is true of every row it returns, so it is dropped outside and not added inside a second time. An optimizer's
+transitive-predicate rule leaves such copies above the join.
+
 Both rules read only a derived table that computes an aggregate (``SUM``, ``AVG``, ..): a ``GROUP BY`` or
 ``DISTINCT`` with none is a duplicate removal that other rules already read.
 
@@ -88,6 +92,33 @@ def _aggregates(body: exp.Select) -> bool:
     return any(node.find_ancestor(exp.Select) is body for node in body.find_all(exp.AggFunc))
 
 
+def _text(condition: exp.Expression) -> str:
+    """``condition`` as text that does not depend on quoting, letter case of names or outer parentheses."""
+
+    copy = exp.Paren(this=condition.copy())
+    for identifier in copy.find_all(exp.Identifier):
+        identifier.set("quoted", False)
+        identifier.set("this", identifier.name.lower())
+    inner = copy.this
+    while isinstance(inner, exp.Paren):
+        inner = inner.this
+    return inner.sql()
+
+
+def _held(body: exp.Select) -> set[str]:
+    """The conditions ``body`` already filters its rows by, a ``BETWEEN`` also as its two comparisons."""
+
+    where = body.args.get("where")
+    found: set[str] = set()
+    for part in _conjuncts(where.this) if where is not None else []:
+        part = part.unnest() if isinstance(part, exp.Paren) else part
+        found.add(_text(part))
+        if isinstance(part, exp.Between) and not part.args.get("symmetric"):
+            found.add(_text(exp.GTE(this=part.this.copy(), expression=part.args["low"].copy())))
+            found.add(_text(exp.LTE(this=part.this.copy(), expression=part.args["high"].copy())))
+    return found
+
+
 def _holders(select: exp.Select) -> list[tuple[exp.Expression, str]]:
     """The nodes of ``select`` that hold a condition every result row satisfies: its WHERE and each join's ON."""
 
@@ -128,6 +159,15 @@ def push_filter_into_grouped_source(select: exp.Select) -> exp.Expression | None
             return None
         return alias
 
+    held = {alias: _held(sources[alias].this) for alias in keyed}
+
+    def moved_form(part: exp.Expression, alias: str) -> exp.Expression:
+        wrapper = exp.Paren(this=part.copy())
+        for column in list(wrapper.find_all(exp.Column)):
+            value = keyed[alias][column.name.lower()].copy()
+            column.replace(value if isinstance(value, (exp.Column, exp.Literal, exp.Paren)) else exp.Paren(this=value))
+        return wrapper.this
+
     if not keyed or not any(target(part) for holder, key in _holders(select) for part in _conjuncts(holder.args[key])):
         return None
     copy = select.copy()
@@ -139,11 +179,10 @@ def push_filter_into_grouped_source(select: exp.Select) -> exp.Expression | None
             if alias is None:
                 kept.append(part)
                 continue
-            wrapper = exp.Paren(this=part.copy())
-            for column in list(wrapper.find_all(exp.Column)):
-                value = keyed[alias][column.name.lower()].copy()
-                column.replace(value if isinstance(value, (exp.Column, exp.Literal, exp.Paren)) else exp.Paren(this=value))
-            moved.setdefault(alias, []).append(wrapper.this)
+            inside = moved_form(part, alias)
+            if _text(inside) not in held[alias]:  # a condition the derived table already filters on is only dropped
+                held[alias].add(_text(inside))
+                moved.setdefault(alias, []).append(inside)
         if isinstance(holder, exp.Where):
             if kept:
                 holder.set("this", _and_all(kept))
