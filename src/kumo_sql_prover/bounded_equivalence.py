@@ -1295,7 +1295,13 @@ class Compiler:
             return rel
         count = None
         if limit is not None:
-            target = limit.expression
+            if isinstance(limit, exp.Fetch):  # FETCH FIRST n ROWS ONLY is LIMIT n
+                options = limit.args.get("limit_options")
+                if options is not None and (options.args.get("percent") or options.args.get("with_ties")):
+                    raise Unsupported("FETCH with PERCENT or WITH TIES")
+                target = limit.args.get("count")
+            else:
+                target = limit.expression
             if not (isinstance(target, exp.Literal) and not target.is_string):
                 raise Unsupported("LIMIT must be a literal")
             count = _whole(target)
@@ -1765,10 +1771,13 @@ class Compiler:
         context = scope.window
         if context is None:
             raise Unsupported("window function outside a select list")
-        spec = node.args.get("spec")
-        if spec is not None and (spec.args.get("kind") or spec.args.get("start") or spec.args.get("end")):
-            raise Unsupported("explicit window frame")
+        whole = self._whole_partition(node.args.get("spec"))
         function = node.this
+        condition = None
+        if isinstance(function, exp.Filter):
+            function, condition = function.this, function.expression.this
+            if not isinstance(function, AGGREGATES):
+                raise Unsupported("FILTER on a function that is not an aggregate")
         index = scope.index
         partition = node.args.get("partition_by") or []
         order = node.args.get("order")
@@ -1808,12 +1817,13 @@ class Compiler:
         if isinstance(function, AGGREGATES):
             frame = []
             for j in range(len(context.rows)):
-                if order is None:
+                if order is None or whole:
                     frame.append(peers[j])
                 else:  # the default frame: from the partition start to the last row tied with this one
                     follows = self._precedes(Row(None, [], keyed[index][1]), Row(None, [], keyed[j][1]))
                     frame.append(z3.And(peers[j], z3.Not(follows)))
-            return self._aggregate_over(function, Group(frame, context.scopes))
+            group = Group(frame, context.scopes)
+            return self._aggregate_over(function, self._filtered(group, condition) if condition is not None else group)
         if isinstance(function, (exp.Lag, exp.Lead, exp.FirstValue)):
             if order is None:
                 raise Unsupported("LAG, LEAD or FIRST_VALUE without ORDER BY")
@@ -1849,6 +1859,35 @@ class Compiler:
                 result = V(kind, z3.If(hit, value.val, result.val), z3.If(hit, value.null, result.null))
             return result
         raise Unsupported(f"window function {type(function).__name__}")
+
+    def _whole_partition(self, spec) -> bool:
+        """Is the frame the whole partition? Two frames are modeled: ``RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT
+        ROW`` (the default frame, written out) and ``RANGE`` or ``ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED
+        FOLLOWING`` (the whole partition). A frame counted in rows up to the current one depends on how ties are placed."""
+
+        if spec is None or not (spec.args.get("kind") or spec.args.get("start") or spec.args.get("end")):
+            return False
+        if spec.args.get("exclude"):
+            raise Unsupported("window frame with EXCLUDE")
+        text = lambda key: str(spec.args.get(key) or "").upper()
+        kind, start, end = text("kind"), (text("start"), text("start_side")), (text("end"), text("end_side"))
+        if start == ("UNBOUNDED", "PRECEDING") and end == ("UNBOUNDED", "FOLLOWING") and kind in ("RANGE", "ROWS"):
+            return True
+        if start == ("UNBOUNDED", "PRECEDING") and end[0] in ("CURRENT ROW", "") and kind == "RANGE":
+            return False
+        raise Unsupported("explicit window frame")
+
+    def _filtered(self, group: "Group", condition) -> "Group":
+        """The group restricted to the rows an aggregate's ``FILTER (WHERE condition)`` keeps."""
+
+        return Group([z3.And(m, truth(self.expr(condition, s))) for m, s in zip(group.members, group.scopes)], group.scopes, group.cache)
+
+    def _e_Filter(self, node, scope):
+        if not isinstance(node.this, AGGREGATES) or not isinstance(node.expression, exp.Where):
+            raise Unsupported("FILTER on a function that is not an aggregate")
+        if scope.group is None:
+            raise Unsupported("aggregate outside a grouped query")
+        return self._aggregate_over(node.this, self._filtered(scope.group, node.expression.this))
 
     def _e_Anonymous(self, node, scope):
         name = str(node.this).upper()

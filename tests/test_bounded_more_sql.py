@@ -193,3 +193,47 @@ def test_order_by_reads_a_select_item_before_a_from_column():
 ])
 def test_shared_names_match_the_replay(sql):
     assert agrees_with_replay(sql)
+
+
+# --- FILTER, FETCH, explicit window frames ---------------------------------------------------------
+
+
+def test_an_aggregate_filter_restricts_the_rows_aggregated():
+    same("select count(*) filter (where a > 1), sum(b) filter (where a > 1) from t", "select count(case when a > 1 then 1 end), sum(case when a > 1 then b end) from t")
+    same("select a, count(distinct b) filter (where b > 0) from t group by a", "select a, count(distinct case when b > 0 then b end) from t group by a")
+    same("select a, sum(b) filter (where b > 0) over (partition by a) from t", "select a, sum(case when b > 0 then b end) over (partition by a) from t")
+    # a NULL condition filters the row out; an empty filtered group sums to NULL, not 0
+    different("select sum(b) filter (where a > 1) from t", "select coalesce(sum(b) filter (where a > 1), 0) from t", rows=1)
+    different("select count(*) filter (where a > 1) from t", "select count(*) filter (where not (a <= 1)) + count(*) filter (where a is null) from t", rows=1)
+    unsupported("select row_number() filter (where a > 1) over (order by a) from t", "select 1 from t", "FILTER")
+
+
+def test_fetch_first_is_limit():
+    same("select a from t order by a fetch next 1 rows only", "select a from t order by a limit 1")
+    same("select a from t order by a offset 1 rows fetch next 2 rows only", "select a from t order by a limit 2 offset 1")
+    different("select a from t order by a fetch first 1 rows only", "select a from t order by a limit 2")
+    unsupported("select a from t order by a fetch first 1 rows with ties", "select a from t order by a limit 1", "WITH TIES")
+
+
+def test_the_two_frames_that_do_not_depend_on_ties():
+    whole = "range between unbounded preceding and unbounded following"
+    same(f"select a, sum(b) over (partition by a {whole}) from t", "select a, sum(b) over (partition by a) from t")
+    same(f"select a, count(b) over (partition by a order by b rows between unbounded preceding and unbounded following) from t", "select a, count(b) over (partition by a) from t")
+    same("select a, sum(b) over (partition by a order by b range between unbounded preceding and current row) from t", "select a, sum(b) over (partition by a order by b) from t")
+    # with ORDER BY the default frame ends at the current row's peers, the whole-partition frame does not
+    different(f"select sum(b) over (order by b {whole}) from t", "select sum(b) over (order by b) from t")
+    unsupported("select sum(b) over (order by b rows between unbounded preceding and current row) from t", "select sum(b) over (order by b) from t", "window frame")
+    unsupported("select sum(b) over (order by b rows between 1 preceding and current row) from t", "select sum(b) over (order by b) from t", "window frame")
+
+
+@pytest.mark.parametrize("sql", [
+    "select a, count(*) filter (where b > 0), sum(b) filter (where b <> 1), min(b) filter (where a is null), avg(b) filter (where b > 0) from t group by a",
+    "select count(*) filter (where a > 1), count(distinct b) filter (where a > 1), max(a) filter (where b is null) from t",
+    "select a, b, sum(b) filter (where b > 0) over (partition by a), count(*) filter (where a > 1) over () from t",
+    "select a, b from t order by a, b offset 1 rows fetch next 2 rows only",
+    "select a, b, sum(b) over (partition by a order by b range between unbounded preceding and current row) from t",
+    "select a, b, count(*) over (order by b rows between unbounded preceding and unbounded following), max(b) over (partition by a order by b range between unbounded preceding and unbounded following) from t",
+    "select a, b, first_value(b) over (partition by a order by b, a range between unbounded preceding and unbounded following) from t where b is not null",
+])
+def test_filter_fetch_and_frames_match_the_replay(sql):
+    assert agrees_with_replay(sql)
