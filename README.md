@@ -56,13 +56,13 @@ See [docs/provers.md](docs/provers.md) for the full reference and [docs_simple/p
 ## Tests
 
 ```sh
-pip install -e ".[dev]" sqlglotc==30.21.0     # sqlglotc is the compiled build CI uses, optional
+pip install -e ".[dev]" sqlglotc==30.21.0     # sqlglotc is the compiled build the gate is measured with, optional
 python -m pytest -n auto -m "not eval" --quick   # the pull-request gate (skips the slow tier)
 python -m pytest -n auto -m "not eval"           # everything but the benchmark floors, slow tier included
 python -m pytest -n auto -m eval                 # the benchmark floors (slow)
 ```
 
-The gate runs on every pull request; the slow tier is the tests `tests/order.json` lists (about two seconds or more each, measured over many runs in KumoSQL). The benchmark floors and the slow tier run on a schedule ([benchmarks.yml](.github/workflows/benchmarks.yml)) and open an issue when one drops; they report, they do not gate a change.
+No CI runs through GitHub; the gate is a local command, run on the exact candidate before a change merges. The slow tier is the tests `tests/order.json` lists (about two seconds or more each, measured over many runs in KumoSQL). The benchmark floors and the slow tier are run by hand or on the maintainer's own schedule (`-m eval` and `-m "not eval"`); a person has to notice when one drops, since nothing opens an issue automatically. They report, they do not gate a change.
 
 ## Benchmark scoreboard
 

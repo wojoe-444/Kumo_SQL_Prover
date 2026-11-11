@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from sqlglot import exp
 
+from . import volatile_calls
 from .ast_utils import UnmodeledConstruct, binding_cte, select_sources
 
 _VOLATILE = {"Rand", "Randn", "Uuid"}
@@ -44,7 +45,9 @@ def _own(node: exp.Expression, select: exp.Select) -> bool:
 
 def _volatile(node: exp.Expression) -> bool:
     return any(
-        type(child).__name__ in _VOLATILE or (isinstance(child, exp.Anonymous) and (child.name or "").upper() in _VOLATILE_NAMES)
+        type(child).__name__ in _VOLATILE
+        or (isinstance(child, exp.Anonymous) and (child.name or "").upper() in _VOLATILE_NAMES)
+        or volatile_calls.kind(child) == volatile_calls.PER_CALL
         for child in node.walk()
     )
 
