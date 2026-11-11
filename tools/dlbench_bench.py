@@ -54,6 +54,7 @@ import argparse
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+import functools
 import hashlib
 import json
 import logging
@@ -82,15 +83,41 @@ INTEGER_DIVISION = {"sqlite", "postgresql", "monetdb"}
 EXACT_DECIMALS = {"postgresql", "monetdb", "mysql", "mariadb"}  # 1.0 is an exact decimal, so 1.0 / 3 is not a float
 DIVIDE_BY_ZERO = {"sqlite": "null", "mysql": "null", "mariadb": "null", "duckdb": "infinity", "clickhouse": "infinity"}  # the others raise an error
 SAME_READING = {"mysql", "mariadb"}  # one sqlglot dialect reads both, and no gap rule tells them apart
-# A statement that calls one of these, or reads a variable, need not return the same thing twice
-RERUN_DEPENDENT = {
-    "any_value", "benchmark", "connection_id", "curdate", "current_date", "current_role", "current_time",
-    "current_timestamp", "current_user", "curtime", "database", "found_rows", "get_lock", "group_concat",
-    "is_free_lock", "is_used_lock", "json_arrayagg", "json_objectagg", "last_insert_id", "load_file", "localtime",
-    "localtimestamp", "now", "over", "rand", "random_bytes", "release_all_locks", "release_lock", "row_count",
-    "schema", "session_user", "sleep", "sysdate", "system_user", "user", "utc_date", "utc_time", "utc_timestamp",
-    "uuid", "uuid_short", "version",
+# Calls whose answer is not a function of the tables: the clock, random values, sequences, the session, the server
+VOLATILE_CALLS = {
+    "benchmark", "changes", "clock_timestamp", "connection_id", "curdate", "current_database", "current_setting",
+    "currentdatabase", "currentuser", "currval", "curtime", "database", "found_rows", "gen_random_uuid",
+    "generateuuidv4", "generateuuidv7", "get_current_time", "get_current_timestamp", "get_lock", "getdate", "hostname",
+    "is_free_lock", "is_used_lock", "last_insert_id", "last_insert_rowid", "lastval", "load_file", "nextval", "now",
+    "now64", "pg_backend_pid", "pg_sleep", "rand", "rand32", "rand64", "randcanonical", "randconstant", "random",
+    "random_bytes", "randomblob", "release_all_locks", "release_lock", "row_count", "schema", "servername", "setseed",
+    "setval", "sleep", "sqlite_version", "statement_timestamp", "sysdate", "timeofday", "today", "total_changes",
+    "transaction_timestamp", "txid_current", "uptime", "user", "uuid", "uuid_generate_v1", "uuid_generate_v4",
+    "uuid_short", "uuidv4", "uuidv7", "version", "yesterday",
 }
+# The same without parentheses
+VOLATILE_WORDS = {
+    "current_catalog", "current_date", "current_role", "current_schema", "current_time", "current_timestamp",
+    "current_user", "localtime", "localtimestamp", "session_user", "system_user", "utc_date", "utc_time", "utc_timestamp",
+}
+VOLATILE_NO_ARGUMENT = {"date", "datetime", "julianday", "time", "unix_timestamp", "unixepoch"}  # the clock when called with nothing
+VOLATILE_TEXTS = {"now", "today", "tomorrow", "yesterday"}  # date('now'), 'today'::date
+# A statement that uses one of these need not return the same thing twice either (the same-statement rule)
+RERUN_DEPENDENT = VOLATILE_CALLS | VOLATILE_WORDS | {"any_value", "group_concat", "json_arrayagg", "json_objectagg", "over"}
+ROW_STRICT = {"duckdb", "clickhouse", "monetdb"}  # any compared row value is a gap: DuckDB and ClickHouse compare structs, MonetDB is not replayed
+DECIMAL_QUOTIENTS = {"mysql", "mariadb"}
+# Functions that compare their string arguments (by the collation, where there is one)
+STRING_COMPARERS = {"field", "find_in_set", "greatest", "instr", "interval", "least", "locate", "nullif", "position", "strcmp"}
+ROW_COMPARISONS = (exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE, exp.NullSafeEQ, exp.NullSafeNEQ, exp.In, exp.Between)
+# Unix time: MySQL 8 counts seconds past 2038 and MariaDB (before 11.5) does not; MySQL answers NULL before 1970 and
+# ClickHouse answers 1970-01-01. Only a literal inside the range every engine keeps is let through.
+EPOCH_CALLS = {"unix_timestamp", "from_unixtime", "fromunixtimestamp", "fromunixtimestamp64milli", "tounixtimestamp", "epoch", "epoch_ms", "unixepoch"}
+EPOCH_YEARS = range(1971, 2038)
+# Population in MySQL and MariaDB, sample in PostgreSQL, DuckDB and MonetDB; sqlglot reads them as one function
+AMBIGUOUS_SPREAD = {"std", "stddev", "variance"}
+MYSQL_FAMILY = {"mysql", "mariadb"}
+DATE_BUILDERS = {"from_days", "make_date", "make_timestamp", "makedate", "makedate32", "makedatetime", "makedatetime64"}
+CONTRADICTIONS = FIXTURES / "native_contradictions.json"
 PROVER_TIMEOUT_MS = 3000
 CHECK_TRIALS = 300
 UNBOUNDED = 1_000_000_000
@@ -131,7 +158,7 @@ def in_subset(dataset: str, target: str, sql_id: int, label_raw: str) -> bool:
 # -- loading --------------------------------------------------------------------------
 
 _TABLE = re.compile(r"Table:\s*`?([^`\n]+?)`?\s*\nColumns:\s*\n(.*)", re.S)
-_COLUMN = re.compile(r"^\(\s*`?([^`,]+?)`?\s*,\s*([^,)]*)(?:,\s*([^)]*))?\)\s*$")
+_COLUMN = re.compile(r"^\(\s*`?([^`,]+?)`?\s*,\s*((?:[^,()]|\([^()]*\))*)(?:,\s*([^()]*))?\)\s*$")
 
 
 def described_tables(texts: list[str]) -> list[tuple[str, list[tuple[str, str, bool]]]]:
@@ -336,10 +363,33 @@ def dialect_gap(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
     trees = [parse(q, d) for q, d in ((pair.source_query, source), (pair.target_query, target))]
     if any(t is None for t in trees):
         return "unparsed"
+    types = _Types(schema)
+    if any(_row_compared(t, types, strict=bool({source, target} & ROW_STRICT)) for t in trees):
+        return "row comparison"
+    if source != target and (_epoch_outside(pair.source_query, source) or _epoch_outside(pair.target_query, target)):
+        return "timestamp range"
+    words = {text for query, dbms in ((pair.source_query, source), (pair.target_query, target)) for kind, text in _tokens(query, dbms) or () if "STRING" not in kind}
+    if "clickhouse" in (source, target) and words & DATE_BUILDERS:
+        return "ClickHouse date range"
+    if "postgresql" in (source, target) and source != target and "to_timestamp" in words:
+        return "PostgreSQL time zone"  # TO_TIMESTAMP gives a timestamp with a time zone, whose text ends in +00
+    if (source in MYSQL_FAMILY) != (target in MYSQL_FAMILY) and words & AMBIGUOUS_SPREAD:
+        return "population variance"
     if (source in CASELESS_LIKE) != (target in CASELESS_LIKE) and any(t.find(exp.Like) for t in trees):
         return "LIKE and case"
-    if (source in CASELESS_STRINGS) != (target in CASELESS_STRINGS) and any(t.find(exp.Literal) and any(l.is_string for l in t.find_all(exp.Literal)) or t.find(exp.Column) for t in trees):
-        return "MySQL string comparison"
+    if (source in MYSQL_FAMILY) != (target in MYSQL_FAMILY) and any(
+        not all(isinstance(a.this if isinstance(a, exp.Neg) else a, exp.Literal) for a in [n.this, *n.expressions])
+        for t in trees for n in t.find_all(exp.Least, exp.Greatest)
+    ):
+        return "LEAST and GREATEST with NULL"  # NULL in MySQL when any argument is, the others skip a NULL argument
+    if (source in CASELESS_STRINGS) != (target in CASELESS_STRINGS):
+        if "monetdb" in (source, target):  # no MonetDB engine to replay on: the first, coarse rule stays
+            if any(t.find(exp.Literal) and any(l.is_string for l in t.find_all(exp.Literal)) or t.find(exp.Column) for t in trees):
+                return "MySQL string comparison"
+        elif any(_string_site(t, types, literals_agree=False) for t in trees):
+            return "MySQL string comparison"
+    if {source, target} == {"mysql", "mariadb"} and any(_string_site(t, types, literals_agree=True) for t in trees):
+        return "MySQL and MariaDB collations"
     if target in INTEGER_DIVISION and source not in INTEGER_DIVISION and trees[1].find(exp.Div):
         return "integer division"
     zero = {DIVIDE_BY_ZERO.get(source), DIVIDE_BY_ZERO.get(target)}
@@ -351,6 +401,8 @@ def dialect_gap(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
         not l.is_string and "." in l.name for l in trees[1].find_all(exp.Literal)
     ):
         return "decimal arithmetic"
+    if (source in DECIMAL_QUOTIENTS) != (target in DECIMAL_QUOTIENTS) and any(t.find(exp.Div, exp.Avg) for t in trees):
+        return "decimal arithmetic"  # MySQL: 1 / 3 and AVG of whole numbers are decimals with four more digits, 0.3333
     if target == "clickhouse" and (
         any(not isinstance(a, exp.Count) for a in trees[1].find_all(exp.AggFunc))
         or any(j.side for j in trees[1].find_all(exp.Join))
@@ -363,6 +415,224 @@ def dialect_gap(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
         if solver.mixed_type_comparison(left, tables) or solver.mixed_type_comparison(right, tables):
             return "SQLite type conversion"
     return None
+
+
+_NUMERIC_TYPE = re.compile(r"\s*((tiny|small|medium|big)?int(eger)?[248]?|real|float[48]?|double|dec(imal)?|numeric|number|bit|bool(ean)?|year|serial)\b")
+_BOOLEAN = (
+    exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE, exp.NullSafeEQ, exp.NullSafeNEQ, exp.In, exp.Between, exp.Is, exp.And, exp.Or,
+    exp.Not, exp.Exists, exp.Like, exp.ILike, exp.Boolean,
+)
+_ARITHMETIC = (exp.Add, exp.Sub, exp.Mul, exp.Div, exp.IntDiv, exp.Mod)
+_NUMERIC_OF_NUMERIC = (exp.Sum, exp.Avg, exp.Min, exp.Max, exp.Abs, exp.Round, exp.Floor, exp.Ceil, exp.Coalesce, exp.Neg, exp.Paren, exp.Sign, exp.Sqrt)
+_NUMERIC_TARGETS = {
+    exp.DataType.Type.INT, exp.DataType.Type.BIGINT, exp.DataType.Type.SMALLINT, exp.DataType.Type.TINYINT, exp.DataType.Type.FLOAT,
+    exp.DataType.Type.DOUBLE, exp.DataType.Type.DECIMAL, exp.DataType.Type.UINT, exp.DataType.Type.UBIGINT,
+}
+
+
+class _Types:
+    """What the source's schema text says about a column name: a number in every table that has it, or not."""
+
+    def __init__(self, schema: dict[str, dict[str, str]]):
+        declared: dict[str, list[str]] = defaultdict(list)
+        for columns in schema.values():
+            for column, kind in columns.items():
+                declared[column.lower()].append(kind)
+        self.declared = set(declared)
+        self.numeric = {c for c, kinds in declared.items() if all(_NUMERIC_TYPE.match(k.lower()) for k in kinds)}
+
+
+def _is_number(node, types: _Types, outputs: dict[str, list], depth: int = 0) -> bool:
+    """Whether ``node`` is provably a number (or NULL): never a string, whatever the tables hold."""
+
+    if depth > 12:
+        return False
+    again = lambda n: _is_number(n, types, outputs, depth + 1)  # noqa: E731
+    if isinstance(node, exp.Null) or isinstance(node, _BOOLEAN):
+        return True
+    if isinstance(node, exp.Literal):
+        return not node.is_string
+    if isinstance(node, exp.Column):
+        name = node.name.lower()
+        stands_for = [e for e in outputs.get(name, ()) if not (isinstance(e, exp.Column) and e.name.lower() == name)]
+        if not all(again(e) for e in stands_for):  # an output name of the query itself: what it stands for decides too
+            return False
+        return name in types.numeric if name in types.declared or not stands_for else True
+    if isinstance(node, exp.Count) or isinstance(node, (exp.Length, exp.Year, exp.Month, exp.Day)):
+        return True
+    if isinstance(node, _ARITHMETIC):
+        return again(node.this) and again(node.expression)
+    if isinstance(node, (*_NUMERIC_OF_NUMERIC, exp.Least, exp.Greatest)):
+        return all(again(e) for e in [node.this, *node.expressions] if isinstance(e, exp.Expression))
+    if isinstance(node, exp.Cast):
+        return node.to.this in _NUMERIC_TARGETS and again(node.this)
+    if isinstance(node, exp.Case):
+        results = [i.args["true"] for i in node.args.get("ifs", [])] + ([node.args["default"]] if node.args.get("default") is not None else [])
+        return bool(results) and all(again(r) for r in results)
+    if isinstance(node, exp.If):
+        return all(again(node.args[k]) for k in ("true", "false") if node.args.get(k) is not None)
+    if isinstance(node, exp.Subquery) and isinstance(node.this, exp.Select) and len(node.this.expressions) == 1:
+        return again(node.this.expressions[0].unalias())
+    if isinstance(node, exp.Distinct):
+        return all(again(e) for e in node.expressions)
+    return False
+
+
+def _plain_text(node) -> bool:
+    """A string literal that every collation reads alike: ASCII, no space at either end."""
+
+    return isinstance(node, exp.Literal) and node.is_string and node.name.isascii() and node.name == node.name.strip()
+
+
+def _string_site(tree, types: _Types, literals_agree: bool) -> str | None:
+    """Where ``tree`` may compare, group, order or convert a string (described), or ``None``.
+
+    Between a database that compares text without case and one that compares it exactly
+    (``literals_agree`` false), a proof carries over only when no string is ever compared: every
+    operand of a comparison, IN, BETWEEN or CASE, every key of GROUP BY, ORDER BY, DISTINCT, a window
+    or a UNION, every MIN and MAX, and every operand of arithmetic or a condition (a string would be
+    converted, and the databases convert differently) is provably a number. LIKE and the functions
+    that compare strings are always such a place. A column counts as a number only when every table of
+    the source's schema that has a column of that name declares it one; anything unknown is a string.
+
+    Between MySQL and MariaDB (``literals_agree``) only the collation differs (trailing spaces,
+    some letters), so two plain ASCII literals may meet, conversions are alike, and only a string that
+    is not such a literal makes a place unsafe.
+    """
+
+    outputs: dict[str, list] = defaultdict(list)
+    for alias in tree.find_all(exp.Alias):
+        if alias.alias:
+            outputs[alias.alias.lower()].append(alias.this)
+
+    def fine(node) -> bool:
+        if _is_row(node):  # a row value of such fields; _row_compared has the rules about rows themselves
+            return all(fine(e) for e in node.expressions)
+        return _is_number(node, types, outputs) or (literals_agree and _plain_text(node))
+
+    def keyed(select, key):
+        """An ORDER BY or GROUP BY key that is a position or an output name stands for that output."""
+
+        if isinstance(key, exp.Literal) and not key.is_string and key.name.isdigit() and isinstance(select, exp.Select):
+            index = int(key.name) - 1
+            return select.expressions[index].unalias() if 0 <= index < len(select.expressions) else key
+        return key
+
+    for node in tree.walk():
+        if isinstance(node, (exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE, exp.NullSafeEQ, exp.NullSafeNEQ)):
+            sides = [node.this, node.expression]
+        elif isinstance(node, exp.In):
+            query = node.args.get("query")
+            sides = [node.this, *node.expressions, *([query] if query is not None else [])]
+            if node.args.get("field") is not None or node.args.get("unnest") is not None:
+                return "IN"
+        elif isinstance(node, exp.Between):
+            sides = [node.this, node.args["low"], node.args["high"]]
+        elif isinstance(node, (exp.Like, exp.ILike, exp.RegexpLike, exp.RegexpILike, exp.SimilarTo, exp.Glob)):
+            if literals_agree and fine(node.this) and fine(node.expression):
+                continue
+            return "LIKE"
+        elif isinstance(node, exp.Case) and node.args.get("this") is not None:
+            sides = [node.this, *[i.this for i in node.args.get("ifs", [])]]
+        elif isinstance(node, exp.Select) and node.args.get("distinct") is not None:
+            sides = [e.unalias() for e in node.expressions]
+        elif isinstance(node, exp.Group):
+            sides = [keyed(node.parent, k) for k in node.expressions]
+        elif isinstance(node, exp.Order):
+            sides = [keyed(node.parent, o.this) for o in node.expressions]
+        elif isinstance(node, (exp.Min, exp.Max)):
+            sides = [node.this]
+        elif isinstance(node, exp.Distinct):
+            sides = list(node.expressions)
+        elif isinstance(node, exp.SetOperation):
+            if node.args.get("distinct") is False and isinstance(node, exp.Union):
+                continue
+            sides = [e.unalias() for side in (node.this, node.expression) for e in (side.selects if hasattr(side, "selects") else [])] or [node]
+        elif isinstance(node, exp.Join) and (node.args.get("using") or node.args.get("method") == "NATURAL" or node.kind == "NATURAL"):
+            sides = list(node.args.get("using") or [node])
+            sides = [exp.column(u.name) if isinstance(u, exp.Identifier) else u for u in sides]
+        elif isinstance(node, exp.Window):
+            sides = list(node.args.get("partition_by") or [])
+        elif isinstance(node, (exp.Nullif, exp.Greatest, exp.Least, exp.StrPosition)) or (
+            isinstance(node, exp.Anonymous) and node.name.lower() in STRING_COMPARERS
+        ):
+            sides = [e for e in [node.args.get("this"), node.args.get("expression"), node.args.get("substr"), *node.expressions] if isinstance(e, exp.Expression)]
+        elif not literals_agree and isinstance(node, _ARITHMETIC):
+            sides = [node.this, node.expression]
+        elif not literals_agree and isinstance(node, (exp.Sum, exp.Avg)):
+            sides = [node.this]
+        elif not literals_agree and isinstance(node, exp.Cast) and node.to.this in _NUMERIC_TARGETS:
+            sides = [node.this]
+        elif not literals_agree and isinstance(node, (exp.And, exp.Or, exp.Not, exp.Where, exp.Having)):
+            sides = [e for e in (node.this, node.args.get("expression")) if isinstance(e, exp.Expression)]
+        elif not literals_agree and isinstance(node, exp.If):
+            sides = [node.this]
+        else:
+            continue
+        for side in sides:
+            if isinstance(side, exp.Star) or (isinstance(side, exp.Column) and isinstance(side.this, exp.Star)) or not fine(side):
+                return f"{type(node).__name__.lower()} of {side.sql()[:40]}"
+    return None
+
+
+def _is_row(node) -> bool:
+    return isinstance(node, (exp.Tuple, exp.Struct)) or (isinstance(node, exp.Anonymous) and node.name.upper() == "ROW")
+
+
+def _row_compared(tree, types: _Types, strict: bool) -> bool:
+    """Whether a row value is compared in a way the databases answer differently.
+
+    ``ROW(1, NULL) IN (...)``, ``(a, b) = (1, 2)``: MariaDB compares the fields of an IN list of rows
+    in one common type (``'b'`` and ``'a'`` are both 0 beside a number), and DuckDB compares a NULL
+    inside a nested row as a value where MySQL answers NULL. So a compared row value is a gap when a
+    field is not provably a number (or NULL, or another such row), and always (``strict``) where one of
+    the databases has its own struct comparison or cannot be replayed.
+    """
+
+    row = _is_row
+
+    def numbers(node) -> bool:
+        return all(numbers(e) if row(e) else _is_number(e, types, {}) for e in node.expressions)
+
+    for node in tree.walk():
+        compared = row(node) and (isinstance(node.parent, ROW_COMPARISONS) or (isinstance(node, exp.Anonymous) and not row(node.parent)))
+        if compared and (strict or not numbers(node)):
+            return True
+    return False
+
+
+def _epoch_outside(sql: str, dbms: str) -> bool:
+    """Whether ``sql`` converts to or from Unix time anything but a literal inside the range both engines keep."""
+
+    tokens = _tokens(sql, dbms) or []
+    for index, (_, text) in enumerate(tokens):
+        if text == "epoch" and tokens[index + 1:index + 2] == [("FROM", "from")]:
+            return True  # EXTRACT(EPOCH FROM ...)
+        if text not in EPOCH_CALLS or tokens[index + 1:index + 2] != [("L_PAREN", "(")]:
+            continue
+        depth, inside = 0, []
+        for kind, value in tokens[index + 1:]:
+            depth += (kind == "L_PAREN") - (kind == "R_PAREN")
+            if depth == 0:
+                break
+            inside.append((kind, value))
+        first = inside[1:2]  # after the opening parenthesis
+        if text in ("unix_timestamp", "tounixtimestamp", "epoch", "unixepoch"):
+            year = re.match(r"\s*(\d{4})-\d{1,2}-\d{1,2}", first[0][1]) if len(inside) == 2 and "STRING" in first[0][0] else None
+            if year is None or int(year.group(1)) not in EPOCH_YEARS:
+                return True
+        elif not (first and first[0][0] == "NUMBER" and first[0][1].isdigit() and 86400 <= int(first[0][1]) < 2**31 - 86400 and (len(inside) == 2 or inside[2][0] == "COMMA")):
+            return True
+    return False
+
+
+@functools.lru_cache(maxsize=1)
+def contradicted() -> dict[str, dict]:
+    """Pairs whose proof a native replay contradicted (``native_contradictions.json``): never counted as proved."""
+
+    if not CONTRADICTIONS.exists():
+        return {}
+    return json.loads(CONTRADICTIONS.read_text(encoding="utf-8"))
 
 
 def _texty(declared: str) -> bool:
@@ -419,6 +689,30 @@ def _tokens(sql: str, dbms: str) -> list[tuple[str, str]] | None:
     return [(t.token_type.name, t.text if "STRING" in t.token_type.name else t.text.lower()) for t in tokens]
 
 
+def volatile(sql: str, dbms: str) -> str | None:
+    """A call in ``sql`` whose answer is not a function of the tables (named), or ``None``.
+
+    The provers read a function they do not know as a function of its arguments, which is wrong for
+    the clock, random values, sequences and the session: ``nextval('q') = nextval('q')`` is never true.
+    sqlglot keeps most of these as plain calls outside BigQuery, so the harness refuses them by name,
+    from the tokens of each query in its own dialect.
+    """
+
+    tokens = _tokens(sql, dbms)
+    for index, (kind, text) in enumerate(tokens or ()):
+        called = tokens[index + 1:index + 2] == [("L_PAREN", "(")]
+        if "STRING" in kind:
+            if text.strip().lower() in VOLATILE_TEXTS:
+                return f"'{text.strip().lower()}'"
+        elif kind in ("PARAMETER", "SESSION_PARAMETER") and SQLGLOT[dbms] == "mysql":
+            return "a variable"
+        elif text in VOLATILE_WORDS or (called and text in VOLATILE_CALLS):
+            return text
+        elif called and text in VOLATILE_NO_ARGUMENT and tokens[index + 2:index + 3] == [("R_PAREN", ")")]:
+            return f"{text}()"
+    return None
+
+
 def same_statement(pair: Pair) -> bool:
     """Whether the translation is its source, token for token, and one run of it says what another would.
 
@@ -444,7 +738,7 @@ def same_statement(pair: Pair) -> bool:
     for index, (kind, text) in enumerate(left):
         if kind in ("PARAMETER", "SESSION_PARAMETER", "PLACEHOLDER") or text in RERUN_DEPENDENT:
             return False
-        if text == "unix_timestamp" and left[index + 1:index + 3] == [("L_PAREN", "("), ("R_PAREN", ")")]:
+        if text in VOLATILE_NO_ARGUMENT and left[index + 1:index + 3] == [("L_PAREN", "("), ("R_PAREN", ")")]:
             return False
         if "STRING" in kind and text != text.rstrip():
             return False
@@ -567,6 +861,37 @@ def check_proof(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
     return None
 
 
+def native_replay(pair: Pair, schema: dict[str, dict[str, str]]) -> dict | None:
+    """The pair run on its two databases (``dlbench_native``), or ``None`` when ``DLBENCH_NATIVE`` is not set."""
+
+    import dlbench_native as native
+
+    if native.configured() is None:
+        return None
+    source, target = parse(pair.source_query, pair.source_dbms), parse(pair.target_query, pair.target_dbms)
+    try:
+        source, target = _plain(source, {}), _plain(target, pair.renames, schema)
+    except Exception:
+        return {"route": f"{pair.source_dbms}>{pair.target_dbms}", "compared": 0, "difference": None, "skipped": "not written"}
+    values: list = []
+    for literal in [*source.find_all(exp.Literal), *target.find_all(exp.Literal)]:
+        if literal.is_string:
+            values.append(literal.name)
+        else:
+            try:
+                number = float(literal.name)
+                values.append(int(number) if number.is_integer() else number)
+            except (ValueError, OverflowError):
+                pass
+    top = source
+    while isinstance(top, exp.Subquery):
+        top = top.this
+    return native.replay(
+        pair.source_dbms, pair.target_dbms, source, target, schema, SQLGLOT,
+        ordered=top.args.get("order") is not None, literals=list(dict.fromkeys(values))[:20],
+    )
+
+
 def _create(table: str, columns: dict[str, str], typed) -> str:
     definitions = ", ".join(f'"{column}" {typed(declared)}' for column, declared in columns.items())
     return f'CREATE TABLE "{table}" ({definitions})'
@@ -597,6 +922,10 @@ def decide(pair: Pair) -> dict:
             detail = "not written in the source dialect"
         elif (gap := dialect_gap(pair, left, right, schema)) is not None:
             outcome, detail = "unknown", f"dialect gap: {gap}"
+        elif (call := volatile(pair.source_query, pair.source_dbms) or volatile(pair.target_query, pair.target_dbms)) is not None:
+            outcome, detail = "unknown", f"volatile: {call}"
+        elif pair.id in contradicted():
+            outcome, detail = "unknown", f"contradicted natively: {contradicted()[pair.id]['route']}"
         elif prove(left, right, schema, SQLGLOT[pair.source_dbms]):
             outcome = "proven"
             difference = check_proof(pair, left, right, schema)
@@ -608,7 +937,11 @@ def decide(pair: Pair) -> dict:
             outcome = "unknown"
     else:
         detail = "parse: " + ", ".join(k for k, v in parsed.items() if not v)
+    replayed = native_replay(pair, schema) if outcome == "proven" and not wrong else None
+    if replayed is not None and replayed["difference"]:
+        wrong, detail = True, replayed["difference"]
     return {
+        **({"replay": {k: v for k, v in replayed.items() if k != "difference"}} if replayed is not None else {}),
         "id": pair.id, "dataset": pair.dataset, "target": pair.target_dbms, "source": pair.source_dbms,
         "label": pair.label, "parsed": all(parsed.values()), **{f"parsed_{k}": v for k, v in parsed.items()},
         "outcome": outcome, "detail": detail, "wrong": wrong, "held_out": pair.held_out,
@@ -667,6 +1000,24 @@ def results_rows(results: list[dict]) -> dict[str, dict]:
     }
 
 
+def record_contradictions(results: list[dict]) -> int:
+    """Add the proofs a native replay contradicted to ``native_contradictions.json`` (ids, route and engine versions only)."""
+
+    import dlbench_native as native
+    from bench_common import today
+
+    found = [r for r in results if r["wrong"] and r.get("replay") and r["replay"]["compared"]]
+    if not found:
+        return 0
+    listed = dict(contradicted())
+    for r in found:
+        source, target = r["replay"]["route"].split(">")
+        listed[r["id"]] = {"route": r["replay"]["route"], "engines": {d: native.version(d) for d in (source, target)}, "recorded": today()}
+    CONTRADICTIONS.write_text(json.dumps(dict(sorted(listed.items())), indent=1) + "\n", encoding="utf-8")
+    contradicted.cache_clear()
+    return len(found)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--data", help=f"a DLBench checkout (commit {SOURCE_COMMIT[:12]}) to run all pairs instead of the pinned subset")
@@ -676,6 +1027,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--show", default="", help="comma-separated outcomes to list (proven, unknown, unsupported, wrong)")
     parser.add_argument("--json", help="write every outcome to this file")
     parser.add_argument("--write-results", action="store_true", help="update benchmarks/results/dlbench.json (pinned subset, --split all)")
+    parser.add_argument("--record-contradictions", action="store_true", help="with DLBENCH_NATIVE set: add every proof the native replay contradicts to tests/fixtures/dlbench/native_contradictions.json, so it is never counted again")
     args = parser.parse_args(argv)
     from bench_common import quiet, write_results
 
@@ -695,10 +1047,13 @@ def main(argv: list[str] | None = None) -> int:
     show = {s.strip() for s in args.show.split(",") if s.strip()}
     for pair, result in zip(pairs, results):
         if result["outcome"] in show or (result["wrong"] and "wrong" in show) or result["wrong"]:
-            print(f"\n{result['id']} [{result['label']}] {result['outcome']} {result['detail'][:200]}{' WRONG' if result['wrong'] else ''}")
-            print(f"  S: {pair.source_query}\n  T: {pair.target_query}")
+            print(f"\n{result['id']} [{result['label']}] {result['outcome']} {'(held out)' if pair.held_out else result['detail'][:200]}{' WRONG' if result['wrong'] else ''}")
+            if not pair.held_out:  # a held-out pair is known by its id and verdict only
+                print(f"  S: {pair.source_query}\n  T: {pair.target_query}")
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=1), encoding="utf-8")
+    if args.record_contradictions:
+        print(f"recorded {record_contradictions(results)} contradicted proofs in {CONTRADICTIONS.name}")
     if args.write_results:
         if args.data or args.split != "all":
             parser.error("--write-results scores the pinned subset with --split all")
