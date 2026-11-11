@@ -115,6 +115,8 @@ from .having_count_rules import rewrite_count_tests
 from .semijoin_shapes import rewrite_semijoin_shapes
 from .grouped_self_membership import read_grouped_self_membership
 from .disjoint_union import separate_disjoint_unions
+from .keyed_union import separate_keyed_unions
+from .self_key_membership import read_self_key_membership
 from .one_row_tails import drop_one_row_tail
 from .string_spelling_rules import bigquery_string_column, string_spelling_rules
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
@@ -4887,6 +4889,8 @@ def normalize(
     tree = _bigquery_sugar(tree)
     tree = using_to_on_unqualified(_using_to_on(tree, schema))
     tree = drop_subsumed_like(tree)
+    if shapes:
+        tree = read_self_key_membership(tree, schema, keys, not_null, types)  # pre-pass: a key looked up through its own table again
     tree = _semi_joins_to_exists(tree)
     tree = exists_over_aggregate(tree)
     tree = fold_grouped_count_cases(tree, not_null)
@@ -4897,6 +4901,7 @@ def normalize(
     tree = _in_over_union(tree)
     if shapes:
         tree = separate_disjoint_unions(tree)
+        tree = separate_keyed_unions(tree, keys, not_null)
     tree = expand_grouping_sets(tree)
     for select in list(tree.find_all(exp.Select))[::-1]:
         replacement = collapse_grouping_expansion(select) or collapse_counted_intersection(select)
