@@ -12,6 +12,8 @@ interval, the operator spelling is rewritten to the function. The provers read e
 function of its own, so the two never matched. Read for whole-day units only (``DAY``, ``WEEK``, ``MONTH``,
 ``QUARTER``, ``YEAR``; a shorter unit leaves midnight) with a whole number of them, and a date that is a column
 declared ``DATE`` or a cast to ``DATE``. Outside a comparison the two differ in type and nothing is rewritten.
+The bounds of ``x BETWEEN a AND b`` are compared with ``x`` the same way (``x >= a AND x <= b``), so a bound written
+with the operator is read like a ``<=`` against it; an optimizer writes a ``BETWEEN`` as the two comparisons.
 
 **2. The same whole number added to both sides.**
 
@@ -99,6 +101,15 @@ def typed_comparison_rules(tree: exp.Expression, types: dict | None, dialect: st
         return tree
     if tree.find(exp.With, exp.Pivot) is not None or any(alias.args.get("columns") for alias in tree.find_all(exp.TableAlias)):
         return tree
+    for node in list(tree.find_all(exp.Between)):
+        select = node.find_ancestor(exp.Select)
+        if select is None or node.args.get("symmetric"):
+            continue
+        subject = _date_operand(node.this, select, types)
+        for key in ("low", "high"):
+            bound = _date_operand(node.args[key], select, types)
+            if subject is not None and bound == "spelled" and subject != "spelled":
+                node.set(key, _as_function(_unwrap(node.args[key])))
     for node in list(tree.find_all(*_COMPARISONS)):
         select = node.find_ancestor(exp.Select)
         if select is None or type(node) not in _COMPARISONS:
