@@ -5027,6 +5027,10 @@ def normalize(
             if replacement is not None:
                 subquery.replace(replacement)
     tree = expose_set_identity(tree, schema)
+    if shapes:
+        from .equality_orientation import orient_column_equalities
+
+        tree = orient_column_equalities(tree)  # post-pass: a.x = b.y and b.y = a.x read alike in a relation matched by its text
     tree = spell_as_printed(tree, dialect)  # post-pass: the tree must match the text printed from it
     return faithful_sql(parenthesize_is_operands(_parenthesize_boolean(_parenthesize_set_operations(_constant_keys(canonical_empty(tree))))), dialect)
 
