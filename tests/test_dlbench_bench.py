@@ -106,6 +106,92 @@ def test_a_local_name_is_not_read_as_a_respelled_table():
     assert bench.decide(pair)["outcome"] != "proven"
 
 
+DATED = ["Table: `t`\nColumns:\n(`a`, integer)\n(`b`, text)\n(`d`, date)\n"]
+
+
+@pytest.mark.parametrize("target_dbms, source, target", [
+    # DuckDB takes the format first too; sqlglot reads the first argument as the value
+    ("duckdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE strftime('%Y', d) = '2016'"),
+    ("duckdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE STRFTIME(d, '%Y') = '2016'"),
+    ("duckdb", "SELECT STRFTIME('%Y-%m-%d %H:%M:%S', d), STRFTIME('on %d', d) FROM t", "SELECT strftime('%Y-%m-%d %H:%M:%S', d), strftime(d, 'on %d') FROM t"),
+    # MonetDB: where a year without leading zeros cannot show
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') = '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) <> '2016'", "SELECT COUNT(*) FROM t WHERE timestamp_to_str(d, '%Y') <> '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y-%m', d) = '2014-02'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y-%m') = '2014-02'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) IN ('2016', '2017')", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') IN ('2016', '2017')"),
+    ("monetdb", "SELECT a FROM t WHERE CAST(STRFTIME('%Y', d) AS INT) = 2000", "SELECT a FROM t WHERE CAST(sys.timestamp_to_str(d, '%Y') AS INT) = 2000"),
+    ("monetdb", "SELECT STRFTIME('%m', d), a FROM t WHERE STRFTIME('%d', d) < '15'", "SELECT sys.timestamp_to_str(d, '%m'), a FROM t WHERE sys.timestamp_to_str(d, '%d') < '15'"),  # no year
+])
+def test_date_formats_are_read_back_as_sqlite(target_dbms, source, target):
+    pair = _pair("sqlite", target_dbms, source, target, DATED)
+    left, right = bench.as_source(pair)
+    assert left == right
+    result = bench.decide(pair)
+    assert (result["outcome"], result["wrong"]) == ("proven", False)
+
+
+@pytest.mark.parametrize("target_dbms, source, target", [
+    # C's strftime writes the year 99 as 99 and SQLite as 0099: '0099' < '1960' but '99' > '1960'
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) < '1960'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') < '1960'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) BETWEEN '1960' AND '1970'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') BETWEEN '1960' AND '1970'"),
+    ("monetdb", "SELECT STRFTIME('%Y', d) FROM t", "SELECT sys.timestamp_to_str(d, '%Y') FROM t"),  # the text itself is the answer
+    ("monetdb", "SELECT a FROM t ORDER BY STRFTIME('%Y', d), a", "SELECT a FROM t ORDER BY sys.timestamp_to_str(d, '%Y'), a"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '99'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') = '99'"),  # true in MonetDB for the year 99
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '0099'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') = '0099'"),  # true in SQLite only
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = b", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') = b"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) IN ('2016', '16')", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') IN ('2016', '16')"),
+    ("monetdb", "SELECT a FROM t WHERE CAST(STRFTIME('%Y-%m', d) AS INT) = 2000", "SELECT a FROM t WHERE CAST(sys.timestamp_to_str(d, '%Y-%m') AS INT) = 2000"),
+    ("monetdb", "SELECT a FROM t WHERE CAST(STRFTIME('%Y', d) AS TEXT) = b", "SELECT a FROM t WHERE CAST(sys.timestamp_to_str(d, '%Y') AS TEXT) = b"),
+    # specifiers that are not known to mean the same
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%j', d) = '001'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%j') = '001'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%y', d) = '16'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%y') = '16'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%s', d) = '0'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%s') = '0'"),
+    ("duckdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%j', d) = '001'", "SELECT COUNT(*) FROM t WHERE strftime(d, '%j') = '001'"),
+    ("duckdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%f', d) = '00.000'", "SELECT COUNT(*) FROM t WHERE strftime('%f', d) = '00.000'"),
+    ("duckdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%w', d) = '0'", "SELECT COUNT(*) FROM t WHERE strftime(d, '%w') = '0'"),
+    # the order of the arguments is a guess, or not MonetDB's
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str('%Y', d) = '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', '%m') = '2016'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str('%m', '%Y') = '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME(b, d) = '2016'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, b) = '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE other.timestamp_to_str(d, '%Y') = '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y', 'x') = '2016'"),
+])
+def test_other_date_formats_are_not_read_back(target_dbms, source, target):
+    pair = _pair("sqlite", target_dbms, source, target, DATED)
+    assert bench.decide(pair)["outcome"] != "proven"
+
+
+def test_an_ambiguous_duckdb_format_is_left_as_sqlglot_read_it():
+    tree = bench._date_formats_as_sqlite(bench.parse("SELECT strftime('%Y', '%m')", "duckdb"), "duckdb")
+    assert tree.sql(dialect="duckdb") == bench.parse("SELECT strftime('%Y', '%m')", "duckdb").sql(dialect="duckdb")
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) < 1997",  # always false in SQLite: text sorts above every number
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = 1997",
+    "SELECT COUNT(*) FROM t WHERE 1997 >= STRFTIME('%Y', d)",
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) BETWEEN 1990 AND 1997",
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%m', d) IN (1, 2)",
+    "SELECT COUNT(*) FROM t WHERE SUBSTR(b, 1, 4) > 2000",
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) > a + 1",
+])
+def test_sqlite_text_against_a_number_is_not_proved(sql):
+    assert bench._text_against_number(sql)
+    for target in ("duckdb", "postgresql", "clickhouse", "monetdb"):
+        result = bench.decide(_pair("sqlite", target, sql, sql, DATED))
+        assert result["outcome"] == "unknown" and result["detail"].startswith("dialect gap: "), target
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) < '1997'",
+    "SELECT COUNT(*) FROM t WHERE CAST(STRFTIME('%Y', d) AS INT) < 1997",
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) - a > 5",  # the difference is a number
+    "SELECT COUNT(*) FROM t WHERE a < 1997 AND b = 'x'",
+])
+def test_other_sqlite_comparisons_are_not_text_against_a_number(sql):
+    assert not bench._text_against_number(sql)
+
+
 def test_replay_data_keeps_whole_numbers_in_integer_columns():
     import random
 

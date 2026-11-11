@@ -340,6 +340,113 @@ def _plain(tree, renames: dict[str, str], schema: dict[str, dict[str, str]] | No
     return tree
 
 
+# strftime specifiers that mean the same in SQLite, DuckDB and C (which MonetDB's timestamp_to_str calls):
+# four-digit year, two-digit month, day, hour (00-23), minute and second. Everything else is declined:
+# %J and %f are SQLite's own, %s, %j, %w, %u, %e, %p and the rest differ or were not confirmed.
+_SHARED_FORMAT = re.compile(r"(?:[^%]|%[YmdHMS])*")
+
+
+def _format_of(arguments: list) -> tuple[object, object] | None:
+    """``(value, format)`` when exactly one of two arguments is a string literal with a shared ``%`` specifier."""
+
+    if len(arguments) != 2:
+        return None
+    formats = [a for a in arguments if isinstance(a, exp.Literal) and a.is_string and "%" in a.name]
+    if len(formats) != 1 or not _SHARED_FORMAT.fullmatch(formats[0].name):
+        return None
+    value = next(a for a in arguments if a is not formats[0])
+    if isinstance(value, exp.Literal) and value.is_string:
+        return None  # two string literals: which one is the format is a guess
+    return value, formats[0]
+
+
+_WHOLE_TARGETS = {exp.DataType.Type.INT, exp.DataType.Type.BIGINT, exp.DataType.Type.SMALLINT, exp.DataType.Type.TINYINT}
+
+
+def _year_padding_cannot_matter(node, form: str) -> bool:
+    """Whether a year written without leading zeros would change nothing where ``node`` stands.
+
+    MonetDB formats through C's ``strftime``, which writes the year 99 as ``99`` where SQLite writes
+    ``0099`` (glibc; checked on this C library, MonetDB itself was not available). The two agree from
+    the year 1000 on. Before it, the text differs, so the call is read back only where that cannot
+    show: the format has no ``%Y``; or the format is ``%Y`` alone and the text is cast to a whole
+    number at once (``0099`` and ``99`` are both 99); or it is tested for equality (``=``, ``<>``,
+    ``IN``) against string literals that are themselves a possible output with a four-digit year not
+    starting with 0, which neither spelling of an early year can equal. An ordering comparison is
+    refused: ``'0099' < '1960'`` and ``'99' > '1960'``.
+    """
+
+    if "%Y" not in form:
+        return True
+    parent = node.parent
+    while isinstance(parent, exp.Paren):
+        node, parent = parent, parent.parent
+    if isinstance(parent, exp.Cast):
+        return form == "%Y" and parent.to.this in _WHOLE_TARGETS
+    output = re.compile("".join(
+        r"[1-9]\d{3}" if piece == "%Y" else r"\d{2}" if piece.startswith("%") else re.escape(piece) for piece in re.findall(r"%.|[^%]+", form)
+    ))
+
+    def possible(literal) -> bool:
+        return isinstance(literal, exp.Literal) and literal.is_string and output.fullmatch(literal.name) is not None
+
+    if isinstance(parent, (exp.EQ, exp.NEQ)):
+        return possible(parent.expression if parent.this is node else parent.this)
+    if isinstance(parent, exp.In) and parent.this is node and parent.args.get("query") is None and parent.args.get("field") is None:
+        return bool(parent.expressions) and all(possible(e) for e in parent.expressions)
+    return False
+
+
+def _unshared_date_format(tree) -> bool:
+    """Whether a date-formatting call in a DuckDB or MonetDB translation uses a specifier outside the shared ones."""
+
+    for node in tree.find_all(exp.TimeToStr):
+        literals = [a for a in (node.this, node.args.get("format")) if isinstance(a, exp.Literal) and a.is_string and "%" in a.name]
+        if any(not _SHARED_FORMAT.fullmatch(a.name) for a in literals) or (not literals and node.args.get("format") is not None):
+            return True
+    for node in tree.find_all(exp.Anonymous):
+        if node.name.lower() in ("timestamp_to_str", "date_to_str", "time_to_str", "strftime"):
+            if any(isinstance(a, exp.Literal) and a.is_string and "%" in a.name and not _SHARED_FORMAT.fullmatch(a.name) for a in node.expressions):
+                return True
+    return False
+
+
+def _date_formats_as_sqlite(tree, target_dbms: str):
+    """Two date-formatting calls sqlglot leaves as they are, read as SQLite's ``STRFTIME(format, value)``.
+
+    * DuckDB takes ``strftime(value, format)`` and also ``strftime(format, value)``; sqlglot reads the
+      first argument as the value either way, so the second spelling comes out with its arguments
+      swapped.
+    * MonetDB's ``sys.timestamp_to_str(value, format)`` is not a function sqlglot knows. It is read
+      back only where the unpadded year of C's ``strftime`` cannot matter (``_year_padding_cannot_matter``).
+
+    Only for a format made of ``%Y %m %d %H %M %S`` and plain text, and only when exactly one argument
+    is a string literal holding a ``%`` specifier, so the order is not a guess.
+    """
+
+    if target_dbms == "duckdb":
+        for node in list(tree.find_all(exp.TimeToStr)):
+            read = _format_of([node.this, node.args.get("format")]) if not node.args.get("culture") and not node.args.get("zone") else None
+            if read is not None and read[1] is node.this:  # format first: sqlglot took it for the value
+                value, form = read[0].copy(), read[1].copy()
+                node.set("this", value)
+                node.set("format", form)
+    elif target_dbms == "monetdb":
+        for node in list(tree.find_all(exp.Anonymous)):
+            if node.name.lower() != "timestamp_to_str":
+                continue
+            read = _format_of(list(node.expressions))
+            if read is None or read[1] is not node.expressions[1]:
+                continue  # MonetDB takes the value first
+            outer = node.parent if isinstance(node.parent, exp.Dot) and node.parent.expression is node and node.parent.name.lower() == "timestamp_to_str" and node.parent.this.name.lower() == "sys" else node
+            if isinstance(node.parent, exp.Dot) and outer is node:
+                continue  # qualified by something other than sys
+            if not _year_padding_cannot_matter(outer, read[1].name):
+                continue
+            outer.replace(exp.TimeToStr(this=read[0].copy(), format=read[1].copy()))
+    return tree
+
+
 def as_source(pair: Pair) -> tuple[str | None, str | None]:
     """Both queries in the source's dialect, names normalised; ``None`` where a query does not parse."""
 
@@ -347,6 +454,8 @@ def as_source(pair: Pair) -> tuple[str | None, str | None]:
     source, target = parse(pair.source_query, pair.source_dbms), parse(pair.target_query, pair.target_dbms)
     try:
         left = _plain(source, {}).sql(dialect=dialect) if source is not None else None
+        if target is not None and pair.source_dbms == "sqlite":
+            target = _date_formats_as_sqlite(target, pair.target_dbms)
         right = _plain(target, pair.renames, schema_of(pair)).sql(dialect=dialect) if target is not None else None
     except Exception:  # a construct sqlglot cannot write in the source dialect
         return None, None
@@ -408,6 +517,10 @@ def dialect_gap(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
         or any(j.side for j in trees[1].find_all(exp.Join))
     ):
         return "ClickHouse defaults"
+    if source == "sqlite" and (_text_against_number(left) or _text_against_number(right)):
+        return "SQLite text against a number"
+    if source == "sqlite" and target in ("duckdb", "monetdb") and _unshared_date_format(trees[1]):
+        return "date format"  # only %Y %m %d %H %M %S are known to mean the same as in SQLite
     if source == "sqlite":
         import llm_sql_solver_bench as solver
 
@@ -633,6 +746,45 @@ def contradicted() -> dict[str, dict]:
     if not CONTRADICTIONS.exists():
         return {}
     return json.loads(CONTRADICTIONS.read_text(encoding="utf-8"))
+
+
+_TEXT_VALUED = (exp.TimeToStr, exp.Substring, exp.Trim, exp.Upper, exp.Lower, exp.DPipe, exp.Concat, exp.TsOrDsToDate, exp.Date, exp.Replace)
+_TEXT_NAMES = {"strftime", "date", "datetime", "time", "substr", "substring", "replace", "ltrim", "rtrim", "printf", "format", "hex"}
+
+
+def _text_against_number(sql: str) -> bool:
+    """Whether a SQLite query compares the text a function returns with a bare number.
+
+    SQLite does not convert here: ``STRFTIME('%Y', d) < 1997`` is false for every row, because any
+    text sorts above any number, and ``STRFTIME('%Y', d) = 1997`` is false too. The other databases
+    convert one side, so a translation that keeps the comparison means something else, and the
+    provers do not model SQLite's rule. No proof is taken for such a query, whatever its label says.
+    """
+
+    tree = parse(sql, "sqlite")
+    if tree is None:
+        return False
+
+    def text(node) -> bool:
+        node = node.unnest()
+        return isinstance(node, _TEXT_VALUED) or (isinstance(node, exp.Anonymous) and node.name.lower() in _TEXT_NAMES)
+
+    def number(node) -> bool:
+        node = node.unnest()
+        return (isinstance(node, exp.Literal) and not node.is_string) or isinstance(node, (exp.Neg, exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Count, exp.Sum, exp.Avg))
+
+    for node in tree.walk():
+        if isinstance(node, (exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE)):
+            sides = [(node.this, node.expression)]
+        elif isinstance(node, exp.Between):
+            sides = [(node.this, node.args["low"]), (node.this, node.args["high"])]
+        elif isinstance(node, exp.In):
+            sides = [(node.this, e) for e in node.expressions]
+        else:
+            continue
+        if any((text(a) and number(b)) or (number(a) and text(b)) for a, b in sides):
+            return True
+    return False
 
 
 def _texty(declared: str) -> bool:
