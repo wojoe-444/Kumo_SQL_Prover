@@ -311,6 +311,7 @@ class _Kinds:
     def _build(self) -> None:
         for _ in range(4):  # a kind found late flows to the expressions built on it
             self._unqualified()
+            self._same_table()
             self._unqualified_derived()
             self._projections()
             self._comparisons()
@@ -323,6 +324,25 @@ class _Kinds:
             if "" in qualifiers:
                 for qualifier in qualifiers - {""}:
                     self.union(("", name), (qualifier, name))
+
+    def _same_table(self) -> None:
+        """Two names for one table read the same column: ``a.n`` and ``b.n`` of ``t AS a JOIN t AS b`` have one type.
+
+        They can also be one row (a key joins a row to itself), so ``a.n = 'x' AND b.n = 'y'`` is a column compared with
+        two strings as much as ``n = 'x' AND n = 'y'`` is.
+        """
+
+        for name, qualifiers in self.names.items():
+            first: dict[str, str] = {}
+            for qualifier in sorted(qualifiers - {""}):
+                tables = self.tables.get(qualifier)
+                if qualifier in self.derived or not tables or len(tables) != 1:
+                    continue
+                (table,) = tables
+                if table in first:
+                    self.union((first[table], name), (qualifier, name))
+                else:
+                    first[table] = qualifier
 
     def _exposed(self, select: exp.Select) -> list[tuple[str, set[str]]] | None:
         """``(alias, column names)`` of every source of ``select``; None when some source's columns are not known."""
