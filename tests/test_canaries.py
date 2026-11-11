@@ -1,5 +1,5 @@
 """Canaries: a handful (10) of cases of each benchmark family, run in seconds, so a change that breaks the wiring of a family is
-caught by the pull-request gate although the family's floor runs only nightly.
+caught by the pull-request gate although the family's floor runs only in the periodic full run.
 
 A canary asserts *zero wrong answers* on its cases and that the family proves something. It never claims the family's score
 (the floors in the ``eval`` test files do that), and it passes on a subset. Add a family by adding a line to ``FAMILIES``.
