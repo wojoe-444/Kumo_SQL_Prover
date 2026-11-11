@@ -317,6 +317,7 @@ def order_dependence(sql: str, dialect: str = "bigquery") -> str | None:
     import sqlglot
     from sqlglot import exp
 
+    from . import volatile_calls
     from .smt_equivalence import _NONDETERMINISTIC_NAMES, _NONDETERMINISTIC_TYPES
 
     tree = sqlglot.parse_one(sql, read=dialect)
@@ -331,6 +332,8 @@ def order_dependence(sql: str, dialect: str = "bigquery") -> str | None:
             isinstance(node, exp.Anonymous) and (node.name or "").upper() in _NONDETERMINISTIC_NAMES
         ):
             return f"nondeterministic: {node.sql(dialect='bigquery')}"
+        if volatile_calls.kind(node, dialect) is not None:
+            return volatile_calls.reason(node, dialect)
     return None
 
 
