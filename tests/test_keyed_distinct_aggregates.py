@@ -55,6 +55,35 @@ def test_the_rest_of_the_key_is_grouped():
     assert rewritten("SELECT a, COUNT(DISTINCT b) FROM t WHERE a IN (SELECT e FROM u) GROUP BY a") == "SELECT a, COUNT(b) FROM t WHERE a IN (SELECT e FROM u) GROUP BY a"
 
 
+def test_a_filtering_derived_table_shows_rows_of_its_table():
+    assert rewritten("SELECT k, COUNT(DISTINCT v) FROM (SELECT x.a AS k, x.b AS v, x.c FROM t AS x WHERE x.c > 0) AS s GROUP BY k") == (
+        "SELECT k, COUNT(v) FROM (SELECT x.a AS k, x.b AS v, x.c FROM t AS x WHERE x.c > 0) AS s GROUP BY k"
+    )
+    assert rewritten("SELECT s.a, COUNT(DISTINCT s.b) FROM (SELECT a, b FROM t WHERE a IN (SELECT e FROM u)) AS s GROUP BY s.a") == (
+        "SELECT s.a, COUNT(s.b) FROM (SELECT a, b FROM t WHERE a IN (SELECT e FROM u)) AS s GROUP BY s.a"
+    )
+    for sql in (
+        "SELECT s.a, COUNT(DISTINCT s.b) FROM (SELECT DISTINCT a, b FROM t) AS s JOIN u ON u.a = s.a GROUP BY s.a",  # joined
+        "SELECT s.a, COUNT(DISTINCT s.b) FROM (SELECT a + 0 AS a, b FROM t) AS s GROUP BY s.a",  # two values of a may share a + 0
+        "SELECT s.a, COUNT(DISTINCT s.b) FROM (SELECT x.a, y.b FROM t AS x JOIN t AS y ON x.c = y.c) AS s GROUP BY s.a",  # a join inside
+        "SELECT s.a, COUNT(DISTINCT s.b) FROM (SELECT a, b FROM t UNION ALL SELECT a, b FROM t) AS s GROUP BY s.a",
+        "SELECT s.c, COUNT(DISTINCT s.b) FROM (SELECT c, b FROM t) AS s GROUP BY s.c",  # (c, b) is not a key
+        "SELECT s.k, COUNT(DISTINCT s.b) FROM (SELECT c AS k, b FROM t) AS s GROUP BY s.k",  # k is c, not a
+        "SELECT s.a, COUNT(DISTINCT s.b) FROM (SELECT a, b FROM t LIMIT 3) AS s GROUP BY s.a HAVING COUNT(*) > 5",  # a LIMIT inside: not read
+    ):
+        assert rewritten(sql) is None, sql
+
+
+def test_a_bare_name_that_is_also_an_alias():
+    # the select list never reads its own aliases: b is the column
+    assert rewritten("SELECT a AS b, COUNT(DISTINCT b) FROM t GROUP BY t.a") == "SELECT a AS b, COUNT(b) FROM t GROUP BY t.a"
+    # GROUP BY, HAVING and ORDER BY may mean the alias
+    assert rewritten("SELECT c AS a, COUNT(DISTINCT b) FROM t GROUP BY a") is None
+    assert rewritten("SELECT a, c AS b FROM t GROUP BY a HAVING COUNT(DISTINCT b) > 1") is None
+    assert rewritten("SELECT a, c AS b FROM t GROUP BY a ORDER BY COUNT(DISTINCT b)") is None
+    assert rewritten("SELECT a, c AS b FROM t GROUP BY a HAVING COUNT(DISTINCT t.b) > 1") == "SELECT a, c AS b FROM t GROUP BY a HAVING COUNT(t.b) > 1"
+
+
 def test_the_whole_key_is_grouped_or_counted():
     # each group is one row: any column's values are distinct in it, NULL or not
     assert rewritten("SELECT a, b, COUNT(DISTINCT c) FROM t GROUP BY a, b") == "SELECT a, b, COUNT(c) FROM t GROUP BY a, b"
@@ -158,6 +187,9 @@ KEYED = [
     "SELECT COUNT(DISTINCT b, a), COUNT(DISTINCT c) FROM t",
     "SELECT a, COUNT(DISTINCT b) FROM t WHERE a IN (SELECT e FROM u) GROUP BY a",
     "SELECT d, (SELECT COUNT(DISTINCT y.b) FROM t AS y WHERE y.a = x.d GROUP BY y.a) FROM t AS x",
+    "SELECT k, COUNT(DISTINCT v), SUM(DISTINCT v) FROM (SELECT x.a AS k, x.b AS v, x.c FROM t AS x WHERE x.c > 0) AS s GROUP BY k",
+    "SELECT s.a, COUNT(DISTINCT s.b) FROM (SELECT a, b FROM t WHERE a IN (SELECT e FROM u)) AS s GROUP BY s.a",
+    "SELECT a AS b, COUNT(DISTINCT b) FROM t GROUP BY t.a",
 ]
 
 

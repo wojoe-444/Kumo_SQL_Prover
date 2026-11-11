@@ -33,8 +33,8 @@ the select itself (``SELECT`` list, ``HAVING`` or ``ORDER BY``; not one inside a
 none with ``FILTER``) whose ``DISTINCT`` argument is a column of the table. A column counts as the table's when
 it is qualified with the table's name in this select, or bare and listed for the table in the supplied schema
 (the innermost select binds a name first); a bare name that a select alias gives to another expression is not
-read, since ``GROUP BY``, ``HAVING`` and ``ORDER BY`` may mean the alias. ``MIN`` and ``MAX`` ignore ``DISTINCT``
-anyway and are left alone.
+read in ``GROUP BY``, ``HAVING`` or ``ORDER BY``, which may mean the alias (the select list never reads its own
+aliases). ``MIN`` and ``MAX`` ignore ``DISTINCT`` anyway and are left alone.
 
 **What is refused.** Everything else: joins (a join repeats the rows of a keyed table, and whether its other
 side is keyed is another rule's concern), any other derived table, grouping by an expression, an argument that is an
@@ -143,7 +143,11 @@ def drop_keyed_aggregate_distinct(
     def reader(node: exp.Expression) -> str | None:
         node = _unwrap(node)
         if type(node) is exp.Column and not node.table and node.name.lower() in renamed:
-            return None
+            top = node
+            while top.parent is not None and top.parent is not select:
+                top = top.parent
+            if top.arg_key != "expressions":
+                return None  # the select list itself never reads its own aliases
         return read(node)
 
     declared = [tuple(c.lower() for c in key) for key in ({k.lower(): v for k, v in keys.items()}.get(name) or []) if key]
