@@ -43,6 +43,8 @@ def test_the_bound_closes():
         closed("SELECT s.k FROM s WHERE s.d < CAST('1996-01-01' AS DATE) AND s.d > CAST('1995-02-28' AS DATE)")
         == "SELECT s.k FROM s WHERE s.d <= CAST('1995-12-31' AS DATE) AND s.d >= CAST('1995-03-01' AS DATE)"
     )
+    # parentheses and quoted names
+    assert closed('SELECT "k" FROM "s" WHERE "d" < (CAST(\'1996-01-01\' AS DATE)) AND ("n") > (3)') == 'SELECT "k" FROM "s" WHERE "d" <= CAST(\'1995-12-31\' AS DATE) AND "n" >= 4'
     # through a plain derived table, and in a join condition and a CASE
     assert closed("SELECT t.k FROM (SELECT s.k, s.n FROM s WHERE s.q > 0) AS t WHERE t.n < 5") == "SELECT t.k FROM (SELECT s.k, s.n FROM s WHERE s.q > 0) AS t WHERE t.n <= 4"
     assert (

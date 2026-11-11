@@ -17,7 +17,8 @@ Conditions, all checked:
 
 * the dialect is PostgreSQL, DuckDB, BigQuery or MySQL, where ``DATE`` has no time of day (Oracle's has) and a
   declared type is enforced (SQLite's is not);
-* the comparison is ``<`` or ``>`` between a plain column and a constant, in either order;
+* the comparison is ``<`` or ``>`` between a plain column and a constant, in either order, each with or without
+  parentheses around it;
 * the column's declared type, followed through plain derived tables, is ``DATE`` and the constant is
   ``CAST('YYYY-MM-DD' AS DATE)`` with a day on either side of it in the calendar, or the declared type is an
   integer type and the constant is a whole number literal, with or without a sign;
@@ -79,8 +80,16 @@ def _stepped(constant: exp.Expression, step: int, declared: str) -> exp.Expressi
     return None
 
 
+def _bare(node: exp.Expression) -> exp.Expression:
+    while type(node) is exp.Paren:
+        node = node.this
+    return node
+
+
 def _strict(node: exp.Expression, select: exp.Select) -> bool:
-    return type(node) in (exp.LT, exp.GT) and node.find_ancestor(exp.Select) is select and (type(node.this) is exp.Column) != (type(node.expression) is exp.Column)
+    if type(node) not in (exp.LT, exp.GT) or node.find_ancestor(exp.Select) is not select:
+        return False
+    return (type(_bare(node.this)) is exp.Column) != (type(_bare(node.expression)) is exp.Column)
 
 
 def close_strict_bounds(select: exp.Select, types: dict | None, dialect: str | None) -> exp.Expression | None:
@@ -100,8 +109,8 @@ def close_strict_bounds(select: exp.Select, types: dict | None, dialect: str | N
     copy = select.copy()
     changed = False
     for node in [n for n in copy.find_all(exp.LT, exp.GT) if _strict(n, copy)]:
-        column_first = type(node.this) is exp.Column
-        column, constant = (node.this, node.expression) if column_first else (node.expression, node.this)
+        column_first = type(_bare(node.this)) is exp.Column
+        column, constant = (_bare(node.this), _bare(node.expression)) if column_first else (_bare(node.expression), _bare(node.this))
         if isinstance(column.this, exp.Star) or len(column.parts) > 2 or (not column.table and column.name.lower() in computed):
             continue
         declared = _origin_type(copy, column, types)
