@@ -157,3 +157,39 @@ def test_single_value_is_the_value_of_the_only_row():
     # DuckDB has no SINGLE_VALUE, so the replay cannot confirm a difference: unknown, never a verdict
     result = check("select single_value(a) from t", "select count(a) from t")
     assert result.status is BoundedStatus.UNKNOWN
+
+
+# --- names that a select item and several FROM columns share -----------------------------------------
+
+
+def test_a_group_by_name_two_tables_share_is_the_select_item():
+    # MySQL: ``GROUP BY a`` with ``a`` in both tables groups by the select item named ``a`` (the replay rewrites it so)
+    joined = "from t join u on t.b = u.a"
+    same(f"select t.a, count(*) {joined} group by a", f"select t.a, count(*) {joined} group by t.a")
+    same(f"select t.b as a, count(*) {joined} group by a", f"select t.b, count(*) {joined} group by t.b")
+    different(f"select t.a, count(*) {joined} group by a", f"select u.a, count(*) {joined} group by u.a")
+    # no select item of that name, two of them, or a use the replay engine rejects: still ambiguous
+    unsupported(f"select t.a as k, count(*) {joined} group by a", f"select t.a, count(*) {joined} group by t.a", "ambiguous")
+    unsupported(f"select t.a, u.a, count(*) {joined} group by a", f"select t.a, u.a, count(*) {joined} group by t.a, u.a", "ambiguous")
+    unsupported(f"select t.a, count(*) {joined} group by t.a having a > 1", f"select t.a, count(*) {joined} group by t.a having t.a > 1", "ambiguous")
+
+
+def test_order_by_reads_a_select_item_before_a_from_column():
+    joined = "from t join u on t.b = u.a"
+    same(f"select t.a, u.c {joined} order by a limit 1", f"select t.a, u.c {joined} order by t.a limit 1")
+    same(f"select t.*, u.c {joined} order by a limit 1", f"select t.a, t.b, u.c {joined} order by t.a limit 1")
+    unsupported(f"select t.a, u.a {joined} order by a limit 1", f"select t.a, u.a {joined} order by t.a limit 1", "ambiguous")
+    # an alias after a star used to be paired with the wrong output column
+    same("select *, -a as x from t where a is not null order by x limit 1", "select a, b, -a from t where a is not null order by a desc limit 1")
+    different("select *, -a as x from t where a is not null and b is not null order by x limit 1", "select a, b, -a from t where a is not null and b is not null order by b limit 1")
+
+
+@pytest.mark.parametrize("sql", [
+    "select t.a, count(*), max(u.c) from t join u on t.b = u.a group by a",
+    "select t.b as a, count(u.c) from t left join u on t.b = u.a group by a",
+    "select u.a, t.b from t join u on t.b = u.a order by a, b limit 2",
+    "select *, -a as x from t order by x, b limit 1",
+    "select t.*, u.c from t left join u on t.a = u.a order by a, b, c limit 2",
+])
+def test_shared_names_match_the_replay(sql):
+    assert agrees_with_replay(sql)

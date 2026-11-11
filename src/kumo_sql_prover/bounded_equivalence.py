@@ -1098,6 +1098,7 @@ class Compiler:
 
     def projected(self, node, source: Rel, items, outer: Scope | None) -> Rel:
         names = self._output_names(items, source)
+        named = self._named_outputs(items, source)
         order = node.args.get("order")
         out_rows: list[Row] = []
         scopes = [self._scope(source, row, outer) for row in source.rows]
@@ -1108,7 +1109,7 @@ class Compiler:
                 item.alias.lower(): (lambda e=item.this, s=scope: self.expr(e, s)) for item in items if isinstance(item, exp.Alias)
             }
             cells = self._expand(items, source, row, scope)
-            keys = self._sort_keys(order, items, cells, scope, outer) if order is not None else None
+            keys = self._sort_keys(order, names, named, cells, scope, outer) if order is not None else None
             out_rows.append(Row(row.present, cells, keys))
         return self._finish(names, out_rows)
 
@@ -1126,7 +1127,33 @@ class Compiler:
         fixed = [Row(r.present, [to_kind(v, k) if k != "null" else v for v, k in zip(r.vals, kinds)], r.keys) for r in rows]
         return Rel(names, kinds, fixed)
 
-    def _sort_keys(self, order, items, cells, scope: Scope, outer) -> list:
+    def _named_outputs(self, items, source: Rel) -> list[bool]:
+        """For each output cell (stars expanded): does ORDER BY see it under its name (an alias or a plain column)."""
+
+        named = []
+        for item in items:
+            if isinstance(item, exp.Star):
+                named.extend([True] * len(self._star_order(source)))
+            elif isinstance(item, exp.Column) and isinstance(item.this, exp.Star):
+                named.extend([True] * len([q for q, _ in source.cols if q == item.table.lower()]))
+            else:
+                named.append(isinstance(item, (exp.Alias, exp.Column)))
+        return named
+
+    def _sort_keys(self, order, names, named, cells, scope: Scope, outer) -> list:
+        """The ORDER BY keys of one output row. An unqualified name is the select item of that name before it is a FROM
+        column (MySQL and DuckDB agree); a name two different select items share is ambiguous."""
+
+        outputs: dict[str, object] = {}
+        for (_, name), is_named, cell in zip(names, named, cells):
+            if not is_named:
+                continue
+            if name in outputs and outputs[name] is not cell:
+                def clash(name=name):
+                    raise Unsupported(f"ambiguous column {name}")
+                outputs[name] = clash
+            else:
+                outputs[name] = cell
         keys = []
         for item in order.expressions:
             target = item.this
@@ -1137,12 +1164,7 @@ class Compiler:
                     raise Unsupported("ORDER BY position")
                 value = cells[position]
             else:
-                ordering = Scope(scope.cols, scope.parent, {}, scope.group, alias_first=True, hidden=scope.hidden, window=scope.window, index=scope.index, picker=scope.picker, group_keys=scope.group_keys)
-                projected = [i for i in items if isinstance(i, exp.Alias)]
-                position = 0
-                for item_, cell in zip(items, cells):
-                    if isinstance(item_, exp.Alias):
-                        ordering.aliases[item_.alias.lower()] = cell
+                ordering = Scope(scope.cols, scope.parent, dict(outputs), scope.group, alias_first=True, hidden=scope.hidden, window=scope.window, index=scope.index, picker=scope.picker, group_keys=scope.group_keys)
                 value = self.expr(target, ordering)
             keys.append((value, descending, item.args.get("nulls_first")))
         return keys
@@ -1169,7 +1191,7 @@ class Compiler:
                         raise Unsupported("GROUP BY position")
                     chosen = items[position]
                     key = chosen.this if isinstance(chosen, exp.Alias) else chosen
-                key_nodes.append(key)
+                key_nodes.append(self._select_item_for(key, items, source))
         for scope in scopes:
             scope.aliases = {k: (lambda e=e, s=scope: self.expr(e, s)) for k, e in alias_nodes.items()}
         keys = []
@@ -1185,15 +1207,32 @@ class Compiler:
                 scope = Scope(scopes[i].cols, outer, None, Group(members, scopes), hidden=scopes[i].hidden,
                               picker=self._picker(scopes, i, members, keys[i]), group_keys=dict(zip(key_sql, keys[i])) or None)
                 scope.aliases = {k: (lambda e=e, s=scope: self.expr(e, s)) for k, e in alias_nodes.items()}
-                out_rows.append(self._group_row(items, scope, having, order, outer, exists))
+                out_rows.append(self._group_row(items, names, scope, having, order, outer, exists))
         else:
             members = [r.present for r in source.rows]
             # without GROUP BY one row always comes out, built from the (possibly empty) group
             blank = [(q, n, null_value(k)) for (q, n), k in zip(source.cols, source.kinds)]
             scope = Scope(blank, outer, {k: (lambda e=e: self.expr(e, scope)) for k, e in alias_nodes.items()}, Group(members, scopes),
                           picker=self._picker(scopes, None, members, []))
-            out_rows.append(self._group_row(items, scope, having, order, outer, _true()))
+            out_rows.append(self._group_row(items, names, scope, having, order, outer, _true()))
         return self._finish(names, out_rows)
+
+    def _select_item_for(self, key, items, source: Rel):
+        """MySQL reads an unqualified GROUP BY name that several FROM columns share as the select item of that name
+        (``SELECT p.id .. FROM p JOIN s .. GROUP BY id`` groups by ``p.id``, with a warning). The replay rewrites the
+        name the same way (``counterexample.relax_grouping``), so only its form is taken: a qualified column, alone
+        under that output name. Anything else stays an ambiguous column."""
+
+        if not (isinstance(key, exp.Column) and not key.table):
+            return key
+        name = key.name.lower()
+        if len([i for i, (_, n) in enumerate(source.cols) if n == name and i not in source.hidden]) < 2:
+            return key
+        named = [i.this if isinstance(i, exp.Alias) else i for i in items if (i.alias if isinstance(i, exp.Alias) else i.name).lower() == name]
+        chosen = [i for i in named if isinstance(i, exp.Column) and i.table and not isinstance(i.this, exp.Star)]
+        if not chosen or len(chosen) != len(named) or len({i.sql().lower() for i in chosen}) != 1:
+            return key
+        return chosen[0]
 
     def _picker(self, scopes: list[Scope], rep: int | None, members: list, keys: list[V]):
         """The value of a column that is neither grouped nor aggregated.
@@ -1239,12 +1278,12 @@ class Compiler:
                 pass
         return self.expr(node, scope)
 
-    def _group_row(self, items, scope: Scope, having, order, outer, exists) -> Row:
+    def _group_row(self, items, names, scope: Scope, having, order, outer, exists) -> Row:
         present = exists
         if having is not None:
             present = z3.And(present, truth(self.expr(having.this, scope)))
         cells = [self.expr(i.this if isinstance(i, exp.Alias) else i, scope) for i in items]
-        keys = self._sort_keys(order, items, cells, scope, outer) if order is not None else None
+        keys = self._sort_keys(order, names, [isinstance(i, (exp.Alias, exp.Column)) for i in items], cells, scope, outer) if order is not None else None
         return Row(present, cells, keys)
 
     # -- ORDER BY / LIMIT ----------------------------------------------------------------------
