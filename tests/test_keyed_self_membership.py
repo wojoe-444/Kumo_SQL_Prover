@@ -105,6 +105,25 @@ def test_the_row_is_kept_by_the_joins_of_its_select():
     assert rewritten(f"SELECT u.e FROM t AS x JOIN w ON w.v = x.a RIGHT JOIN u ON u.a = x.a WHERE NOT x.a IN {inner}") is None
 
 
+def test_a_source_named_like_an_outer_one_gets_a_new_name():
+    # the subquery's u is called x: it would capture the row's columns once they are written x.col
+    assert rewritten("SELECT x.d FROM t AS x WHERE x.a IN (SELECT p.a FROM t AS p JOIN u AS x ON x.a = p.b)") == (
+        "SELECT x.d FROM t AS x WHERE EXISTS(SELECT 1 FROM u AS kqn0 WHERE kqn0.a = x.b)"
+    )
+    # the subquery's u hides the outer u: renamed, so that the outer u is seen to be unread there (bare e stays its column)
+    assert rewritten("SELECT x.d FROM t AS x LEFT JOIN u ON u.a = x.b WHERE NOT x.a IN (SELECT p.a FROM t AS p JOIN u ON u.a = p.c WHERE e > 1)") == (
+        "SELECT x.d FROM t AS x LEFT JOIN u ON u.a = x.b WHERE NOT EXISTS(SELECT 1 FROM u AS kqn0 WHERE kqn0.a = x.c AND e > 1)"
+    )
+    # a name already in the query is not taken
+    assert rewritten("SELECT kqn0.d FROM t AS kqn0 WHERE kqn0.a IN (SELECT p.a FROM t AS p JOIN u AS kqn0 ON kqn0.a = p.b)") == (
+        "SELECT kqn0.d FROM t AS kqn0 WHERE EXISTS(SELECT 1 FROM u AS kqn1 WHERE kqn1.a = kqn0.b)"
+    )
+    # the name is declared once more below: left as written (it hid the outer u before and still does)
+    assert rewritten(
+        "SELECT x.d FROM t AS x JOIN u ON u.a = x.b WHERE x.a IN (SELECT p.a FROM t AS p JOIN u ON u.a = p.c WHERE EXISTS(SELECT 1 FROM w AS u WHERE u.v = p.d))"
+    ) == "SELECT x.d FROM t AS x JOIN u ON u.a = x.b WHERE EXISTS(SELECT 1 FROM u WHERE u.a = x.c AND EXISTS(SELECT 1 FROM w AS u WHERE u.v = x.d))"
+
+
 def test_one_source_leaves_the_condition():
     # a positive AND part of the WHERE: NULL and FALSE both drop the row
     assert rewritten("SELECT x.d FROM t AS x WHERE x.b > 0 AND x.a IN (SELECT p.a FROM t AS p WHERE p.c > 1 AND p.d = 2)") == (
@@ -148,7 +167,7 @@ def test_one_source_leaves_the_condition():
     "SELECT x.d FROM t AS x WHERE x.a IN (SELECT p.a FROM t AS p JOIN u ON u.a = p.b WHERE EXISTS(SELECT 1 FROM u AS z WHERE z.e = c))",  # c: p's, unless z has it
     "SELECT x.d FROM t AS x WHERE x.a IN (SELECT p.a FROM t AS p JOIN u ON u.a = p.b WHERE EXISTS(SELECT 1 FROM u AS p WHERE p.e = 1))",  # a nested p
     "SELECT x.d FROM t AS x WHERE x.a IN (SELECT p.a FROM t AS p JOIN u ON u.a = p.b WHERE EXISTS(SELECT 1 FROM u AS x WHERE x.e = p.c))",  # a nested x
-    "SELECT x.d FROM t AS x WHERE x.a IN (SELECT p.a FROM t AS p JOIN u AS x ON x.a = p.b)",  # a source named like x
+    "SELECT x.d FROM t AS x WHERE x.a IN (SELECT p.a FROM t AS p JOIN u AS x ON x.a = p.b WHERE EXISTS(SELECT 1 FROM w AS x WHERE x.v = p.d))",  # x twice inside
     "SELECT x.d FROM t AS x WHERE x.a IN (SELECT p.a FROM t AS p JOIN u ON u.a = p.b WHERE EXISTS(SELECT p.* FROM u AS z))",
     "SELECT d FROM t JOIN u ON u.e = t.b WHERE a IN (SELECT p.a FROM t AS p JOIN u AS v ON v.a = p.b)",  # a: t's or u's
     "SELECT d FROM t JOIN (SELECT e FROM u) AS s ON s.e = t.b WHERE a IN (SELECT p.a FROM t AS p JOIN u AS v ON v.a = p.b)",  # a derived table may have it
@@ -197,6 +216,9 @@ PROOFS = [
     ("SELECT y.a, y.d FROM t AS y WHERE NOT EXISTS(SELECT 1 FROM t AS p JOIN u ON u.a = p.b WHERE p.a = y.a AND u.e > p.c)", ANTI),
     ("SELECT y.a, y.d FROM t AS y LEFT JOIN u ON u.a = y.b AND u.e > y.c WHERE u.a IS NULL", "SELECT a, d FROM t WHERE a NOT IN (SELECT p.a FROM t AS p JOIN u ON u.a = p.b WHERE u.e > p.c)"),
     ("SELECT a FROM t WHERE a IN (SELECT p.a FROM t AS p WHERE p.c > 1)", "SELECT a FROM t WHERE c > 1"),
+    # sources of the subquery named like sources of the outer select
+    ("SELECT x.a, x.d FROM t AS x WHERE x.a NOT IN (SELECT p.a FROM t AS p JOIN u AS x ON x.a = p.b WHERE x.e > p.c)", ANTI),
+    ("SELECT DISTINCT x.a, x.d FROM t AS x LEFT JOIN u ON u.a = x.b WHERE x.a NOT IN (SELECT p.a FROM t AS p JOIN u ON u.a = p.b WHERE u.e > p.c)", ANTI),
     ("SELECT v FROM w WHERE (k1, k2) IN (SELECT p.k1, p.k2 FROM w AS p JOIN u ON u.a = p.v)", "SELECT v FROM w WHERE EXISTS(SELECT 1 FROM u WHERE u.a = w.v)"),
 ]
 
@@ -262,6 +284,9 @@ QUERIES = [
     "SELECT x.d FROM t AS x WHERE NOT x.a IN (SELECT p.a FROM t AS p WHERE EXISTS(SELECT 1 FROM u WHERE u.a = p.b))",
     "SELECT x.d FROM t AS x WHERE NOT EXISTS(SELECT 1 FROM t AS p WHERE p.a = x.a AND p.c IS NULL) OR x.b = 1",
     "SELECT x.d FROM t AS x WHERE NOT x.a IN (SELECT p.a FROM t AS p)",
+    "SELECT x.d FROM t AS x WHERE NOT x.a IN (SELECT p.a FROM t AS p JOIN u AS x ON x.a = p.b WHERE x.e > p.c)",
+    "SELECT x.d, u.e FROM t AS x LEFT JOIN u ON u.a = x.b WHERE NOT x.a IN (SELECT p.a FROM t AS p JOIN u ON u.a = p.c WHERE e > 1)",
+    "SELECT x.d FROM t AS x JOIN u ON u.a = x.b WHERE x.a IN (SELECT p.a FROM t AS p JOIN u ON u.a = p.c WHERE EXISTS(SELECT 1 FROM w AS u WHERE u.v = p.d))",
 ]
 
 

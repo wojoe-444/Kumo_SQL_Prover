@@ -69,8 +69,11 @@ both drop the row. Otherwise the test is kept.
 * Names. Every column of ``p`` inside the subquery is found and requalified with ``x``'s name: ``p.col``, or a
   bare ``col`` in the subquery's own scope that only ``p`` has. The rewrite is refused when a column could be
   ``p``'s and this cannot be settled (a bare name of ``t`` inside a nested query, ``p.*``), when a nested query
-  declares a source with ``p``'s name (its ``p.col`` would not be ours) or when anything inside the subquery
-  other than ``p`` is named like ``x`` (it would capture the new ``x.col``).
+  declares a source with ``p``'s name (its ``p.col`` would not be ours) or when a nested query declares a
+  source named like ``x`` (it would capture the new ``x.col``). Another source of the subquery that is named
+  like a source of the outer select (``x`` included) is given a new name ``kqn0``, ``kqn1``, .. in the
+  ``EXISTS`` that replaces the test, and its qualified columns with it: inside the subquery the name meant
+  that inner source before and after, and nothing outside the subquery could see it.
 """
 
 from __future__ import annotations
@@ -82,6 +85,8 @@ from .ast_utils import FROM_KEY, conjuncts, select_sources, visible_ctes
 
 _SUBQUERY_ARGS = frozenset({"expressions", "from", "from_", "joins", "where", "distinct", "order", "comments", "kind", "hint"})
 _INNER = ("", "INNER", "CROSS")
+
+_PREFIX = "kqn"
 
 
 def keyed_self_membership(
@@ -110,7 +115,7 @@ def keyed_self_membership(
         plan = _plan(node, outer, known, declared_keys, declared)
         if plan is None:
             continue
-        replacement = _replacement(node, where, plan, outer.written[plan.x])
+        replacement = _replacement(node, where, plan, outer.written[plan.x], set(outer.names))
         if replacement is None:
             continue
         node.replace(replacement)
@@ -323,12 +328,14 @@ def _key_equality(part: exp.Expression, query: exp.Select, p_name: str, columns:
     return None
 
 
-def _columns_of_p(plan: _Plan, parts: list[exp.Expression]) -> list[exp.Column] | None:
-    """Every column of ``p`` in the conditions that stay, or None when a name cannot be settled."""
+def _columns_of_p(plan: _Plan, parts: list[exp.Expression], renamed: set[str]) -> list[exp.Column] | None:
+    """Every column of ``p`` in the conditions that stay, or None when a name cannot be settled.
+
+    ``renamed``: the other sources of the subquery that get a new name (so they capture nothing)."""
 
     query, p_name = plan.query, _name(plan.p)
     table_columns = set(plan.columns[p_name])
-    if plan.x in plan.columns and plan.x != p_name:
+    if plan.x in plan.columns and plan.x != p_name and plan.x not in renamed:
         return None  # another source of the subquery is named like x
     found = []
     for part in parts:
@@ -371,18 +378,57 @@ def _two_valued(node: exp.Expression) -> bool:
     return isinstance(node, (exp.Exists, exp.Boolean))
 
 
-def _replacement(node: exp.Expression, where: exp.Where, plan: _Plan, x_written: str) -> exp.Expression | None:
+def _renamed_sources(plan: _Plan, parts: list[exp.Expression], rest: list[exp.Expression], outer_names: set[str]) -> dict[str, str] | None:
+    """New names for the remaining sources that are named like a source of the outer select.
+
+    None when such a name is declared again inside the conditions (a nested source with that name: its
+    columns are not the ones to rename)."""
+
+    clashing = {_name(source) for source in rest if _name(source) in outer_names}
+    if not clashing:
+        return {}
+    taken = set()
+    for node in plan.query.root().walk():
+        if isinstance(node, (exp.Table, exp.Subquery, exp.CTE)):
+            taken.update({node.alias_or_name.lower(), node.name.lower()})
+        elif isinstance(node, exp.Column) and node.table:
+            taken.add(node.table.lower())
+    for part in parts:
+        for node in part.walk():
+            if isinstance(node, (exp.Table, exp.Subquery, exp.CTE)) and node.alias_or_name.lower() in clashing:
+                return None
+    names = {}
+    for name in sorted(clashing):
+        number = 0
+        while f"{_PREFIX}{number}" in taken:
+            number += 1
+        taken.add(f"{_PREFIX}{number}")
+        names[name] = f"{_PREFIX}{number}"
+    return names
+
+
+def _replacement(node: exp.Expression, where: exp.Where, plan: _Plan, x_written: str, outer_names: set[str]) -> exp.Expression | None:
     query, p = plan.query, plan.p
     parts = [part for part in _condition_parts(query) if not any(part is dropped for dropped in plan.drop)]
-    found = _columns_of_p(plan, parts)
+    rest = [source for source in select_sources(query) if source is not p]
+    names = _renamed_sources(plan, parts, rest, outer_names)
+    if names is None:
+        if plan.x in plan.columns and plan.x != _name(p):
+            return None
+        names = {}  # as written: an inner source that hides an outer one of the same name
+    found = _columns_of_p(plan, parts, set(names))
     if found is None:
         return None
-    rest = [source for source in select_sources(query) if source is not p]
     if not rest:
         positive = any(part is node for part in conjuncts(where.this))
         if not positive and not all(_two_valued(part) for part in parts):
             return None
     # nothing is refused from here on
+    if names:
+        for part in parts:
+            for column in part.find_all(exp.Column):
+                if column.table and column.table.lower() in names and not column.args.get("db"):
+                    column.set("table", exp.to_identifier(names[column.table.lower()]))
     for column in found:
         column.set("table", exp.to_identifier(x_written))
     parts = [exp.Paren(this=part.copy()) if isinstance(part, exp.Or) else part.copy() for part in parts]
@@ -393,10 +439,16 @@ def _replacement(node: exp.Expression, where: exp.Where, plan: _Plan, x_written:
         if condition is None:
             return exp.true()
         return exp.Paren(this=condition) if len(parts) > 1 else condition
+    sources = []
+    for source in rest:
+        source = source.copy()
+        if _name(source) in names:
+            source.set("alias", exp.TableAlias(this=exp.to_identifier(names[_name(source)])))
+        sources.append(source)
     replacement = exp.Select(expressions=[exp.Literal.number(1)])
-    replacement.set(FROM_KEY, exp.From(this=rest[0].copy()))
-    if len(rest) > 1:
-        replacement.set("joins", [exp.Join(this=source.copy()) for source in rest[1:]])
+    replacement.set(FROM_KEY, exp.From(this=sources[0]))
+    if len(sources) > 1:
+        replacement.set("joins", [exp.Join(this=source) for source in sources[1:]])
     if condition is not None:
         replacement.set("where", exp.Where(this=condition))
     return exp.Exists(this=replacement)
