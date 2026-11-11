@@ -715,13 +715,21 @@ class Compiler:
 
     def query(self, node: exp.Expression, outer: Scope | None) -> Rel:
         if isinstance(node, exp.Subquery):
-            inner = self.query(node.this, outer)
-            return inner
+            self._plain_wrapper(node)
+            return self.query(node.this, outer)
         if isinstance(node, exp.Select):
             return self._with(node, lambda: self.select(node, outer))
         if isinstance(node, (exp.Union, exp.Intersect, exp.Except)):
             return self._with(node, lambda: self.set_operation(node, outer))
         raise Unsupported(f"statement {type(node).__name__}")
+
+    def _plain_wrapper(self, node: exp.Subquery) -> None:
+        """A parenthesized query may carry clauses of its own (``(SELECT ..) LIMIT 1``, joins, a pivot): only an alias and
+        an ``ORDER BY`` (which keeps the bag) may be skipped when the inner query is compiled in its place."""
+
+        extra = sorted(k for k, v in node.args.items() if v and k not in ("this", "alias", "order"))
+        if extra:
+            raise Unsupported(f"parenthesized query with {', '.join(extra)}")
 
     def _with(self, node, run):
         clause = node.args.get("with_") or node.args.get("with")
@@ -817,7 +825,7 @@ class Compiler:
         return self.limited(node, out)
 
     def _windowed(self, node) -> bool:
-        return any(True for _ in node.find_all(exp.Window))
+        return any(found.find_ancestor(exp.Select) is node for found in node.find_all(exp.Window))
 
     def _aggregated(self, node: exp.Select) -> bool:
         targets = list(node.expressions) + [node.args[k] for k in ("having",) if node.args.get(k) is not None]
@@ -825,7 +833,9 @@ class Compiler:
         if order is not None:
             targets.append(order)
         for target in targets:
-            for found in target.find_all(*AGGREGATES, exp.GroupConcat, exp.AnyValue, exp.ArrayAgg):
+            for found in target.find_all(*AGGREGATES, exp.GroupConcat, exp.AnyValue, exp.ArrayAgg, exp.Anonymous):
+                if isinstance(found, exp.Anonymous) and not _single_value(found):
+                    continue
                 if found.find_ancestor(exp.Select) is node and found.find_ancestor(exp.Window) is None:
                     return True
         return False
@@ -848,6 +858,15 @@ class Compiler:
         return rel
 
     def table_factor(self, node, outer: Scope | None) -> Rel:
+        """One FROM item. Inside parentheses (``a JOIN (b JOIN c ON ..) ON ..``) the item carries its own joins."""
+
+        rel = self._factor(node, outer)
+        if isinstance(node, (exp.Table, exp.Subquery)):
+            for join in node.args.get("joins") or []:
+                rel = self.join(rel, join, outer)
+        return rel
+
+    def _factor(self, node, outer: Scope | None) -> Rel:
         if isinstance(node, exp.Table):
             alias = node.alias.lower() if node.alias else node.name.lower()
             name = node.name.lower()
@@ -865,7 +884,17 @@ class Compiler:
             cols = [(alias, c.name.lower()) for c in table.columns]
             kinds = [kind_of(c.type) or "unsupported" for c in table.columns]
             return Rel(cols, kinds, [Row(r.present, list(r.vals)) for r in slots])
+        inner = node.this if isinstance(node, exp.Subquery) else None
+        if isinstance(inner, exp.Table) or (isinstance(inner, exp.Subquery) and (inner.args.get("joins") or (inner.alias and not node.alias))):
+            # ``(a JOIN b ON ..)``: parentheses around a FROM item and its joins, not a derived table
+            extra = sorted(k for k, v in node.args.items() if v and k not in ("this", "joins"))
+            if extra:
+                raise Unsupported(f"parenthesized join with {', '.join(extra)}")
+            return self.table_factor(node.this, outer)
         if isinstance(node, exp.Subquery):
+            extra = sorted(k for k, v in node.args.items() if v and k not in ("this", "alias", "joins", "pivots", "sample"))
+            if extra:
+                raise Unsupported(f"derived table with {', '.join(extra)}")
             inner = self.query(node.this, outer)
             alias = node.alias.lower() if node.alias else None
             columns = [c.name.lower() for c in node.args["alias"].args.get("columns") or []] if node.args.get("alias") else None
@@ -1295,6 +1324,13 @@ class Compiler:
         if method is not None:
             return method(node, scope)
         if isinstance(node, exp.Binary) and type(node) in _COMPARES:
+            # sqlglot reads ``a = b IS TRUE`` as ``a = (b IS TRUE)``; SQL (MySQL, DuckDB, PostgreSQL) reads ``(a = b) IS TRUE``
+            test = node.expression
+            if isinstance(test, exp.Not) and isinstance(test.this, exp.Is):
+                # ``a = b IS NOT TRUE`` is printed back as ``a = NOT b IS TRUE``, which the replay engine reads differently
+                raise Unsupported("a comparison followed by IS NOT")
+            if isinstance(test, exp.Is):
+                return self._is(compare(_COMPARES[type(node)], self.expr(node.this, scope), self.expr(test.this, scope)), test.expression)
             if isinstance(node.expression, (exp.Any, exp.All)):
                 return self._quantified(_COMPARES[type(node)], self.expr(node.this, scope), node.expression, scope)
             return compare(_COMPARES[type(node)], self.expr(node.this, scope), self.expr(node.expression, scope))
@@ -1444,8 +1480,9 @@ class Compiler:
         return logical_not(self.expr(node.this, scope))
 
     def _e_Is(self, node, scope):
-        value = self.expr(node.this, scope)
-        target = node.expression
+        return self._is(self.expr(node.this, scope), node.expression)
+
+    def _is(self, value: V, target) -> V:
         if isinstance(target, exp.Null):
             return V("bool", value.null, _false())
         if isinstance(target, exp.Boolean):
@@ -1776,6 +1813,12 @@ class Compiler:
 
     def _e_Anonymous(self, node, scope):
         name = str(node.this).upper()
+        if _single_value(node):
+            return self._first_member(node, scope)
+        if not _is_condition(node):
+            # an unknown name is read as an uninterpreted *predicate* (VeriEQL's ``B(x)``): sound where a truth value is
+            # expected, wrong for a call whose value is compared, computed with or returned (``YEARWEEK(d) = 201901``)
+            raise Unsupported(f"function {name}")
         arguments: list[V] = []
         for argument in node.expressions:
             if isinstance(argument, exp.Column) and not argument.table:
@@ -1797,6 +1840,25 @@ class Compiler:
         for a in arguments:
             call.extend([a.val, a.null])
         return V("bool", function(*call), _false())
+
+    def _first_member(self, node, scope: Scope) -> V:
+        """Calcite's ``SINGLE_VALUE(x)``: ``x`` of the group's only row, NULL for an empty group. More than one row is a
+        runtime error, which is not modeled: the first row is taken, as for a scalar subquery with several rows."""
+
+        if scope.group is None:
+            raise Unsupported("aggregate outside a grouped query")
+        values = [self.expr(node.expressions[0], s) for s in scope.group.scopes]
+        kinds = {v.kind for v in values} - {"null"}
+        if not kinds:
+            return null_value()
+        if len(kinds) > 1 and kinds != {"int", "real"}:
+            raise Unsupported("aggregate over mixed types")
+        kind = "real" if "real" in kinds else next(iter(kinds))
+        value, null = _default(kind), _true()
+        for member, cell in reversed(list(zip(scope.group.members, values))):
+            cell = to_kind(cell, kind)
+            value, null = z3.If(member, cell.val, value), z3.If(member, cell.null, null)
+        return V(kind, value, null)
 
     def _e_Count(self, node, scope):
         return self._aggregate(node, scope)
@@ -1872,6 +1934,25 @@ class Compiler:
             best = z3.If(take, v.val, best)
             have = z3.Or(have, p)
         return V(kind, best, z3.Not(have))
+
+
+def _single_value(node: exp.Expression) -> bool:
+    return isinstance(node, exp.Anonymous) and str(node.this).upper() == "SINGLE_VALUE" and len(node.expressions) == 1
+
+
+def _is_condition(node: exp.Expression) -> bool:
+    """Is ``node`` used only for its truth value: a WHERE, HAVING, ON or CASE condition, possibly under AND, OR, NOT."""
+
+    child, parent = node, node.parent
+    while isinstance(parent, (exp.Paren, exp.And, exp.Or, exp.Not)):
+        child, parent = parent, parent.parent
+    if isinstance(parent, (exp.Where, exp.Having, exp.Qualify)):
+        return True
+    if isinstance(parent, exp.Join):
+        return parent.args.get("on") is child
+    if isinstance(parent, exp.If):
+        return parent.this is child
+    return False
 
 
 _COMPARES = {
@@ -1952,9 +2033,9 @@ def bag_difference(left: Rel, right: Rel):
 
 
 def _model_value(model, v: V, kind: str):
-    if z3.is_true(model.eval(v.null, model_completion=True)):
+    if z3.is_true(z3.simplify(model.eval(v.null, model_completion=True))):
         return None
-    value = model.eval(v.val, model_completion=True)
+    value = z3.simplify(model.eval(v.val, model_completion=True))
     if kind in ("int",):
         return value.as_long()
     if kind == "date":
@@ -2308,7 +2389,7 @@ def evaluate(sql: str, schema: BoundedSchema, data: dict[str, list[tuple]], dial
     model = solver.model()
     out = []
     for row in rel.rows:
-        if z3.is_true(model.eval(row.present, model_completion=True)):
+        if z3.is_true(z3.simplify(model.eval(row.present, model_completion=True))):  # ``"" < "a"`` evaluates to ``Not("" == "a")``
             out.append(tuple(_model_value(model, v, k) if k != "null" else None for v, k in zip(row.vals, rel.kinds)))
     return out
 
