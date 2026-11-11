@@ -1,4 +1,4 @@
-"""Inside a membership test, a nested ``IN (SELECT ..)`` is read as a join (a nested ``EXISTS`` is left to the semi-join reading).
+"""Inside a membership test, a nested ``IN (SELECT ..)`` is read as a join.
 
     WHERE s.k IN (SELECT ps.sk FROM ps WHERE ps.pk IN (SELECT p.k FROM p WHERE p.f = 1))
 
@@ -26,6 +26,9 @@ Conditions, all checked:
 * ``S`` is the whole query of an ``IN`` or ``EXISTS`` (``distinct_rules._membership_query``) and has only a select
   list, sources, joins, ``WHERE`` and an optional plain ``DISTINCT``: no grouping, ``HAVING``, window, ``ORDER BY``,
   ``LIMIT`` or ``OFFSET``, and no aggregate or star in its select list (those read more than the set of rows);
+* a nested ``EXISTS`` is read only inside the query of an ``IN``. Inside the query of an ``EXISTS`` the prover's own
+  semi-join reading already spells it, and rewriting it on one query of a pair lost the proof of six DSB pairs (too
+  long for the shape fallback) that main proves;
 * the test is a top-level ``WHERE`` conjunct ``e IN (N)`` (not ``NOT IN``, not under ``OR``) with one value;
 * ``N`` is a plain select of one expression from base tables the schema lists, joined by commas or inner joins
   with ``ON``: no grouping, ``HAVING``, window, tail, set operation or nested query (a plain ``DISTINCT`` is dropped:
@@ -74,13 +77,17 @@ def _plain_joins(select: exp.Select) -> bool:
 
 
 def _nested(test: exp.Expression) -> tuple[exp.Select, exp.Expression | None] | None:
-    """``(N, e)`` when ``test`` is ``e IN (N)`` with one value.
+    """``(N, e)`` when ``test`` is ``e IN (N)`` with one value, ``(N, None)`` when it is ``EXISTS (N)``."""
 
-    A nested ``EXISTS`` is not read: the prover's semi-join reading already spells it, and a pair of DSB queries
-    (about 6,000 to 11,000 characters, too long for the shape fallback) lost a proof on main because this rule
-    rewrote an ``EXISTS`` inside an ``EXISTS`` on one query only.
-    """
-
+    if type(test) is exp.Exists:
+        if any(v for key, v in test.args.items() if key != "this"):
+            return None
+        inner = test.this
+        if type(inner) is exp.Subquery:
+            if inner.alias or any(v for key, v in inner.args.items() if key != "this"):
+                return None
+            inner = inner.this
+        return (inner, None) if type(inner) is exp.Select else None
     if type(test) is not exp.In or any(v for key, v in test.args.items() if key not in ("this", "query")):
         return None
     query = test.args.get("query")
@@ -114,6 +121,8 @@ def join_nested_membership(select: exp.Select, schema: dict | None) -> exp.Expre
         if found is None:
             continue
         inner, left = found
+        if left is None and isinstance(select.parent, exp.Exists) or (left is None and isinstance(select.parent, exp.Subquery) and isinstance(select.parent.parent, exp.Exists)):
+            continue  # an EXISTS inside an EXISTS stays: see the module docstring
         if any(value for key, value in inner.args.items() if key not in _INNER_ARGS):
             continue
         inner_distinct = inner.args.get("distinct")

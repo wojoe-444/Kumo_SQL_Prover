@@ -66,6 +66,13 @@ def test_a_nested_in_becomes_a_join():
     )
 
 
+def test_a_nested_exists_becomes_a_join():
+    assert (
+        rewritten("SELECT s.name FROM s WHERE s.k IN (SELECT ps.sk FROM ps WHERE EXISTS (SELECT 1 FROM p WHERE p.k = ps.pk AND p.f = 1))")
+        == "SELECT s.name FROM s WHERE s.k IN (SELECT ps.sk FROM ps, p WHERE p.k = ps.pk AND p.f = 1)"
+    )
+
+
 def test_a_name_already_in_use_gets_a_fresh_alias():
     out = rewritten("SELECT s.name FROM s WHERE s.k IN (SELECT ps.sk FROM ps WHERE ps.pk IN (SELECT ps.pk FROM ps WHERE ps.n = 1))")
     tree = sqlglot.parse_one(out, read="postgres")
@@ -77,9 +84,9 @@ def test_a_name_already_in_use_gets_a_fresh_alias():
 
 
 @pytest.mark.parametrize("sql", [
-    # a nested EXISTS stays: the semi-join reading spells it, and one query of a pair rewritten alone loses proofs
-    "SELECT s.name FROM s WHERE s.k IN (SELECT ps.sk FROM ps WHERE EXISTS (SELECT 1 FROM p WHERE p.k = ps.pk AND p.f = 1))",
+    # an EXISTS inside an EXISTS stays: the semi-join reading spells it, and one query of a pair rewritten alone loses proofs
     "SELECT s.name FROM s WHERE EXISTS (SELECT 1 FROM ps WHERE ps.sk = s.k AND EXISTS (SELECT 1 FROM p WHERE p.k = ps.pk))",
+    "SELECT s.name FROM s WHERE NOT EXISTS (SELECT ps.n FROM ps WHERE ps.sk = s.k AND EXISTS (SELECT 1 FROM l WHERE l.pk = ps.pk AND l.q > ps.n))",
     "SELECT ps.sk FROM ps WHERE ps.pk IN (SELECT p.k FROM p)",  # not inside a membership test: repeats would show
     "SELECT s.name FROM s WHERE s.k = (SELECT MAX(ps.sk) FROM ps WHERE ps.pk IN (SELECT p.k FROM p))",  # a scalar subquery
     "SELECT s.name FROM s WHERE s.k IN (SELECT ps.sk FROM ps WHERE ps.pk NOT IN (SELECT p.k FROM p))",
@@ -131,6 +138,10 @@ TARGETS = [
     (
         "SELECT s.name FROM s WHERE s.k IN (SELECT ps.sk FROM ps WHERE ps.pk IN (SELECT p.k FROM p WHERE p.f = 1))",
         "SELECT s.name FROM s WHERE EXISTS (SELECT 1 FROM ps JOIN p ON ps.pk = p.k WHERE p.f = 1 AND ps.sk = s.k)",
+    ),
+    (
+        "SELECT s.name FROM s WHERE s.k IN (SELECT ps.sk FROM ps WHERE EXISTS (SELECT 1 FROM p WHERE p.k = ps.pk AND p.f = 1))",
+        "SELECT s.name FROM s WHERE s.k IN (SELECT ps.sk FROM ps, p WHERE ps.pk = p.k AND p.f = 1)",
     ),
     (
         "SELECT s.name FROM s WHERE s.k NOT IN (SELECT ps.sk FROM ps WHERE ps.pk IN (SELECT p.k FROM p WHERE p.f = 1))",
