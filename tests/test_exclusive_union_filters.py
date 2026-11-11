@@ -58,6 +58,24 @@ def test_the_branches_become_one_select():
     )
 
 
+def test_inner_join_conditions_count_as_filters():
+    assert (
+        merged("SELECT l.x FROM l JOIN p AS a ON a.k = l.pk AND a.b = 1 INNER JOIN p AS c ON c.k = l.q AND c.b = 2 WHERE l.x > 0 "
+               "UNION ALL SELECT l.x FROM l JOIN p AS a ON a.k = l.pk AND a.b = 2 JOIN p AS c ON c.k = l.q AND c.b = 1 WHERE l.x > 0")
+        == "SELECT l.x FROM l, p AS a, p AS c WHERE a.k = l.pk AND c.k = l.q AND l.x > 0 AND ((a.b = 1 AND c.b = 2) OR (a.b = 2 AND c.b = 1))"
+    )
+    # a branch with everything in WHERE and one with the same conditions in ON
+    assert (
+        merged("SELECT l.x FROM l, p WHERE p.k = l.pk AND p.b = 1 UNION ALL SELECT l.x FROM l JOIN p ON p.k = l.pk AND p.b = 2")
+        == "SELECT l.x FROM l, p WHERE p.k = l.pk AND ((p.b = 1) OR (p.b = 2))"
+    )
+    # the join columns differ too: each stays with its branch
+    assert (
+        merged("SELECT l.x FROM l JOIN p ON p.k = l.pk WHERE l.b = 1 UNION ALL SELECT l.x FROM l JOIN p ON p.k = l.q WHERE l.b = 2")
+        == "SELECT l.x FROM l, p WHERE ((p.k = l.pk AND l.b = 1) OR (p.k = l.q AND l.b = 2))"
+    )
+
+
 @pytest.mark.parametrize("sql", [
     # the filters do not exclude each other
     "SELECT l.x FROM l WHERE l.b = 1 UNION ALL SELECT l.x FROM l WHERE l.b = 1",
@@ -77,7 +95,12 @@ def test_the_branches_become_one_select():
     # the branches are not the same query
     "SELECT l.x FROM l WHERE l.b = 1 UNION ALL SELECT l.q FROM l WHERE l.b = 2",
     "SELECT l.x FROM l WHERE l.b = 1 UNION ALL SELECT l.x FROM l JOIN p ON p.k = l.pk WHERE l.b = 2",
-    "SELECT l.x FROM l JOIN p ON p.k = l.pk WHERE l.b = 1 UNION ALL SELECT l.x FROM l JOIN p ON p.k = l.q WHERE l.b = 2",
+    "SELECT l.x FROM l LEFT JOIN p ON p.k = l.pk WHERE l.b = 1 UNION ALL SELECT l.x FROM l LEFT JOIN p ON p.k = l.q WHERE l.b = 2",  # an outer join's condition is not a filter
+    "SELECT l.x FROM l JOIN p ON k = l.pk WHERE l.b = 1 UNION ALL SELECT l.x FROM l JOIN p ON k = l.q WHERE l.b = 2",  # a bare name in ON
+    "SELECT l.x FROM l JOIN p ON p.k = (SELECT MAX(z.k) FROM p AS z) WHERE l.b = 1 UNION ALL SELECT l.x FROM l JOIN p ON p.k = l.q WHERE l.b = 2",
+    "SELECT l.x FROM l JOIN p ON p.k = l.pk AND p.b = 1 UNION ALL SELECT l.x FROM p JOIN l ON p.k = l.pk AND p.b = 2",  # the sources in another order
+    "SELECT l.x FROM l JOIN p ON p.k = l.pk AND p.b = 1 UNION ALL SELECT l.x FROM l JOIN p ON p.k = l.pk AND l.b = 2",  # pins on different columns
+    "SELECT l.x FROM l JOIN p USING (b) WHERE l.q = 1 UNION ALL SELECT l.x FROM l JOIN p USING (b) WHERE l.pk = 2",
     "SELECT l.x FROM l AS l WHERE l.b = 1 UNION ALL SELECT l.x FROM p AS l WHERE l.b = 2",
     # a branch does more than filter
     "SELECT COUNT(*) FROM l WHERE l.b = 1 UNION ALL SELECT COUNT(*) FROM l WHERE l.b = 2",  # two rows, not one
@@ -104,7 +127,24 @@ TARGETS = [
     ),
 ]
 
+TARGETS.append((
+    "SELECT SUM(l.x) FROM l, p AS a, p AS c WHERE a.k = l.pk AND c.k = l.q AND ((a.b = 1 AND c.b = 2) OR (a.b = 2 AND c.b = 1))",
+    "SELECT SUM(r) FROM (SELECT l.x AS r FROM l JOIN p AS a ON a.k = l.pk AND a.b = 1 JOIN p AS c ON c.k = l.q AND c.b = 2 "
+    "UNION ALL SELECT l.x AS r FROM l JOIN p AS a ON a.k = l.pk AND a.b = 2 JOIN p AS c ON c.k = l.q AND c.b = 1) AS u",
+))
+
 NEAR_MISSES = [
+    (  # the second pair of the single select is not the second branch's
+        "SELECT l.x FROM l, p AS a, p AS c WHERE a.k = l.pk AND c.k = l.q AND ((a.b = 1 AND c.b = 2) OR (a.b = 2 AND c.b = 2))",
+        "SELECT l.x FROM l JOIN p AS a ON a.k = l.pk AND a.b = 1 JOIN p AS c ON c.k = l.q AND c.b = 2 "
+        "UNION ALL SELECT l.x FROM l JOIN p AS a ON a.k = l.pk AND a.b = 2 JOIN p AS c ON c.k = l.q AND c.b = 1",
+        {"l": [(7, 5, 6, 0)], "p": [(5, 2, None), (6, 1, None)]},
+    ),
+    (  # conditions in ON that overlap: a joined row in both branches comes back twice
+        "SELECT l.x FROM l, p WHERE p.k = l.pk AND (p.b = 1 OR l.q = 2)",
+        "SELECT l.x FROM l JOIN p ON p.k = l.pk AND p.b = 1 UNION ALL SELECT l.x FROM l JOIN p ON p.k = l.pk AND l.q = 2",
+        {"l": [(7, 5, 2, 0)], "p": [(5, 1, None)]},
+    ),
     (  # overlapping filters: a row in both branches comes back twice
         "SELECT l.x FROM l WHERE l.b = 1 OR l.q = 2",
         "SELECT l.x FROM l WHERE l.b = 1 UNION ALL SELECT l.x FROM l WHERE l.q = 2",
@@ -142,6 +182,8 @@ def test_near_misses_are_not_proved(left, right, rows):
 
 
 REPLAYED = [
+    "SELECT l.x, a.s FROM l JOIN p AS a ON a.k = l.pk AND a.b = 1 JOIN p AS c ON c.k = l.q AND c.b = 2 WHERE l.x > 0 UNION ALL SELECT l.x, a.s FROM l JOIN p AS a ON a.k = l.pk AND a.b = 2 JOIN p AS c ON c.k = l.q AND c.b = 1 WHERE l.x > 0",
+    "SELECT l.x FROM l, p WHERE p.k = l.pk AND p.b = 1 UNION ALL SELECT l.x FROM l JOIN p ON p.k = l.q AND p.b = 2 UNION ALL SELECT l.x FROM l CROSS JOIN p WHERE p.b = 3 AND l.q IS NULL",
     "SELECT l.x FROM l JOIN p ON p.k = l.pk WHERE p.b = 1 AND l.q < 2 UNION ALL SELECT l.x FROM l JOIN p ON p.k = l.pk WHERE p.b = 2 AND l.q > 0",
     "SELECT SUM(r), COUNT(*) FROM (SELECT x AS r FROM l WHERE b = 1 UNION ALL (SELECT x AS r FROM l WHERE 2 = b UNION ALL SELECT x AS r FROM l WHERE b = 3 AND q > 0)) AS u",
     "SELECT l.x, p.s FROM l, p WHERE l.b = 0 AND p.k IS NULL UNION ALL SELECT l.x, p.s FROM l, p WHERE l.b = 1 AND (p.k = l.pk OR l.q IS NULL) UNION ALL SELECT l.x, p.s FROM l, p WHERE NOT l.q = 1 AND l.b = 3",
