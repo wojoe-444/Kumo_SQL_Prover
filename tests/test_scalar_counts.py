@@ -127,6 +127,22 @@ def test_other_selects_stay(sql):
     assert rewritten(sql) is None
 
 
+def test_a_select_nested_in_a_condition_is_left_alone():
+    """There ``wins`` could be a column of the query around the select."""
+
+    inner = "SELECT p.id, (SELECT COUNT(*) FROM games AS g WHERE g.w1 = p.id) AS wins FROM people AS p HAVING wins > 0"
+    for sql, expected in (
+        (f"SELECT * FROM ({inner}) AS d", True),
+        (f"SELECT * FROM notes AS n JOIN ({inner}) AS d ON d.id = n.id", True),
+        (f"SELECT * FROM ({inner} UNION ALL SELECT id, 0 FROM notes) AS d", True),
+        (f"SELECT * FROM notes AS n WHERE EXISTS ({inner})", False),
+        (f"SELECT n.id, ({inner} LIMIT 1) FROM notes AS n", False),
+    ):
+        tree = sqlglot.parse_one(sql, read="mysql")
+        found = [scalar_counts_to_grouped_join(node, SCHEMA, KEYS, NOT_NULL) is not None for node in tree.find_all(sqlglot.exp.Select) if node.args.get("having")]
+        assert found == [expected], sql
+
+
 def test_the_key_and_its_not_null_columns_are_needed():
     sql = "SELECT p.id, (SELECT COUNT(*) FROM games AS g WHERE g.w1 = p.id) AS wins FROM people AS p HAVING wins > 0"
     assert rewritten(sql) is not None

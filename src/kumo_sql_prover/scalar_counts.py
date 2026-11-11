@@ -17,7 +17,8 @@ which the prover compares with other grouped selects over the same two tables.
 **The rule.** The select reads one base table ``t`` that has a declared key of NOT NULL columns, has no joins,
 grouping, ``DISTINCT``, ``ORDER BY`` or ``LIMIT``, and returns row values of ``t`` and exactly one *scalar
 item* ``n``. Its only filter is ``n > 0``, ``n >= 1`` or ``n <> 0`` (``n`` read by its output name, in
-``HAVING`` or ``WHERE``, where no column of ``t`` has that name). The same is read through one derived table:
+``HAVING`` or ``WHERE``, where no column of ``t`` has that name, and only when the select is the whole statement
+or a derived table, so that no query around it can own the name). The same is read through one derived table:
 ``SELECT .. FROM (SELECT .., <scalar item> AS n FROM t) AS d WHERE d.n > 0`` with plain columns of ``d`` as
 outputs. The scalar item is one of
 
@@ -151,7 +152,7 @@ def _direct(select: exp.Select, known):
     if not present <= {"expressions", FROM_KEY, "from", "where", "having"} or {"where", "having"} <= present:
         return None
     sources = select_sources(select)
-    if len(sources) != 1 or _base_table(sources[0], known) is None:
+    if len(sources) != 1 or _base_table(sources[0], known) is None or not _stands_alone(select):
         return None
     clause = select.args.get("where") or select.args.get("having")
     test = _filter(clause.this if clause is not None else None)
@@ -165,6 +166,24 @@ def _direct(select: exp.Select, known):
     if [name.lower() for _, name, _ in items].count(test[0]) != 1:
         return None
     return sources[0], items, test[:3]
+
+
+def _stands_alone(select: exp.Select) -> bool:
+    """Whether no query around the select can lend it a column: it is the statement, or (a branch of) a derived table.
+
+    In a nested query of a ``WHERE`` or of a select list, a bare ``n`` in the filter could be a column of the
+    query around it instead of the select's own output.
+    """
+
+    node: exp.Expression = select
+    while node.parent is not None:
+        parent = node.parent
+        if isinstance(parent, exp.Subquery) and node is parent.this and isinstance(parent.parent, (exp.From, exp.Join)):
+            return True
+        if not isinstance(parent, (exp.Subquery, exp.Paren, exp.Union)):
+            return False
+        node = parent
+    return True
 
 
 def _through_derived(select: exp.Select, known):
