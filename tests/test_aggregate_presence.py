@@ -1,4 +1,4 @@
-"""``(SELECT MIN(TRUE) FROM ..) IS NOT NULL`` asks whether a row exists (``kumo_sql_prover.aggregate_presence``)."""
+"""A one-row aggregate that only asks whether a row exists is ``EXISTS`` (``kumo_sql_prover.aggregate_presence``)."""
 
 import random
 
@@ -55,6 +55,28 @@ def test_null_is_not_exists():
     )
 
 
+@pytest.mark.parametrize(
+    "test, expected",
+    [
+        ("(SELECT COUNT(*) FROM u WHERE u.a = x.a) = 0", "NOT EXISTS(SELECT 1 FROM u WHERE u.a = x.a)"),
+        ("0 = (SELECT COUNT(*) FROM u WHERE u.a = x.a)", "NOT EXISTS(SELECT 1 FROM u WHERE u.a = x.a)"),
+        ("(SELECT COUNT(1) FROM u WHERE u.a = x.a) < 1", "NOT EXISTS(SELECT 1 FROM u WHERE u.a = x.a)"),
+        ("0 >= (SELECT COUNT(*) FROM u WHERE u.a = x.a)", "NOT EXISTS(SELECT 1 FROM u WHERE u.a = x.a)"),
+        ("(SELECT COUNT(*) FROM u WHERE u.a = x.a) > 0", "EXISTS(SELECT 1 FROM u WHERE u.a = x.a)"),
+        ("(SELECT COUNT(*) FROM u WHERE u.a = x.a) >= 1", "EXISTS(SELECT 1 FROM u WHERE u.a = x.a)"),
+        ("1 <= (SELECT COUNT(*) FROM u WHERE u.a = x.a)", "EXISTS(SELECT 1 FROM u WHERE u.a = x.a)"),
+        ("(SELECT COUNT(*) FROM u WHERE u.a = x.a) <> 0", "EXISTS(SELECT 1 FROM u WHERE u.a = x.a)"),
+        ("0 < (SELECT COUNT(*) FROM u)", "EXISTS(SELECT 1 FROM u)"),
+        # COUNT of a column counts the rows where it is not NULL
+        ("(SELECT COUNT(u.c) FROM u WHERE u.a = x.a) = 0", "NOT EXISTS(SELECT 1 FROM u WHERE u.a = x.a AND NOT u.c IS NULL)"),
+        ("(SELECT COUNT(DISTINCT u.c) FROM u WHERE u.a = x.a OR u.c = 1) > 0", "EXISTS(SELECT 1 FROM u WHERE (u.a = x.a OR u.c = 1) AND NOT u.c IS NULL)"),
+        ("(SELECT COUNT(c) FROM u) > 0", "EXISTS(SELECT 1 FROM u WHERE NOT c IS NULL)"),
+    ],
+)
+def test_a_count_compared_with_zero_is_an_existence_test(test, expected):
+    assert rewritten(f"SELECT x.a FROM t AS x WHERE {test}") == f"SELECT x.a FROM t AS x WHERE {expected}"
+
+
 def test_joins_inside_the_subquery_are_kept():
     assert (
         rewritten("SELECT x.a FROM t AS x WHERE NOT (SELECT MIN(TRUE) FROM u JOIN t AS y ON y.a = u.a WHERE u.c = x.b) IS NULL")
@@ -91,6 +113,23 @@ def test_only_the_selects_own_tests_are_rewritten():
         "SELECT x.a FROM t AS x WHERE (SELECT MIN(TRUE) FROM u WHERE u.a = x.a)",
         "SELECT x.a FROM t AS x WHERE NOT (SELECT MIN(TRUE) + MAX(u.c) FROM u WHERE u.a = x.a) IS NULL",
         "SELECT x.a FROM t AS x WHERE NOT x.b IS NULL",
+        # counts that ask for more than "any row"
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a) = 1",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a) > 1",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a) <= 1",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a) >= 0",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a) < 0",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a) = '0'",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a) = x.b",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a GROUP BY u.c) = 0",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a HAVING MAX(u.c) > 1) = 0",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a LIMIT 0) = 0",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(u.c + 1) FROM u WHERE u.a = x.a) = 0",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(DISTINCT u.a, u.c) FROM u WHERE u.a = x.a) = 0",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) + 1 FROM u WHERE u.a = x.a) > 0",
+        "SELECT x.a FROM t AS x WHERE (SELECT SUM(1) FROM u WHERE u.a = x.a) > 0",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a) + 1 > 0",
+        "SELECT x.a FROM t AS x WHERE x.b > 0",
     ],
 )
 def test_other_tests_stay(sql):
@@ -113,7 +152,42 @@ PROOFS = [
     ),
 ]
 
+PROOFS += [
+    (
+        "SELECT x.a, x.b FROM t AS x WHERE 0 = (SELECT COUNT(*) FROM u JOIN t AS y ON y.a = u.c WHERE u.a = x.a AND y.b = 3)",
+        "SELECT x.a, x.b FROM t AS x WHERE NOT EXISTS (SELECT 1 FROM u JOIN t AS y ON y.a = u.c WHERE u.a = x.a AND y.b = 3)",
+    ),
+    (
+        # the anti-join spelling of "none"
+        "SELECT x.a, x.b FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a AND u.c = 3) = 0",
+        "SELECT x.a, x.b FROM t AS x LEFT JOIN (SELECT u.a FROM u WHERE u.c = 3) AS d ON d.a = x.a WHERE d.a IS NULL",
+    ),
+    (
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(u.c) FROM u WHERE u.a = x.a) > 0",
+        "SELECT x.a FROM t AS x WHERE EXISTS (SELECT 1 FROM u WHERE u.a = x.a AND u.c IS NOT NULL)",
+    ),
+]
+
 NOT_PROVED = [
+    # NOT IN is empty when the subquery holds a NULL; the count is not
+    (
+        "SELECT x.a FROM t AS x WHERE 0 = (SELECT COUNT(*) FROM u WHERE u.a = x.a)",
+        "SELECT x.a FROM t AS x WHERE x.a NOT IN (SELECT u.a FROM u)",
+    ),
+    # COUNT(c) skips NULLs, COUNT(*) does not
+    (
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(u.c) FROM u WHERE u.a = x.a) > 0",
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a) > 0",
+    ),
+    # at least one is not exactly one
+    (
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a) = 1",
+        "SELECT x.a FROM t AS x WHERE EXISTS (SELECT 1 FROM u WHERE u.a = x.a)",
+    ),
+    (
+        "SELECT x.a FROM t AS x WHERE (SELECT COUNT(*) FROM u WHERE u.a = x.a) = 0",
+        "SELECT x.a FROM t AS x WHERE EXISTS (SELECT 1 FROM u WHERE u.a = x.a)",
+    ),
     # a NULL value is NULL although the row exists
     (
         "SELECT x.a FROM t AS x WHERE NOT (SELECT MIN(u.c) FROM u WHERE u.a = x.a) IS NULL",
@@ -174,6 +248,10 @@ DIFFERENTIAL = [
     "SELECT x.a, (SELECT MIN('k') FROM u WHERE u.c = x.b) IS NULL AS none FROM t AS x",
     "SELECT x.a FROM t AS x WHERE NOT (SELECT MIN(FALSE) FROM u LEFT JOIN t AS y ON y.a = u.c WHERE u.a = x.a) IS NULL OR x.b IS NULL",
     "SELECT x.a, y.a FROM t AS x LEFT JOIN u AS y ON y.a = x.a AND (SELECT MIN(TRUE) FROM u AS z WHERE z.c = y.c + 1) IS NULL",
+    "SELECT x.a, x.b FROM t AS x WHERE 0 = (SELECT COUNT(*) FROM u WHERE u.a = x.a)",
+    "SELECT x.a, x.b FROM t AS x WHERE (SELECT COUNT(u.c) FROM u WHERE u.a = x.a OR u.c = x.b) >= 1 OR x.b IS NULL",
+    "SELECT x.a, (SELECT COUNT(DISTINCT u.c) FROM u WHERE u.a = x.a) < 1 AS none, 1 <= (SELECT COUNT(1) FROM u WHERE u.c > x.b) AS some FROM t AS x",
+    "SELECT x.a, y.c FROM t AS x LEFT JOIN u AS y ON y.a = x.a AND (SELECT COUNT(*) FROM t AS z WHERE z.b = y.c) <> 0",
 ]
 
 
