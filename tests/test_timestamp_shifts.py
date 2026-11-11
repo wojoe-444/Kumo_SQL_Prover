@@ -36,6 +36,8 @@ def proved(left, right):
     ("TIMESTAMP '2024-10-01' - INTERVAL '36 hours'", "2024-09-29 12:00:00"),
     ("TIMESTAMP '2024-10-01T12:34:56.5' + INTERVAL '90 minutes'", "2024-10-01 14:04:56.5"),
     ("TIMESTAMP '2024-10-01 12:34:56' + INTERVAL '-2 weeks'", "2024-09-17 12:34:56"),
+    ("CAST('2024-10-01 12:34:56' AS TIMESTAMP(0)) - INTERVAL '1 year'", "2023-10-01 12:34:56"),  # a precision that rounds nothing
+    ("CAST('2024-10-01 12:34:56.250' AS TIMESTAMP(3)) - INTERVAL '1 day'", "2024-09-30 12:34:56.25"),
 ])
 def test_constant_shifts_fold(expression, value):
     assert folded(f"SELECT e.id FROM e WHERE e.ts < {expression}") == f"SELECT e.id FROM e WHERE e.ts < CAST('{value}' AS TIMESTAMP)"
@@ -48,7 +50,8 @@ def test_constant_shifts_fold(expression, value):
     f"{BASE} - e.n * INTERVAL '1 day'",
     "e.ts - INTERVAL '1 year'",  # not a constant
     "CAST('2024-10-01 12:34:56' AS TIMESTAMPTZ) - INTERVAL '1 day'",  # depends on the session's time zone
-    "CAST('2024-10-01 12:34:56' AS TIMESTAMP(0)) - INTERVAL '1 day'",
+    "CAST('2024-10-01 12:34:56.75' AS TIMESTAMP(0)) - INTERVAL '1 day'",  # the cast rounds the literal first
+    "CAST('2024-10-01 12:34:56.123456' AS TIMESTAMP(3)) - INTERVAL '1 day'",
     "CAST('2024-02-30 12:34:56' AS TIMESTAMP) - INTERVAL '1 day'",  # not a date
     "CAST('yesterday' AS TIMESTAMP) - INTERVAL '1 day'",
     "CAST('0001-01-01 00:00:00' AS TIMESTAMP) - INTERVAL '1 day'",  # out of range

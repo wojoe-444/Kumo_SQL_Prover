@@ -22,9 +22,10 @@ Folded only when (the expression is left as written otherwise):
 
 * the dialect is PostgreSQL or DuckDB;
 * the left operand is ``CAST('<literal>' AS TIMESTAMP)`` (``TIMESTAMP '<literal>'`` parses to the same) with no
-  precision and no time zone, and the literal is ``YYYY-MM-DD`` or ``YYYY-MM-DD HH:MM:SS[.ffffff]`` (a ``T`` separator
-  is accepted) naming a real date and time. ``TIMESTAMPTZ`` is declined: its day arithmetic depends on the session's
-  time zone;
+  time zone, and the literal is ``YYYY-MM-DD`` or ``YYYY-MM-DD HH:MM:SS[.ffffff]`` (a ``T`` separator is accepted)
+  naming a real date and time. ``TIMESTAMP(p)`` is accepted when the literal has at most ``p`` fractional digits, so
+  that the cast rounds nothing and gives the value ``TIMESTAMP`` gives. ``TIMESTAMPTZ`` is declined: its day
+  arithmetic depends on the session's time zone;
 * the right operand is ``INTERVAL '<integer>' <unit>`` with one of the units above (singular or plural). An interval
   with several fields (``'1 year 2 months'``), a fraction or no unit is declined;
 * the operator is ``+`` or ``-`` with the timestamp on the left, and the result lies in the years 1 to 9999.
@@ -51,8 +52,14 @@ def _timestamp_of(node: exp.Expression) -> datetime.datetime | None:
     if type(node) is not exp.Cast or any(value for key, value in node.args.items() if key not in ("this", "to")):
         return None
     to = node.args.get("to")
-    if not isinstance(to, exp.DataType) or to.this != exp.DataType.Type.TIMESTAMP or to.expressions:
+    if not isinstance(to, exp.DataType) or to.this != exp.DataType.Type.TIMESTAMP or len(to.expressions) > 1:
         return None
+    digits = 6
+    if to.expressions:  # TIMESTAMP(p): the same value when the literal has no more than p fractional digits
+        precision = to.expressions[0].this if isinstance(to.expressions[0], exp.DataTypeParam) else None
+        if not isinstance(precision, exp.Literal) or precision.is_string or precision.this not in ("0", "1", "2", "3", "4", "5", "6"):
+            return None
+        digits = int(precision.this)
     literal = node.this
     if not isinstance(literal, exp.Literal) or not literal.is_string:
         return None
@@ -60,6 +67,8 @@ def _timestamp_of(node: exp.Expression) -> datetime.datetime | None:
     if match is None:
         return None
     year, month, day, hour, minute, second, fraction = match.groups()
+    if len((fraction or "").rstrip("0")) > digits:
+        return None  # the cast would round the literal
     try:
         return datetime.datetime(int(year), int(month), int(day), int(hour or 0), int(minute or 0), int(second or 0), int((fraction or "0").ljust(6, "0")))  # noqa: DTZ001
     except ValueError:
@@ -110,6 +119,9 @@ def fold_timestamp_shifts(tree: exp.Expression, dialect: str) -> exp.Expression:
         return tree
 
     def step(node: exp.Expression) -> exp.Expression:
+        if type(node) is exp.Paren and type(node.this) in (exp.Add, exp.Sub):
+            inner = step(node.this)
+            return inner if inner is not node.this else node  # a folded constant needs no parentheses
         if type(node) not in (exp.Add, exp.Sub):
             return node
         base = node.this
