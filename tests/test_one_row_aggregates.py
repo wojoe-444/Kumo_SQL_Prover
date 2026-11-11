@@ -119,6 +119,11 @@ def test_a_joined_one_row_table_becomes_scalar_subqueries():
     "SELECT x.a FROM t AS x, (SELECT v AS total FROM u) AS y WHERE x.b = y.total",
     "SELECT x.a AS total FROM t AS x, (SELECT COUNT(*) AS total FROM u) AS y GROUP BY x.a HAVING total > 1",  # total is an alias too
     "SELECT x.a FROM t AS x JOIN (SELECT COUNT(*) AS id FROM u) AS y USING (id)",
+    # the derived table reads the query two levels out; next to t AS o the name would mean t
+    "SELECT o.id FROM u AS o WHERE EXISTS (SELECT 1 FROM t AS o, (SELECT COUNT(*) AS n FROM u AS i WHERE i.a = o.a) AS y WHERE y.n > o.b)",
+    "SELECT o.id FROM u AS o WHERE EXISTS (SELECT 1 FROM t AS x, (SELECT COUNT(*) AS n FROM u AS i WHERE i.a = b) AS y WHERE y.n > x.b)",
+    "SELECT x.a FROM t AS x, (SELECT COUNT(*) AS n FROM u WHERE v IN (SELECT b FROM t)) AS y WHERE x.b = y.n",  # a nested query
+    "SELECT x.a FROM t AS x, (SELECT COUNT(*) AS n FROM (SELECT v FROM u) AS d) AS y WHERE x.b = y.n",
     "SELECT x.a FROM t AS x NATURAL JOIN (SELECT COUNT(*) AS id FROM u) AS y",
 ])
 def test_other_queries_stay(sql):

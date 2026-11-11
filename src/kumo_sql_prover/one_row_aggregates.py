@@ -35,8 +35,10 @@ to the query outside, and the select then returns a row per input row).
    Each row of the other sources was paired with the single row, so the rows and their multiplicity are
    unchanged; with inner joins only, an ``ON`` condition filters exactly like a ``WHERE`` condition, so all
    ``ON`` parts move to the ``WHERE``. The value read is the same: the scalar subquery aggregates the same rows
-   of the same tables. (A derived table cannot read the select around it, so the subquery means the same
-   wherever it is put.)
+   of the same tables. For that to hold where the subquery is put, the derived table must read nothing but
+   its own base tables: every column in it is qualified by one of them or is a bare name one of them has, and
+   it holds no nested query. (A derived table inside a correlated subquery may read a query further out; moved
+   next to its sibling sources, such a name could be captured by one of them.)
 
 **What is refused in 3.** An outer, ``USING`` or ``NATURAL`` join anywhere in the select; a select with no other
 source; a star; a derived table with a column list, or outputs that are unnamed or share a name; a read of its
@@ -173,6 +175,29 @@ def _inside(node: exp.Expression, ancestor: exp.Expression) -> bool:
     return False
 
 
+def _closed(select: exp.Select, known: dict[str, list[str]]) -> bool:
+    """Whether every column of ``select`` is one of its own base tables' columns, so that it reads the same
+    wherever it is put: no nested query, and no name that the select around its new place could capture."""
+
+    qualifiers: set[str] = set()
+    columns: set[str] = set()
+    for source in select_sources(select):
+        offered = _base_table(source, known)
+        if offered is None:
+            return False
+        qualifiers.add(source.alias_or_name.lower())
+        columns |= set(offered)
+    for node in select.walk():
+        if node is not select and isinstance(node, (exp.Query, exp.Subquery)):
+            return False
+        if isinstance(node, exp.Column) and not isinstance(node.this, exp.Star):
+            if node.args.get("db") or node.args.get("catalog"):
+                return False
+            if (node.table.lower() not in qualifiers) if node.table else (node.name.lower() not in columns):
+                return False
+    return True
+
+
 def _inline_source(select: exp.Select, known: dict[str, list[str]]) -> bool:
     sources = select_sources(select)
     joins = select.args.get("joins") or []
@@ -183,7 +208,7 @@ def _inline_source(select: exp.Select, known: dict[str, list[str]]) -> bool:
             return False
     names = [source.alias_or_name.lower() for source in sources]
     for source in sources:
-        if not isinstance(source, exp.Subquery) or not _one_row(source.this, known):
+        if not isinstance(source, exp.Subquery) or not _one_row(source.this, known) or not _closed(source.this, known):
             continue
         alias = source.args.get("alias")
         if any(value for key, value in source.args.items() if key not in ("this", "alias", "comments")) or (alias is not None and alias.args.get("columns")):
