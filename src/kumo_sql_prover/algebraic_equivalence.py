@@ -4883,6 +4883,9 @@ def normalize(
         from .aggregate_membership import read_aggregate_membership
 
         tree = read_aggregate_membership(tree, schema, dialect)  # pre-pass: (k, v) IN (SELECT k, MIN(v) .. GROUP BY k) compares with the group's aggregate
+        from .rank_filters import read_rank_filters
+
+        tree = read_rank_filters(tree, schema, not_null, keys)  # pre-pass: RANK() .. = 1 keeps the rows holding the partition's MIN or MAX
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
     tree = trim_redundant_row_clauses(tree)

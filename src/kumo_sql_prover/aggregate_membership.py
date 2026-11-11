@@ -29,10 +29,13 @@ The rewrite is made only where "not TRUE" is all that matters: a top-level ``AND
 is ``x = (SELECT MIN(a) FROM t) AND y = (SELECT COUNT(*) FROM t)`` for any aggregate expressions.
 
 **What is read.** The subquery is one select over one base table whose columns the caller supplied, with an
-optional ``WHERE``, a ``GROUP BY`` of plain columns and nothing else (no ``HAVING``, ``DISTINCT``, window, join,
-``LIMIT`` or nested query). Each output is a group key or a plain ``MIN``, ``MAX``, ``SUM`` or ``AVG``; every key
-is output; every column in it is the table's own (a bare name the table has, or one qualified by the table). The
-left operands hold no subquery, aggregate or window.
+optional ``WHERE``, a ``GROUP BY`` of plain columns and nothing else (no ``HAVING``, window, join, ``LIMIT`` or
+nested query). Each output is a group key or a plain ``MIN``, ``MAX``, ``SUM`` or ``AVG``; every key is output;
+every column in it is the table's own (a bare name the table has, or one qualified by the table). The left
+operands hold no subquery, aggregate or window. Three things an ``IN`` cannot see are read through: ``DISTINCT``
+(a repeated row matches exactly as its first copy does), an ``ORDER BY`` with no row limit, and a select that
+only lists columns of the aggregating one (``IN (SELECT * FROM g)`` or ``IN (SELECT g.k, g.m FROM g)`` once a
+``WITH`` table ``g`` is inlined), whose listed columns are then the outputs compared.
 
 **Names.** The left operands move one level down, into the new scalar subqueries, so each of their columns has to
 name its source first: a bare one gets the qualifier of the single source of the enclosing select that has it
@@ -117,17 +120,75 @@ def _positive_where_part(node: exp.In) -> exp.Select | None:
     return parent.parent if any(part is node for part in conjuncts(parent.this)) else None
 
 
-def _site(node: exp.In, known: dict[str, list[str]]):
-    """``(inner select, table, key positions, aggregate positions)`` when ``node`` is a test the module reads."""
+def _plain_distinct(select: exp.Select) -> bool:
+    distinct = select.args.get("distinct")
+    return distinct is None or (isinstance(distinct, exp.Distinct) and not distinct.args.get("on") and not distinct.expressions)
 
-    if node.args.get("expressions") or node.args.get("unnest") or node.args.get("field") or _positive_where_part(node) is None:
-        return None
-    query = node.args.get("query")
+
+def _membership_blind(select: exp.Select) -> bool:
+    """Whether a select carries only what an ``IN`` cannot see: ``DISTINCT`` (a repeated row matches as the first does)
+    and an ``ORDER BY`` with no row limit."""
+
+    if not _plain_distinct(select) or select.args.get("limit") or select.args.get("offset"):
+        return False
+    return not any(value for key, value in select.args.items() if key not in _SELECT_ARGS and key not in ("distinct", "order"))
+
+
+def _grouped(query: exp.Expression | None) -> tuple[exp.Select, list[exp.Expression]] | None:
+    """The aggregating select an ``IN`` subquery reads and the expression each of its output positions holds.
+
+    Either the subquery itself, or a select that only lists columns of it (``SELECT * FROM (..) AS g`` or
+    ``SELECT g.k, g.m FROM (..) AS g``, what an inlined ``WITH`` table looks like).
+    """
+
     inner = query.this if isinstance(query, exp.Subquery) else query
     if isinstance(query, exp.Subquery) and any(value for key, value in query.args.items() if key not in ("this", "comments")):
         return None
-    if not isinstance(inner, exp.Select) or any(value for key, value in inner.args.items() if key not in _SELECT_ARGS):
+    if not isinstance(inner, exp.Select) or not _membership_blind(inner):
         return None
+    sources = select_sources(inner)
+    if len(sources) == 1 and isinstance(sources[0], exp.Subquery) and isinstance(sources[0].this, exp.Select):
+        wrapped = sources[0]
+        below = wrapped.this
+        alias = wrapped.args.get("alias")
+        if inner.args.get("where") is not None or inner.args.get("group") is not None or not wrapped.alias or alias.args.get("columns"):
+            return None
+        if any(value for key, value in wrapped.args.items() if key not in ("this", "alias", "comments")) or not _membership_blind(below):
+            return None
+        outputs = [_unwrap(item.this if isinstance(item, exp.Alias) else item) for item in below.expressions]
+        if len(inner.expressions) == 1 and isinstance(inner.expressions[0], exp.Star) and not any(inner.expressions[0].args.values()):
+            return below, outputs
+        names = [item.alias_or_name.lower() for item in below.expressions]
+        if any(isinstance(item, exp.Star) or (isinstance(item, exp.Column) and isinstance(item.this, exp.Star)) for item in below.expressions):
+            return None
+        picked = []
+        for item in inner.expressions:
+            item = _unwrap(item.this if isinstance(item, exp.Alias) else item)
+            if not isinstance(item, exp.Column) or isinstance(item.this, exp.Star) or item.args.get("db"):
+                return None
+            if item.table and item.table.lower() != wrapped.alias.lower():
+                return None
+            if names.count(item.name.lower()) != 1:
+                return None
+            picked.append(outputs[names.index(item.name.lower())])
+        return below, picked
+    return inner, [_unwrap(item.this if isinstance(item, exp.Alias) else item) for item in inner.expressions]
+
+
+def _named_column(node: exp.Expression) -> str | None:
+    node = _unwrap(node)
+    return node.name.lower() if isinstance(node, exp.Column) and not isinstance(node.this, exp.Star) else None
+
+
+def _site(node: exp.In, known: dict[str, list[str]]):
+    """``(aggregating select, table, key positions, aggregate positions, outputs)`` when ``node`` is a test the module reads."""
+
+    if node.args.get("expressions") or node.args.get("unnest") or node.args.get("field") or _positive_where_part(node) is None:
+        return None
+    read = _grouped(node.args.get("query"))
+    if read is None:
+        return None
+    inner, outputs = read
     sources = select_sources(inner)
     if len(sources) != 1:
         return None
@@ -146,14 +207,17 @@ def _site(node: exp.In, known: dict[str, list[str]]):
                 return None
         elif isinstance(walked, exp.Star) and not isinstance(walked.parent, exp.Count):
             return None
+    for item in inner.expressions:
+        # an alias that takes the name of another column: GROUP BY and ORDER BY may then read either one
+        if isinstance(item, exp.Alias) and item.alias.lower() in columns and _named_column(item.this) != item.alias.lower():
+            return None
     lefts = _lefts(node)
-    if len(lefts) != len(inner.expressions):
+    if len(lefts) != len(outputs):
         return None
     for left in lefts:
         if any(isinstance(n, (exp.Query, exp.Subquery, exp.AggFunc, exp.Window, exp.Exists, exp.Star)) for n in left.walk()):
             return None
     group = inner.args.get("group")
-    outputs = [_unwrap(item.this if isinstance(item, exp.Alias) else item) for item in inner.expressions]
     if group is None:
         # one row whatever the table holds: every output must be computed from aggregates alone
         for output in outputs:
@@ -163,7 +227,7 @@ def _site(node: exp.In, known: dict[str, list[str]]):
                 return None
             if any(call.find_ancestor(exp.AggFunc) is not None for call in output.find_all(exp.AggFunc)):
                 return None
-        return inner, table, {}, list(range(len(outputs)))
+        return inner, table, {}, list(range(len(outputs))), outputs
     if extended_grouping(group) or any(value for key, value in group.args.items() if key != "expressions"):
         return None
     keys = []
@@ -187,7 +251,7 @@ def _site(node: exp.In, known: dict[str, list[str]]):
             return None
     if not aggregate_positions or set(key_positions.values()) != set(keys):
         return None
-    return inner, table, key_positions, aggregate_positions
+    return inner, table, key_positions, aggregate_positions, outputs
 
 
 def _owners(select: exp.Select, known: dict[str, list[str]]) -> dict[str, list[str]] | None:
@@ -241,9 +305,8 @@ def _fresh(taken: set[str]) -> str:
 
 
 def _comparisons(node: exp.In, site, taken: set[str]) -> exp.Expression:
-    inner, table, key_positions, aggregate_positions = site
+    inner, table, key_positions, aggregate_positions, outputs = site
     lefts = _lefts(node)
-    outputs = [_unwrap(item.this if isinstance(item, exp.Alias) else item) for item in inner.expressions]
     parts = []
     for position in aggregate_positions:
         alias = _fresh(taken)

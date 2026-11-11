@@ -52,6 +52,15 @@ def test_the_grouped_membership_becomes_a_comparison():
     )
 
 
+def test_what_membership_cannot_see_is_read_through():
+    plain = "SELECT a, c FROM t WHERE t.b = (SELECT MIN(kqm0.b) FROM t AS kqm0 WHERE kqm0.a = t.a)"
+    assert rewritten("SELECT a, c FROM t WHERE (a, b) IN (SELECT DISTINCT a, MIN(b) FROM t GROUP BY a)") == plain
+    assert rewritten("SELECT a, c FROM t WHERE (a, b) IN (SELECT a, MIN(b) AS m FROM t GROUP BY a ORDER BY a DESC)") == plain
+    assert rewritten("SELECT a, c FROM t WHERE (a, b) IN (SELECT * FROM (SELECT a, MIN(b) AS m FROM t GROUP BY a) AS g)") == plain
+    assert rewritten("WITH g AS (SELECT a, MIN(b) AS m FROM t GROUP BY a) SELECT a, c FROM t WHERE (b, a) IN (SELECT m, g.a FROM g)") is None  # WITH is inlined before the rule runs
+    assert rewritten("SELECT a, c FROM t WHERE (b, a) IN (SELECT m, g.a FROM (SELECT a, MIN(b) AS m FROM t GROUP BY a) AS g)") == plain
+
+
 def test_a_subquery_of_one_row_compares_each_value():
     assert rewritten("SELECT a FROM t WHERE b IN (SELECT MAX(b) FROM t)") == "SELECT a FROM t WHERE t.b = (SELECT MAX(kqm0.b) FROM t AS kqm0)"
     assert rewritten("SELECT a FROM t WHERE (b, c) IN (SELECT MIN(b), COUNT(*) + 1 FROM t WHERE a > 0)") == (
@@ -77,7 +86,10 @@ def test_a_fresh_name_avoids_the_names_in_the_statement():
     "SELECT a, (a, b) IN (SELECT a, MIN(b) FROM t GROUP BY a) FROM t",  # a value, not a filter
     "SELECT a FROM t GROUP BY a HAVING (a, MAX(b)) IN (SELECT a, MIN(b) FROM t GROUP BY a)",
     "SELECT a FROM t WHERE (a, b) IN (SELECT a, MIN(b) FROM t GROUP BY a HAVING COUNT(*) > 1)",
-    "SELECT a FROM t WHERE (a, b) IN (SELECT DISTINCT a, MIN(b) FROM t GROUP BY a)",
+    "SELECT a FROM t WHERE (a, b) IN (SELECT a AS b, MIN(b) FROM t GROUP BY b)",  # GROUP BY b: the column or the alias
+    "SELECT a FROM t WHERE (a, b) IN (SELECT g.a, g.m FROM (SELECT a, MIN(b) AS m FROM t GROUP BY a) AS g WHERE g.m > 0)",  # the wrapper filters
+    "SELECT a FROM t WHERE b IN (SELECT g.m FROM (SELECT a, MIN(b) AS m FROM t GROUP BY a) AS g)",  # the wrapper drops the key
+    "SELECT a FROM t WHERE (a, b) IN (SELECT a, MIN(b) FROM t GROUP BY a ORDER BY a LIMIT 2)",
     "SELECT a FROM t WHERE (a, b) IN (SELECT a, MIN(b) FROM t GROUP BY a LIMIT 1)",
     "SELECT a FROM t WHERE (a, b) IN (SELECT a, MIN(b) FROM t GROUP BY a WITH ROLLUP)",
     "SELECT a FROM t WHERE (a, b) IN (SELECT t.a, MIN(d) FROM t JOIN u ON t.a = u.a GROUP BY t.a)",  # a join inside
@@ -97,6 +109,8 @@ def test_other_tests_stay(sql):
 
 
 PROOFS = [
+    ("WITH g AS (SELECT a, MIN(b) AS m FROM t GROUP BY a) SELECT a, c FROM t WHERE (a, b) IN (SELECT a, m FROM g)",
+     "SELECT x.a, x.c FROM t AS x JOIN (SELECT a, MIN(b) AS m FROM t GROUP BY a) AS g ON x.a = g.a AND x.b = g.m"),
     ("SELECT a, c FROM t WHERE (a, b) IN (SELECT a, MIN(b) FROM t GROUP BY a)",
      "SELECT x.a, x.c FROM t AS x JOIN (SELECT a, MIN(b) AS m FROM t GROUP BY a) AS g ON x.a = g.a AND x.b = g.m"),
     ("SELECT a, c FROM t WHERE (a, b) IN (SELECT a, MAX(b) FROM t WHERE c > 0 GROUP BY a)",
@@ -141,6 +155,9 @@ def test_the_count_pair_really_differs():
 
 QUERIES = [
     "SELECT a, c FROM t WHERE (a, b) IN (SELECT a, MIN(b) FROM t GROUP BY a)",
+    "SELECT a, c FROM t WHERE (a, b) IN (SELECT DISTINCT a, MAX(b) FROM t GROUP BY a ORDER BY a)",
+    "SELECT a, c FROM t WHERE (b, a) IN (SELECT m, g.a FROM (SELECT a, SUM(b) AS m FROM t WHERE c > 0 GROUP BY a) AS g)",
+    "SELECT a, c FROM t WHERE (a, b) IN (SELECT * FROM (SELECT DISTINCT a, MIN(b) FROM t GROUP BY a) AS g)",
     "SELECT a, c FROM t WHERE c > 0 AND (a, b) IN (SELECT a, MAX(b) FROM t WHERE c > 1 OR b = 2 GROUP BY a)",
     "SELECT x.c FROM t AS x WHERE (x.b, c + 1, x.a) IN (SELECT MAX(b), SUM(y.c), a FROM t AS y GROUP BY y.a)",
     "SELECT d FROM u JOIN t ON u.a = t.a WHERE (d, b, c) IN (SELECT a, b, AVG(c) FROM t GROUP BY a, b)",
