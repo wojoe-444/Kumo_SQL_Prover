@@ -34,11 +34,16 @@ there are only parentheses, ``+``, ``-``, ``*`` and unary minus, and the whole a
 are computed exactly on exact numbers, so the argument's value is the same expression with the chosen arm in
 the ``CASE``'s place, and they give NULL for a NULL operand, which is what a missing ``ELSE`` gives. The other
 operands are columns, literals and arithmetic, so writing them once per arm changes nothing. (At most three
-``CASE``/``IF`` in one argument are read this way.)
+``CASE``/``IF`` in one argument are read this way.) A ``/`` may be on the way too when every arm of the ``CASE``
+is an integer (an integer column or literal, ``+ - *`` over those) or NULL: the ``CASE`` is then an integer of
+the arm's value, and a division sees the same operand, value and type, as it sees with the arm in its place
+(with a ``DECIMAL`` arm the ``CASE`` could carry more declared decimals than the arm, which a division shows).
 
 **Rule 2: ROUND of a whole number is the number.** ``ROUND(e)`` and ``ROUND(e, d)`` with ``d`` a literal ``0``
 or more are ``e`` when ``e`` is an exact whole number: an integer column, a plain number literal with a whole
-value (``7``, ``1.0``), or ``+``, ``-``, ``*`` and unary minus over those. MySQL returns the same number (an
+value (``7``, ``1.0``), a zero literal times or divided by an exact number (``pay * 0 * 0.01`` is zero, or
+NULL), or ``+``, ``-``, ``*`` and unary minus over those. In what is left, a zero divided by a number literal
+other than zero is written without the division (``pay * 0 / 100`` is ``pay * 0``: zero, or NULL with ``pay``). MySQL returns the same number (an
 integer for an integer, a ``DECIMAL`` without decimals for ``pay * 1.0``; the prover compares numbers by value,
 as it does for ``pay * 1.0`` and ``pay``), and NULL for NULL.
 
@@ -192,10 +197,29 @@ def _integer(node: exp.Expression, column_type) -> bool:
     return False
 
 
-def _whole(node: exp.Expression, column_type) -> bool:
-    """Whether ``node`` is an exact number with a whole value: ``_integer``, with whole decimal literals too."""
+def _zero(node: exp.Expression, column_type) -> bool:
+    """Whether ``node`` is zero (or NULL) whatever its columns hold: a zero literal, its product with an exact number,
+    its quotient by one."""
 
     node = _unwrap(node)
+    if isinstance(node, exp.Literal):
+        return not node.is_string and bool(_PLAIN_NUMBER.match(node.name)) and Decimal(node.name) == 0
+    if isinstance(node, exp.Neg):
+        return _zero(node.this, column_type)
+    if type(node) is exp.Mul:
+        return (_zero(node.this, column_type) and _exact(node.expression, column_type)) or (_zero(node.expression, column_type) and _exact(node.this, column_type))
+    if type(node) is exp.Div:
+        return _zero(node.this, column_type) and _exact(node.expression, column_type)
+    return False
+
+
+def _whole(node: exp.Expression, column_type) -> bool:
+    """Whether ``node`` is an exact number with a whole value: ``_integer``, with whole decimal literals and zero
+    products too."""
+
+    node = _unwrap(node)
+    if _zero(node, column_type):
+        return True
     if isinstance(node, exp.Literal):
         return not node.is_string and bool(_PLAIN_NUMBER.match(node.name)) and Decimal(node.name) == Decimal(node.name).to_integral_value()
     if isinstance(node, exp.Neg):
@@ -237,19 +261,40 @@ def _arms(node: exp.Expression) -> list[exp.Expression] | None:
     return None
 
 
-def _choice(node: exp.Expression) -> exp.Expression | None:
-    """The first ``CASE`` or ``IF`` whose value reaches ``node`` through parentheses, ``+``, ``-``, ``*`` and unary
-    minus only."""
+def _choice(node: exp.Expression, divided: bool = False) -> tuple[exp.Expression, bool] | None:
+    """The first ``CASE`` or ``IF`` whose value reaches ``node`` through parentheses, ``+``, ``-``, ``*``, ``/`` and
+    unary minus only, and whether a ``/`` is on the way."""
 
     node = _unwrap(node)
     if _arms(node) is not None:
-        return node
+        return node, divided
     if type(node) in (exp.Add, exp.Sub, exp.Mul):
-        found = _choice(node.this)
-        return found if found is not None else _choice(node.expression)
+        return _choice(node.this, divided) or _choice(node.expression, divided)
+    if type(node) is exp.Div:
+        return _choice(node.this, True) or _choice(node.expression, True)
     if isinstance(node, exp.Neg):
-        return _choice(node.this)
+        return _choice(node.this, divided)
     return None
+
+
+def _without_zero_quotients(node: exp.Expression, column_type) -> exp.Expression:
+    """``node`` (new, changed in place) with each ``z / 100`` whose dividend is zero written ``z``.
+
+    Zero (or NULL) divided by a literal that is not zero is zero (or NULL) again. Left as a quotient, it would be a
+    division the prover cannot read once the ``ROUND`` around it is gone."""
+
+    root = exp.Paren(this=node)
+    for _ in range(32):
+        for division in root.find_all(exp.Div):
+            divisor = _unwrap(division.expression)
+            literal = isinstance(divisor, exp.Literal) and not divisor.is_string and bool(_PLAIN_NUMBER.match(divisor.name)) and Decimal(divisor.name) != 0
+            if literal and _zero(division.this, column_type):
+                dividend = _unwrap(division.this).copy()
+                division.replace(exp.Paren(this=dividend) if isinstance(dividend, (exp.Binary, exp.Neg)) else dividend)
+                break
+        else:
+            break
+    return root.this
 
 
 def _rounded(value: exp.Expression, call: exp.Round, decimals: int, column_type, top: bool = False) -> exp.Expression | None:
@@ -259,7 +304,7 @@ def _rounded(value: exp.Expression, call: exp.Round, decimals: int, column_type,
 
     inner = _unwrap(value)
     if _whole(inner, column_type):
-        return exp.Paren(this=inner.copy()) if isinstance(inner, exp.Binary) else inner.copy()
+        return _without_zero_quotients(exp.Paren(this=inner.copy()) if isinstance(inner, exp.Binary) else inner.copy(), column_type)
     if isinstance(inner, exp.Null):
         return inner.copy()
     arms = _arms(inner)
@@ -269,13 +314,20 @@ def _rounded(value: exp.Expression, call: exp.Round, decimals: int, column_type,
         for arm, replacement in zip(_arms(result), rounded):
             arm.replace(replacement)
         return result
-    choice = _choice(inner)
-    if choice is not None and choice is not inner and _exact(inner, column_type) and sum(1 for node in inner.find_all(exp.Case, exp.If) if _arms(node) is not None) <= _MOST_CHOICES:
+    found = _choice(inner)
+    choice = found[0] if found is not None else None
+    if (
+        choice is not None
+        and choice is not inner
+        and _exact(inner, column_type)
+        and sum(1 for node in inner.find_all(exp.Case, exp.If) if _arms(node) is not None) <= _MOST_CHOICES
+        and (not found[1] or all(_integer(arm, column_type) or isinstance(_unwrap(arm), exp.Null) for arm in _arms(choice)))
+    ):
         # f(CASE WHEN c THEN a .. END) is CASE WHEN c THEN f(a) .. END for exact +, - and *: round each
         rounded = []
         for index in range(len(_arms(choice))):
             whole = exp.Paren(this=inner.copy())
-            there = _choice(whole.this)
+            there = _choice(whole.this)[0]
             arm = _arms(there)[index].copy()
             there.replace(arm if isinstance(arm, (exp.Column, exp.Literal, exp.Null, exp.Paren)) else exp.Paren(this=arm))
             rounded.append(_rounded(whole.this, call, decimals, column_type))
