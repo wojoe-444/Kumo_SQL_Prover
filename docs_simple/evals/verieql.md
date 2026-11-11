@@ -20,6 +20,6 @@ Almost all of a run is DuckDB answering both queries on many tiny databases. The
 
 ## Constraints matter
 
-The input can declare keys, non-NULL columns, and other restrictions. A database violating those restrictions is not a valid counterexample to a conditional claim. Read which constraints the prover models and which the execution generator enforces.
+The input can declare keys, non-NULL columns, and other restrictions. When a table declares two primary keys, each one is kept as a key of its own. A database violating those restrictions is not a valid counterexample to a conditional claim. Read which constraints the prover models and which the execution generator enforces.
 
 The full guide documents translation, constraint handling, known non-equivalent pairs, commands, and separate proof/executed score rows. [Bounded verification](bounded-verification.md) covers KumoSQL's separate row-limited checker, inspired by the bounded approach used in VeriEQL's research.

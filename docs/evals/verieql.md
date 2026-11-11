@@ -51,7 +51,7 @@ The Calcite-397 queries are printed by Calcite, and some of its spellings mean n
 
 Literature pairs call uninterpreted predicates on whole rows (`B1(X)` where `X` names a FROM item). The harness spells each out over the row's columns (`B1(X.a, X.b)`): the prover reads it as an uninterpreted function, and DuckDB runs it as a macro with one fixed, arbitrary interpretation (a hash of the arguments). A difference under that interpretation refutes the pair, since an equivalent pair must agree under every interpretation.
 
-The prover gets the schema's foreign keys on a second attempt, after a first attempt with keys and NOT NULL columns alone (the foreign-key rules can rewrite one side out of the shape the other side's proof needs).
+Each `primary` entry of a schema is its own key: a table that declares two (an id and a name that is also unique, say) keeps both, the earlier one as a unique key over NOT NULL columns, for the prover and for the generated databases alike. The prover gets the schema's foreign keys on a second attempt, after a first attempt with keys and NOT NULL columns alone (the foreign-key rules can rewrite one side out of the shape the other side's proof needs).
 
 Left unknown on purpose: 5 pairs whose Calcite text lost a correlated column (`WHERE * = t5.DEPTNO`), 2 with a subquery in an outer join's `ON` (DuckDB cannot run it), 1 comparing VARCHAR with INT (MySQL coerces, DuckDB refuses), 1 that names a renamed lateral column (`$cor0.SAL0`), and 2 malformed Literature pairs.
 

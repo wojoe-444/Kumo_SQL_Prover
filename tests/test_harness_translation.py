@@ -155,3 +155,34 @@ def test_optimizer_bugs_are_not_counterexamples():
     })
     for seed in range(2):  # without the recheck, both seeds report a false counterexample
         assert cx.find_counterexample(spec, EXISTS_SQL, COUNT_SQL, seed=seed) is None
+
+
+def test_each_primary_entry_of_a_verieql_schema_is_its_own_key():
+    """A table that declares two primary keys keeps both: the earlier one as a unique key over NOT NULL columns."""
+
+    import verieql_bench
+
+    case = {
+        "schema": {"SHOP": {"SHOP_ID": "INT", "TITLE": "VARCHAR", "CITY": "VARCHAR"}, "SALE": {"SALE_ID": "INT", "SHOP_ID": "INT"}},
+        "constraint": [
+            {"primary": [{"value": "SHOP__SHOP_ID"}]},
+            {"primary": [{"value": "SHOP__TITLE"}]},
+            {"primary": [{"value": "SALE__SALE_ID"}]},
+            {"foreign": [{"value": "SALE__SHOP_ID"}, {"value": "SHOP__SHOP_ID"}]},
+        ],
+    }
+    spec = verieql_bench.build_spec(case)
+    shop, sale = spec.tables["SHOP"], spec.tables["SALE"]
+    assert sorted([shop.primary_key, *shop.unique]) == [("SHOP_ID",), ("TITLE",)]
+    assert [c.name for c in shop.columns if c.not_null] == ["SHOP_ID", "TITLE"]
+    assert (sale.primary_key, sale.unique) == (("SALE_ID",), [])
+    rng = __import__("random").Random(0)
+    generator = cx._Generator(spec, cx.Constants(), rng)
+    seen_rows = 0
+    for _ in range(60):
+        rows = generator.database({"SHOP", "SALE"}, 5)["SHOP"]
+        seen_rows += len(rows)
+        for position in (0, 1):  # both declared keys hold in every generated table
+            values = [row[position] for row in rows]
+            assert None not in values and len(set(values)) == len(values)
+    assert seen_rows > 60
