@@ -4879,6 +4879,11 @@ def normalize(
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
+        from .closed_queries import fold_closed_query
+        from .inline_rows import inline_struct_rows
+
+        tree = fold_closed_query(inline_struct_rows(tree, dialect), dialect)  # pre-pass: inline rows as a table; a query that reads no table as its rows
+    if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
