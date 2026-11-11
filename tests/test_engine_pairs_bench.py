@@ -23,9 +23,10 @@ bench = importlib.util.module_from_spec(_spec)
 sys.modules["engine_pairs_bench"] = bench
 _spec.loader.exec_module(bench)
 
-# Correct verdicts per group, measured 2026-10-04: trino-a 11, trino-b 17, other 13 (floors leave room for a
-# slow machine: the targeted refuter works to a time budget)
-FLOORS = {"trino-a": 9, "trino-b": 15, "other": 13}
+# Correct verdicts per group, measured 2026-11-11: trino-a 65, trino-b 61, other 19 (the trino floors leave room
+# for a slow machine: the targeted refuter works to a time budget). 2026-10-04, before the rules written for this
+# eval: 11, 17, 13.
+FLOORS = {"trino-a": 63, "trino-b": 59, "other": 19}
 
 
 def _group(case) -> str:
