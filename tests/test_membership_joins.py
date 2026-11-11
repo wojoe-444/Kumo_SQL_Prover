@@ -215,3 +215,26 @@ def test_the_rewrite_returns_the_same_rows(sql):
         rows = {name: [tuple(value() for _ in columns) for _ in range(rng.randint(0, 4))] for name, columns in SCHEMA.items()}
         first, second = rows_on_duckdb([sql, after], rows)
         assert first == second, rows
+
+
+def test_the_narrow_second_attempt_switches_the_rule_off_and_records_that_it_fired():
+    """A pair this rule changed and the prover could not prove is tried again with the rule off (``shape_fallback``)."""
+
+    from kumo_sql_prover import shape_fallback
+
+    sql = "SELECT s.name FROM s WHERE s.k IN (SELECT ps.sk FROM ps WHERE ps.pk IN (SELECT p.k FROM p WHERE p.f = 1))"
+
+    def fires():
+        tree = sqlglot.parse_one(sql, read="postgres")
+        inner = next(sel for sel in tree.find_all(exp.Select) if isinstance(sel.parent, exp.Subquery) and isinstance(sel.parent.parent, exp.In) and sel.parent.parent.this.name == "k" and sel.expressions[0].name == "sk")
+        return join_nested_membership(inner, SCHEMA) is not None
+
+    with shape_fallback.tracking() as fired:
+        assert fires()
+        assert "nested_membership" in fired
+        with shape_fallback.without("nested_membership"):
+            assert not fires()
+        assert fires()  # back on after the block
+    with shape_fallback.tracking() as quiet:
+        assert join_nested_membership(sqlglot.parse_one("SELECT ps.sk FROM ps WHERE ps.n = 1", read="postgres"), SCHEMA) is None
+    assert not quiet

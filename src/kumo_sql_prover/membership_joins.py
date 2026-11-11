@@ -26,6 +26,9 @@ Conditions, all checked:
 * ``S`` is the whole query of an ``IN`` or ``EXISTS`` (``distinct_rules._membership_query``) and has only a select
   list, sources, joins, ``WHERE`` and an optional plain ``DISTINCT``: no grouping, ``HAVING``, window, ``ORDER BY``,
   ``LIMIT`` or ``OFFSET``, and no aggregate or star in its select list (those read more than the set of rows);
+* (the narrow second attempt) a pair this rule changed and the prover could not prove is tried again with the rule
+  off (``shape_fallback.without``): reading a nested test as a join helps TPC-H Q20 and hides the match of a DSB pair
+  of LOGOS that is too large for the all-shape-rules retry;
 * a nested ``EXISTS`` is read only inside the query of an ``IN``. Inside the query of an ``EXISTS`` the prover's own
   semi-join reading already spells it, and rewriting it on one query of a pair lost the proof of six DSB pairs (too
   long for the shape fallback) that main proves;
@@ -46,6 +49,7 @@ import itertools
 
 from sqlglot import exp
 
+from . import shape_fallback
 from .ast_utils import select_sources
 from .distinct_rules import _membership_query
 from .unmatched_outer_join import _columns_of, _conjuncts, _inside, _plain_column, _plain_table
@@ -105,6 +109,8 @@ def join_nested_membership(select: exp.Select, schema: dict | None) -> exp.Expre
     where = select.args.get("where")
     if where is None or not schema or not _membership_query(select):
         return None
+    if not shape_fallback.rule_enabled("nested_membership"):
+        return None  # the narrow second attempt (``shape_fallback.without``): see the module docstring
     if any(value for key, value in select.args.items() if key not in _OUTER_ARGS):
         return None
     distinct = select.args.get("distinct")
@@ -201,5 +207,6 @@ def join_nested_membership(select: exp.Select, schema: dict | None) -> exp.Expre
                 parts.extend(part.copy() for part in _conjuncts(on))
         copy.set("where", exp.Where(this=_and_all([p.copy() for p in parts])))
         copy.set("joins", list(copy.args.get("joins") or []) + added)
+        shape_fallback.note_fired("nested_membership")
         return copy
     return None

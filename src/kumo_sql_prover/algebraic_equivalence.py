@@ -5296,13 +5296,21 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
                     return retry
         return result
 
-    result = attempt()
+    with shape_fallback.tracking() as fired:
+        result = attempt()
     if result.status is SmtStatus.NOT_PROVEN and shape_fallback.worth_retrying(left_sql, right_sql):
         # A shape rule that fires on one query only can hide a match: try the pair as it was read before them.
         with shape_fallback.disabled():
             plain = attempt()
         if plain.status is not SmtStatus.NOT_PROVEN:
             return plain
+    if result.status is SmtStatus.NOT_PROVEN and fired and shape_fallback.enabled() and len(left_sql) + len(right_sql) <= shape_fallback.NARROW_MAX_CHARS:
+        # The same for a pair too large for that attempt: only the rules that fired, one at a time, are switched off.
+        for name in sorted(fired):
+            with shape_fallback.without(name):
+                narrow = attempt()
+            if narrow.status is not SmtStatus.NOT_PROVEN:
+                return narrow
     if search and result.status is SmtStatus.NOT_PROVEN:
         from . import executed_refutation
 
@@ -5340,7 +5348,7 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
         shapes = shape_fallback.enabled()
 
         def normalized(sql, level):
-            key = (sql, level, shapes)
+            key = (sql, level, shapes, shape_fallback.off())
             if key not in cache:
                 assumptions = set()
                 text = normalize(sql, schema=kwargs.get("schema"), dialect=dialect,
@@ -5353,7 +5361,7 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
             return text
 
         left, right = normalized(left_sql, keyed_distinct), normalized(right_sql, keyed_distinct)
-        if not shapes and (left, right) == tuple(cache.get((sql, keyed_distinct, True), (None,))[0] for sql in (left_sql, right_sql)):
+        if not shapes and (left, right) == tuple(cache.get((sql, keyed_distinct, True, frozenset()), (None,))[0] for sql in (left_sql, right_sql)):
             # The attempt with the shape rules compared these same two texts.
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, shape_fallback.SKIPPED, assumptions=tuple(sorted(normalization_assumptions)))
         if keyed_distinct and (left, right) == (normalized(left_sql, 0), normalized(right_sql, 0)):

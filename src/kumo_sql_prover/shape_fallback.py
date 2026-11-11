@@ -99,3 +99,57 @@ def disabled():
         yield
     finally:
         _ENABLED.reset(token)
+
+
+# A narrower second attempt: one rule off, the rest of the shape rules on. The attempt above switches every shape
+# rule off at once and, for cost, only for a small pair. A rule that is right for most pairs but hides the match of a
+# few larger ones (reading an ``EXISTS`` inside an ``IN`` as a join helps TPC-H Q20 and breaks one DSB pair of
+# 12,000 characters) is named here, and the pair is tried again with only that rule off when the rule fired.
+
+NARROW_MAX_CHARS = 24000
+
+_OFF: ContextVar[frozenset] = ContextVar("kumo_sql_prover_rules_off", default=frozenset())
+_FIRED: ContextVar[set | None] = ContextVar("kumo_sql_prover_rules_fired", default=None)
+
+
+def rule_enabled(name: str) -> bool:
+    """Whether the named narrow-fallback rule may fire in the current attempt."""
+
+    return name not in _OFF.get()
+
+
+def off() -> frozenset:
+    """The rules switched off for the current attempt (part of any normalization cache key)."""
+
+    return _OFF.get()
+
+
+def note_fired(name: str) -> None:
+    """Record that the named rule rewrote something in the current attempt."""
+
+    fired = _FIRED.get()
+    if fired is not None:
+        fired.add(name)
+
+
+@contextmanager
+def tracking():
+    """Collect the names of the narrow-fallback rules that fire inside the block."""
+
+    fired: set = set()
+    token = _FIRED.set(fired)
+    try:
+        yield fired
+    finally:
+        _FIRED.reset(token)
+
+
+@contextmanager
+def without(name: str):
+    """Run the block with the named narrow-fallback rule off."""
+
+    token = _OFF.set(_OFF.get() | {name})
+    try:
+        yield
+    finally:
+        _OFF.reset(token)
