@@ -100,6 +100,8 @@ def sub_proofs():
 def within_budget() -> bool:
     deadline = _DEADLINE.get()
     return deadline is None or time.monotonic() <= deadline
+
+
 INPUT_ALIAS = "kqwi"
 _SELECT_ARGS = frozenset({"expressions", "from_", "from", "joins", "where", "group", "having", "kind"})
 _INPUT_ARGS = ("from_", "from", "joins", "where", "group", "having")
@@ -266,9 +268,24 @@ def _candidates(tree: exp.Expression) -> list[exp.Select]:
     return sorted(found, key=lambda s: -s.depth)  # innermost first: an outer input then holds the unified inner one
 
 
-def _installed(part: _Split, input_select: exp.Select) -> exp.Select:
+def _installed(part: _Split, input_select: exp.Select, number: int) -> exp.Select:
+    """The outer select of ``part`` over ``input_select``, with names no other installed input of the query has.
+
+    Two inputs of one query would otherwise both be ``kqwi`` with columns ``kqi0..``, and a reader that resolves a
+    column by its name alone would take one input's column for the other's.
+    """
+
     outer = part.outer.copy()
-    outer.find(exp.Subquery).set("this", input_select.copy())
+    alias = f"{INPUT_ALIAS}{number}"
+    names = {f"kqi{position}": f"kqi{number}n{position}" for position in range(len(input_select.expressions))}
+    for column in outer.find_all(exp.Column):
+        if column.table == INPUT_ALIAS and column.name in names:
+            column.replace(exp.column(names[column.name], table=alias))
+    renamed = input_select.copy()
+    renamed.set("expressions", [exp.alias_(item.this, names[item.alias], quoted=False) for item in renamed.expressions])
+    holder = outer.find(exp.Subquery)
+    holder.set("this", renamed)
+    holder.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
     return outer
 
 
@@ -288,14 +305,14 @@ def unify(left_sql: str, right_sql: str, *, dialect: str, prove) -> tuple[str, s
         return None
     proofs = 0
     changed = False
-    done: dict[int, _Split] = {}  # left selects already written in the step-1 form, by the select that replaced them
+    done: dict[int, tuple[_Split, int]] = {}  # left selects already written in the step-1 form, by the select that replaced them
     for right_select in _candidates(right):
         right_part = split(right_select)
         if right_part is None:
             continue
         right_text = None
         for left_select in _candidates(left):
-            left_part = done.get(id(left_select)) or split(left_select)
+            left_part, number = done.get(id(left_select)) or (split(left_select), len(done))
             if left_part is None or left_part.skeleton() != right_part.skeleton() or left_part.tables() != right_part.tables():
                 continue
             try:
@@ -312,13 +329,13 @@ def unify(left_sql: str, right_sql: str, *, dialect: str, prove) -> tuple[str, s
                 if not prove(left_text, right_text):
                     continue
             if id(left_select) not in done:
-                new_left = _installed(left_part, left_part.input)
+                new_left = _installed(left_part, left_part.input, number)
                 if left_select.parent is None:
                     left = new_left
                 else:
                     left_select.replace(new_left)
-                done[id(new_left)] = left_part
-            new_right = _installed(right_part, left_part.input)
+                done[id(new_left)] = (left_part, number)
+            new_right = _installed(right_part, left_part.input, number)
             if right_select.parent is None:
                 right = new_right
             else:

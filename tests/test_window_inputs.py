@@ -98,16 +98,38 @@ def test_unify_installs_the_left_input_on_both_sides_only_after_a_proof():
         return True
 
     out = unify(left, right, dialect="postgres", prove=yes)
-    shared = "(SELECT p.id AS kqi0, p.day AS kqi1 FROM p JOIN u ON p.owner = u.id) AS kqwi"
+    shared = "(SELECT p.id AS kqi0n0, p.day AS kqi0n1 FROM p JOIN u ON p.owner = u.id) AS kqwi0"
     assert asked == [("SELECT p.id AS kqi0, p.day AS kqi1 FROM p JOIN u ON p.owner = u.id", "SELECT t.id AS kqi0, t.day AS kqi1 FROM p AS t, u AS s WHERE t.owner = s.id")]
     assert out == (
-        f"SELECT w.a, w.r FROM (SELECT kqwi.kqi0 AS a, RANK() OVER (ORDER BY kqwi.kqi1) AS r FROM {shared}) AS w",
-        f"SELECT v.x, v.y FROM (SELECT kqwi.kqi0 AS x, RANK() OVER (ORDER BY kqwi.kqi1) AS y FROM {shared}) AS v",
+        f"SELECT w.a, w.r FROM (SELECT kqwi0.kqi0n0 AS a, RANK() OVER (ORDER BY kqwi0.kqi0n1) AS r FROM {shared}) AS w",
+        f"SELECT v.x, v.y FROM (SELECT kqwi0.kqi0n0 AS x, RANK() OVER (ORDER BY kqwi0.kqi0n1) AS y FROM {shared}) AS v",
     )
     assert unify(left, right, dialect="postgres", prove=lambda a, b: False) is None
     # windows that read their inputs differently are never compared
     other = right.replace("ORDER BY t.day", "PARTITION BY t.day")
     assert unify(left, other, dialect="postgres", prove=yes) is None and len(asked) == 1
+
+
+def test_two_unified_inputs_of_one_query_keep_separate_names():
+    # the first input's first column is a number and the second's a string: under one name the comparison
+    # ``w.t = 'x'`` was typed as a number against a string and the pair was declined
+    schema = {"p": ["id", "owner", "title", "day"], "u": ["id", "name"]}
+    types = {"p": {"id": "INT", "owner": "INT", "title": "TEXT", "day": "INT"}, "u": {"id": "INT", "name": "TEXT"}}
+    left = (
+        "SELECT a.id, a.r, b.t, b.s FROM (SELECT u.id, RANK() OVER (ORDER BY u.name) AS r FROM u WHERE u.id > 1) AS a"
+        " JOIN (SELECT p.title AS t, p.owner AS o, ROW_NUMBER() OVER (PARTITION BY p.owner ORDER BY p.day) AS s FROM p WHERE p.day > 0) AS b"
+        " ON b.o = a.id WHERE b.t = 'x'"
+    )
+    right = (
+        "SELECT a.id, a.r, b.t, b.s FROM (SELECT u2.id, RANK() OVER (ORDER BY u2.name) AS r FROM u AS u2 WHERE 1 < u2.id) AS a"
+        " JOIN (SELECT p2.title AS t, p2.owner AS o, ROW_NUMBER() OVER (PARTITION BY p2.owner ORDER BY p2.day) AS s FROM p AS p2 WHERE 0 < p2.day) AS b"
+        " ON a.id = b.o AND b.t = 'x'"
+    )
+    out = unify(left, right, dialect="postgres", prove=lambda a, b: True)
+    assert out is not None and all("kqwi0" in text and "kqwi1" in text for text in out)
+    assert prove_equivalent_algebraic(left, right, schema=schema, types=types, dialect="postgres", compare_names=False).proven
+    other = right.replace("0 < p2.day", "1 < p2.day")
+    assert not prove_equivalent_algebraic(left, other, schema=schema, types=types, dialect="postgres", compare_names=False).proven
 
 
 def test_a_window_inside_a_subquery_is_not_unified():
