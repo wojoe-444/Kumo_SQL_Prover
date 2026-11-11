@@ -220,7 +220,7 @@ Some entries depend on the arguments or the dialect: `UNIX_TIMESTAMP(d)` and `ag
 
 What each prover does with the list:
 
-- **SMT, algebraic and bag (U-expression) provers, and the SQLSolver backend:** a pair that holds a call of either kind is `not_proven`, also when the two queries are the same text. The clock and the session are not part of the database the proof quantifies over, and the BigQuery `CURRENT_*` functions were already refused this way. The check runs twice: where the compiler meets the call, and on the two queries as written after a proof is found (`smt_equivalence.without_volatile_proof`), because a normalization rule may have merged two calls or dropped one before the solver saw them. `WHERE RAND() < 2 OR TRUE` against no filter is true and was proved by the algebraic prover; it is now `not_proven`.
+- **SMT, algebraic and bag (U-expression) provers, and the SQLSolver backend:** a pair that holds a call of either kind is never `proven_equivalent`, also when the two queries are the same text. The clock and the session are not part of the database the proof quantifies over, and the BigQuery `CURRENT_*` functions were already refused this way. A per-call call makes the pair `not_proven`. A per-statement call does too, except where the engine promises one value for the whole statement: there the first three provers can answer `proven_conditionally` (see [calls fixed for the statement](#calls-fixed-for-the-statement-conditional-proofs) below). The check runs twice: where the compiler meets the call, and on the two queries as written after a proof is found (`smt_equivalence.without_volatile_proof`), because a normalization rule may have merged two calls or dropped one before the solver saw them. `WHERE RAND() < 2 OR TRUE` against no filter is true and was proved by the algebraic prover; it is now `not_proven`.
 - **Structural prover:** unchanged in principle. A call of either kind is accepted only when left identical and in place; the list now also covers typed nodes it did not (model calls, `'now'` read as a time).
 - **Executed comparisons:** `refute.order_dependence` names such a call, so a difference a volatile query shows is not reported as a counterexample.
 
@@ -228,7 +228,40 @@ What each prover does with the list:
 
 **Limits.** The list is written from the engines' documentation, not derived from them; a volatile built-in missing from it is read as deterministic and shows up only in that assumption line. The many rule modules still carry their own guards (`exp.Rand`, `exp.Anonymous`); the check on the queries as written is what the result rests on.
 
-Tests: `tests/test_volatile_calls.py` (each listed call per dialect, functions that must not be listed, the reported pairs through the three solver-based provers, calls the rules remove, the assumption line, the structural prover's identical-and-in-place rule).
+### Calls fixed for the statement: conditional proofs
+
+A query that filters on `CURRENT_DATE` is not a function of the tables alone, so it is never `proven_equivalent` to anything. What an analyst rewriting such a query needs is weaker: *run at the same statement time, the two queries return the same rows on every database.* Since 2026-11-11 the SMT, algebraic and bag provers answer that as `proven_conditionally`, the verdict [conditional equivalence](conditional-equivalence.md) already uses for facts about the data, with a condition that names the calls:
+
+```text
+SELECT a FROM t WHERE d >= CURRENT_DATE() AND a > 1      vs      SELECT a FROM (SELECT * FROM t WHERE a > 1) WHERE d >= CURRENT_DATE()
+proven_conditionally: ...; equivalent when both queries run at the same statement time (CURRENT_DATE)
+  condition: both queries run at the same statement time, so each of these has one value in both: CURRENT_DATE
+```
+
+The verdict is given whether or not `conditional=True` was asked for, because nothing weaker is true of such a pair. `result.proven` stays `False`, the command line exits 3, and no benchmark counts it as a proof.
+
+**How.** Within one statement such a call returns one value however often it is evaluated, so it is a constant the prover knows nothing about. Before the provers see the pair, `kumo_sql_prover.statement_values` replaces each such call with a call to a function with no arguments that the provers have no definition for (`KQ_FIXED_1_CURRENT_DATE()`), the same name for the same call in both queries. The provers already read an unknown function as "equal arguments, equal result", which for no arguments is "one value". Nothing else is assumed about the value: not its type, not that it is non-NULL, not that `CURRENT_DATE` is the date of `CURRENT_TIMESTAMP`. So `WHERE CURRENT_DATE() > DATE '2020-01-01'` is not proved equal to no filter, and `d < CURRENT_DATE()` is not proved equal to `d < CURRENT_DATE('UTC')`. The replacement is made in the text at token positions, so the rest of the query reaches the provers exactly as written, and it is used only when the text then parses to the same tree as the replacement made in the syntax tree.
+
+| What | Which |
+| --- | --- |
+| Dialects | BigQuery, PostgreSQL, MySQL, DuckDB, Spark, Databricks, Trino, Presto: each documents one value per statement or per transaction. DuckDB 1.5.6 was run (one value for 3,000,000 rows, and for `now()`, `get_current_timestamp()`, `transaction_timestamp()` and `current_timestamp` alike); the others are from the documentation. |
+| Clock calls (condition kind `same_statement_time`) | `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_DATETIME`, `CURRENT_TIMESTAMP`, `NOW()`, `CURDATE()`, `CURTIME()`, `TODAY()`, `LOCALTIME`, `LOCALTIMESTAMP`, `UTC_DATE()`, `UTC_TIME()`, `UTC_TIMESTAMP()`, `STATEMENT_TIMESTAMP()`, `TRANSACTION_TIMESTAMP()`, `GET_CURRENT_TIMESTAMP()`, `GET_CURRENT_TIME()`, `UNIX_TIMESTAMP()` with no argument; a literal argument (`CURRENT_TIMESTAMP(6)`, `CURRENT_DATE('UTC')`) makes a different call |
+| Session calls (kind `same_session`) | `CURRENT_USER`, `SESSION_USER`, `SYSTEM_USER`, `USER()`, `CURRENT_SCHEMA`, `CURRENT_DATABASE`, `CURRENT_CATALOG`, `DATABASE()`, `CONNECTION_ID()`, `VERSION()` |
+| One value, several spellings | `NOW()`, `TRANSACTION_TIMESTAMP()` and `GET_CURRENT_TIMESTAMP()` are `CURRENT_TIMESTAMP`; sqlglot already reads MySQL `CURDATE()` and DuckDB `today()` as `CURRENT_DATE`. PostgreSQL's `statement_timestamp()` is a different clock from `now()` inside a transaction and is kept apart. |
+
+**What stays `not_proven`.**
+
+- Per-call calls (`RAND()`, `nextval`, `clock_timestamp()`, MySQL `SYSDATE()`, `GENERATE_UUID()`), alone or next to a statement value.
+- Other dialects. SQLite promises one value only within one `sqlite3_step`, which is one result row (3.53.1 did keep the value across rows when tried); SQL Server, Oracle, Snowflake and ClickHouse were not checked.
+- Spellings whose meaning depends on the reader: a bare `SESSION_USER` or `CURRENT_SCHEMA` that the dialect's parser reads as a column, PostgreSQL's bare `USER`, `'now'::timestamp`, `ts > 'now'`, `date('now')`, `age(t)`; and session state that a statement can change or that describes the last statement (`LAST_INSERT_ID()`, `FOUND_ROWS()`, `ROW_COUNT()`).
+- A call the token scan and the parser do not agree on (`SELECT a AS current_date ... WHERE d < current_date`), text with more than one statement, and text that already holds a name starting with `KQ_FIXED_`.
+- Refutations. The solver would be free to pick the clock's value, and a replay runs the two queries at two different times, so a difference found for such a pair comes back as `not_proven` with the reason "the queries may differ, but a counterexample is not reported ...". The executed counterexample search already skipped such pairs.
+
+**Limits of the evidence.** The condition is a statement about how the queries are run, so it has no `check_sql`: nothing in the warehouse can be counted to confirm it. Two tables built by two statements at different times do not meet it, even when the model text is the same. The conditional benchmarks cannot hold the clock still between two runs and report such a proof as unchecked. On the benchmark pairs that hold a volatile call (46, found by scanning every re-check adapter in KumoSQL) three became conditional proofs on 2026-11-11 (VeriEQL Calcite pair 394 and two SQLFluff semantic-fix pairs) and none is counted as proved.
+
+Tests: `tests/test_statement_values.py` (rewrites proved under the condition in each dialect by each prover, different reads kept apart, sixteen per-call calls that stay unproven alone, unchanged and next to a statement value, the engines and spellings left out, the text left as written, no counterexample).
+
+Tests for the list: `tests/test_volatile_calls.py` (each listed call per dialect, functions that must not be listed, the reported pairs through the three solver-based provers, calls the rules remove, the assumption line, the structural prover's identical-and-in-place rule).
 
 ## Algebraic prover and SQLSolver (no admin rights)
 

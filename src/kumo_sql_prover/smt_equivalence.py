@@ -5325,6 +5325,13 @@ def prove_equivalent_smt(left_sql: str, right_sql: str, **kwargs) -> SmtEquivale
     See ``_prove_equivalent_smt`` for the rest.
     """
 
+    from . import statement_values
+
+    # NOW(), CURRENT_DATE and the like are read as one unknown value per statement: a proof is conditional on it.
+    return statement_values.proved(_prove_equivalent_smt_as_written, left_sql, right_sql, kwargs)
+
+
+def _prove_equivalent_smt_as_written(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
     result = numeric_column_reading.checked(
         _prove_equivalent_smt, left_sql, right_sql, kwargs, lambda reason: SmtEquivalenceResult(SmtStatus.NOT_PROVEN, reason)
     )

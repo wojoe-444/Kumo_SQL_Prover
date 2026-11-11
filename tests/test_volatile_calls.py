@@ -170,6 +170,13 @@ REPORTED = [
     ("bigquery", "generate_uuid()"),
 ]
 SOLVER_PROVERS = [prove_equivalent_smt, prove_equivalent_algebraic, prove_bag_equivalent]
+# One value for the whole statement in an engine that promises it: proved only under the condition that both queries
+# read the same one (``kumo_sql_prover.statement_values``, tests/test_statement_values.py), never outright.
+FIXED_FOR_THE_STATEMENT = {("mysql", "now()"), ("mysql", "unix_timestamp()"), ("mysql", "connection_id()"), ("duckdb", "now()")}
+
+
+def _expected(dialect, call):
+    return SmtStatus.PROVEN_CONDITIONALLY if (dialect, call) in FIXED_FOR_THE_STATEMENT else SmtStatus.NOT_PROVEN
 
 
 @pytest.mark.parametrize("dialect,call", REPORTED)
@@ -178,7 +185,7 @@ def test_two_calls_are_not_one_value(prover, dialect, call):
     left = f"select s1 from t1 where {call} = {call}"
     right = f"select s1 from t1 where {call} is not null"
     result = prover(left, right, schema=SCHEMA, dialect=dialect)
-    assert result.status is SmtStatus.NOT_PROVEN, (dialect, call, result.reason)
+    assert result.status is _expected(dialect, call) and not result.proven, (dialect, call, result.reason)
 
 
 @pytest.mark.parametrize("dialect,call", REPORTED)
@@ -186,7 +193,7 @@ def test_two_calls_are_not_one_value(prover, dialect, call):
 def test_the_solver_provers_do_not_prove_a_pair_that_holds_a_volatile_call_even_unchanged(prover, dialect, call):
     sql = f"select s1 from t1 where s2 = {call}"
     result = prover(sql, sql, schema=SCHEMA, dialect=dialect)
-    assert result.status is SmtStatus.NOT_PROVEN, (dialect, call, result.reason)
+    assert result.status is _expected(dialect, call) and not result.proven, (dialect, call, result.reason)
 
 
 def test_the_refusal_names_the_call():
@@ -194,7 +201,7 @@ def test_the_refusal_names_the_call():
         "select s1 from t1 where nextval('q') = nextval('q')", "select s1 from t1 where nextval('q') is not null", schema=SCHEMA, dialect="postgres"
     )
     assert "nondeterministic" in result.reason and "NEXTVAL" in result.reason.upper()
-    result = prove_equivalent_smt("select s1 from t1 where s2 > now()", "select s1 from t1 where s2 > now()", schema=SCHEMA, dialect="mysql")
+    result = prove_equivalent_smt("select s1 from t1 where s2 > date('now')", "select s1 from t1 where s2 > date('now')", schema=SCHEMA, dialect="sqlite")
     assert "reads the clock or the session" in result.reason
 
 
