@@ -37,7 +37,9 @@ The dialect-knowledge fields and the translated schemas (most of the 35 MB) are 
 
 ## Original and adapted
 
-Queries are stored as published. The harness renames translated columns back (`renames.json`),
+Queries are stored as published. The harness renames translated columns back (`renames.json`, whose
+keys keep the quotes the translated schema was written with; a column or table the list misses is
+read back by its spelling when exactly one source name fits, see `docs/evals/dlbench.md`),
 lower-cases identifiers, reads MariaDB as MySQL and MonetDB as PostgreSQL (sqlglot has neither
 dialect) and writes the translation in the source's dialect with sqlglot before proving.
 
