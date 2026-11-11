@@ -21,7 +21,7 @@ Every DuckDB difference is confirmed with the optimizer off (`kumo_sql_prover.du
 
 ## How a case is decided
 
-**proven**: `prove_equivalent_algebraic` in the PostgreSQL dialect with the case's keys and NOT NULL columns, output names ignored and exact arithmetic (every number column is an INTEGER). **refuted**: a random DuckDB database on which the bags differ, confirmed with the optimizer off. **unknown**: neither. The label is read only to score. Wrong is a proof against a not-equivalent label or a refutation against an equivalent one.
+**proven**: `prove_equivalent_algebraic` in the PostgreSQL dialect with the case's keys and NOT NULL columns, output names ignored, the column types of the case's schema declared, and exact arithmetic (every number column is an INTEGER). **refuted**: a random DuckDB database on which the bags differ, confirmed with the optimizer off. **unknown**: neither. The label is read only to score. Wrong is a proof against a not-equivalent label or a refutation against an equivalent one.
 
 ## Scores
 
@@ -30,6 +30,8 @@ Every DuckDB difference is confirmed with the optimizer off (`kumo_sql_prover.du
 | 2026-10-03 | 24/30 | 3/3 | 0 | baseline on master, default arithmetic |
 | 2026-10-03 | 27/30 | 3/3 | 0 | exact arithmetic for these integer schemas (`a+1+2` against `a+3`, `a+1=2` against `a=1`, `-a=3` against `a=-3`) |
 
-Still unknown: 15 (`LIKE 'abc'` without wildcards against `= 'abc'`), 29 (two `EXISTS` joined by `OR` against one `EXISTS` with the `OR` inside) and 35 (a correlated `COUNT(*)` against a grouped LEFT JOIN with `CASE WHEN cnt IS NULL THEN 0`).
+| 2026-11-11 | 29/30 | 3/3 | 0 | `LIKE` with no wildcard as `=` on a column declared VARCHAR or TEXT (15, `literal_like.py`), and an `OR` of `EXISTS` over one `FROM` as one `EXISTS` (29, `exists_disjunction.py`); the eval now passes the declared column types |
 
-**Tuned on test.** The 36 cases are all there is: the labels, schemas and the exact-arithmetic setting were chosen with every case in view, and there is no held-out split.
+Still unknown: 35 (a correlated `COUNT(*)` in the select list against a grouped LEFT JOIN with `CASE WHEN cnt IS NULL THEN 0`).
+
+**Tuned on test.** The 36 cases are all there is: the labels, schemas and the exact-arithmetic setting were chosen with every case in view, the two rules of 2026-11-11 were written for cases 15 and 29 after reading them, and there is no held-out split.

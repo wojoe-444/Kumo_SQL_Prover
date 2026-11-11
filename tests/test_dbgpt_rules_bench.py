@@ -21,7 +21,7 @@ bench = importlib.util.module_from_spec(_spec)
 sys.modules["dbgpt_rules_bench"] = bench
 _spec.loader.exec_module(bench)
 
-FLOORS = {"proven": 27, "refuted": 3}  # measured 27/30 and 3/3
+FLOORS = {"proven": 29, "refuted": 3}  # measured 29/30 and 3/3
 
 
 def test_every_source_example_has_one_case():

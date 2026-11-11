@@ -4892,6 +4892,8 @@ def normalize(
     tree = inline_named_windows(tree)
     from .nonnull_any import rewrite_nonnull_any
 
+    from .exists_disjunction import merge_exists_disjunction
+    from .literal_like import literal_like_to_equality
     from .mysql_exists_casts import drop_mysql_exists_cast
     from .single_source_columns import qualify_single_source_columns
 
@@ -4987,6 +4989,8 @@ def normalize(
         wrap_tailed_outer_join_aggregate,
         push_filter_into_wrapped_join,
         drop_one_row_tail,
+        lambda sel: literal_like_to_equality(sel, types_map, dialect),
+        merge_exists_disjunction,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
@@ -5271,6 +5275,11 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
     except sqlglot.errors.SqlglotError:
         replaced = False
     result = prove_equivalent_smt(left, right, types=types, **kwargs)
+    if result.proven:
+        from . import normalized_disclosure
+
+        # the error comparison and the FLOAT64 sum pairing were read off the normalized text
+        result = normalized_disclosure.settle(result, (left_sql, right_sql), (left, right), {**kwargs, "types": types})
     if normalization_assumptions:
         result = dataclasses.replace(result, assumptions=tuple(dict.fromkeys((*result.assumptions, *sorted(normalization_assumptions)))))
     if result.status is SmtStatus.NOT_PROVEN and not replaced:

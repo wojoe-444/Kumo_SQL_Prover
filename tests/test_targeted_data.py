@@ -136,3 +136,33 @@ def test_null_keys_in_both_tables_separate_intersect_from_a_join():
             if not compare_outputs(runner.run(left, d.dataset), runner.run(right, d.dataset))[0]
         ]
     assert "null_keys" in killers
+
+
+def test_a_row_the_column_cannot_hold_fails_the_run_and_the_runner_recovers():
+    from kumo_sql_prover.result_equivalence import SyntheticDataset, SyntheticTable
+
+    schema = {"t": {"x": "INT64"}}
+    columns = (("x", "INT64"),)
+    good = SyntheticDataset(1, {"t": SyntheticTable(columns, ((1,), (2,)))})
+    too_big = SyntheticDataset(2, {"t": SyntheticTable(columns, ((2**63,),))})  # one past INT64
+    with DatasetRunner(schema) as runner:
+        assert sorted(runner.run("SELECT x FROM t", good).rows) == [(1,), (2,)]
+        with pytest.raises(ExecutionError, match="could not load table"):
+            runner.run("SELECT x FROM t", too_big)
+        # the failed load is not remembered as the table's contents
+        assert sorted(runner.run("SELECT x FROM t", good).rows) == [(1,), (2,)]
+        with pytest.raises(ExecutionError, match="could not load table"):
+            runner.run("SELECT x FROM t", too_big)
+
+
+def test_the_executed_search_survives_a_literal_at_the_edge_of_int64():
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+
+    result = prove_equivalent_algebraic(
+        "SELECT x FROM t WHERE x < 9223372036854775807",
+        "SELECT x FROM t WHERE x <= 9223372036854775807",
+        schema={"t": ["x"]},
+        types={"t": {"x": "INT64"}},
+        search_counterexample=True,
+    )
+    assert result.counterexample is not None  # x = 9223372036854775807 is returned by the right query only

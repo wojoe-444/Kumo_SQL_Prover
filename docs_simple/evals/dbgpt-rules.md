@@ -10,6 +10,8 @@ Some examples preserve results. Others are invalid or change meaning: splitting 
 
 The algebraic prover uses the supplied keys and non-NULL facts under exact arithmetic for these integer schemas. Otherwise, a confirmed DuckDB difference can refute the pair. Cases that cannot be decided stay unknown.
 
+Two of the examples needed a new rule each: `LIKE 'abc'` with no wildcard means `= 'abc'` for an ordinary text column, and `EXISTS (...) OR EXISTS (...)` over the same tables is one `EXISTS` with an `OR` inside. Both rules were written after reading the examples, so the score is "tuned on test".
+
 Output names are ignored and results are compared as bags. A pair can therefore agree here while changing ORDER BY behavior. Read that comparison policy before applying a fix.
 
 ```sh
