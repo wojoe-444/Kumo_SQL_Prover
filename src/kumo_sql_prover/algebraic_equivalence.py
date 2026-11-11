@@ -4879,6 +4879,7 @@ def normalize(
     tree = inline_named_windows(tree)
     from .nonnull_any import rewrite_nonnull_any
 
+    from .counted_subqueries import count_subquery_as_join
     from .mysql_exists_casts import drop_mysql_exists_cast
     from .preserved_counts import count_preserved_not_null
     from .preserved_join_sources import merge_preserved_join_source
@@ -4963,6 +4964,7 @@ def normalize(
         drop_one_row_tail,
         merge_preserved_join_source,
         prune_windowed_outputs,
+        count_subquery_as_join,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
