@@ -102,6 +102,7 @@ from .correlated_key_groups import expose_correlated_key_groups
 from .lateral_boolean_groups import nullable_lateral_boolean_group
 from . import numeric_column_reading, string_number_compare, string_number_literals
 from .constant_correlation import propagate_constant_correlations
+from .conditional_count_sums import count_conditional_sums
 from .constant_regroup_rules import collapse_constant_regroup
 from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
@@ -4962,6 +4963,7 @@ def normalize(
         collapse_one_row_groups,
         key_expression_having_to_where,
         split_tagged_union_group,
+        count_conditional_sums,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
