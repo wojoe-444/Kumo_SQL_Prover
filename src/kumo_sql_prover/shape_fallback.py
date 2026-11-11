@@ -35,7 +35,10 @@ The shape rules: ``single_source_columns``, ``grouped_self_membership``, ``disjo
 ``wrapped_join_filters``, ``one_row_tails``, and the derived-table and ``JOIN .. ON`` sources that
 ``closed_sources`` lets the scalar-aggregate decorrelation read. Added on 2026-11-11 for the DSB rewrites of
 the QUITE eval: ``renamed_join_heads``, ``spread_aggregates``, ``scalar_having_groups``,
-``star_source_columns``, ``count_column_bounds`` and ``extreme_group_sources``. Not in the list, because each
+``star_source_columns``, ``count_column_bounds``, ``extreme_group_sources``, ``setop_operand_sources``,
+``empty_union_operands``, ``counted_group_lists``, ``counted_group_sources``, ``existence_joins``,
+``integer_expression_bounds``, ``grouped_conditional_counts``, ``pinned_source_columns``, ``refuted_case_arms``,
+``single_value_joins`` and the pairing order of ``opaque_pairing`` in the solver. Not in the list, because each
 only reads a query that was declined before it: ``listed_output_names`` and ``printed_spelling``.
 
 A new rule that rewrites queries the prover already read belongs in the list: guard its entry in ``normalize``
