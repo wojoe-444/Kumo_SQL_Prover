@@ -270,6 +270,91 @@ def test_the_same_text_in_another_database_is_not_the_same_statement(source_dbms
     assert bench.decide(pair)["outcome"] != "proven"
 
 
+STATEMENTS = ["Table: `t`\nColumns:\n(`a`, integer)\n(`b`, text)\n", "Table: `u`\nColumns:\n(`a`, integer)\n(`b`, text)\n"]
+
+
+@pytest.mark.parametrize("source, target, left, right", [
+    ("mysql", "duckdb", "INSERT INTO t1 (data) VALUES (repeat('a',1*1024)); -- REPEAT", "INSERT INTO t1 (data) VALUES (REPEAT('a', 1 * 1024));"),
+    ("postgresql", "mysql", "INSERT INTO d (id, a, b) VALUES (2, 50, repeat('x', 10000))", "INSERT INTO d (id, a, b) VALUES (2, 50, REPEAT('x', 10000));"),
+    ("mysql", "duckdb", "CREATE TABLE t1 AS SELECT greatest(-1, 123456789)", "CREATE TABLE t1 AS SELECT GREATEST(-1,123456789);"),
+    ("mysql", "postgresql", "CREATE TABLE tail AS SELECT concat(b1.b, b2.b) AS tail FROM t1 b1, t1 b2", "CREATE TABLE tail AS SELECT b1.b || b2.b AS tail FROM t1 b1, t1 b2"),
+    ("mysql", "duckdb", "insert into t1 values ( 'test',md5('test')), ('test', md5('test'))", "INSERT INTO t1 VALUES ('test', MD5('test')), ('test', MD5('test'))"),
+])
+def test_a_statement_that_reads_back_as_its_source_is_decided(source, target, left, right):
+    result = bench.decide(_pair(source, target, left, right))
+    assert (result["outcome"], result["detail"], result["wrong"]) == ("proven", "same statement, read back", False)
+
+
+@pytest.mark.parametrize("source, target, left, right", [
+    ("mysql", "clickhouse", "INSERT INTO t1 VALUES (ln(1))", "INSERT INTO t1 VALUES (ln(1));"),  # ClickHouse rows read back with more parentheses
+    ("mysql", "clickhouse", "INSERT INTO t VALUES(1, REPEAT('2', 257)), (1, REPEAT('1', 257))", "INSERT INTO t VALUES(1,repeat('2',257)),(1,repeat('1',257));"),
+    ("mysql", "duckdb", "INSERT INTO t (a) SELECT a FROM u WHERE a > 1", "INSERT INTO t (a) SELECT a FROM u WHERE 1 < a"),
+    ("mysql", "duckdb", "INSERT INTO t VALUES (1 + 1, 3)", "INSERT INTO t VALUES (2, 3)"),
+    ("mysql", "postgresql", "CREATE TABLE x AS SELECT a FROM u WHERE a > 1 AND a > 0", "CREATE TABLE x AS SELECT a FROM u WHERE a > 1"),
+])
+def test_a_statement_whose_inner_queries_are_proved_is_decided(source, target, left, right):
+    result = bench.decide(_pair(source, target, left, right, STATEMENTS))
+    assert (result["outcome"], result["detail"], result["wrong"]) == ("proven", "inner query proved", False)
+
+
+@pytest.mark.parametrize("source, target, left, right", [
+    # a second run need not write the same rows
+    ("mysql", "duckdb", "INSERT INTO t1 VALUES (NOW())", "INSERT INTO t1 VALUES (NOW())"),
+    ("mysql", "duckdb", "INSERT INTO t1 VALUES (CURRENT_TIMESTAMP)", "INSERT INTO t1 VALUES (CURRENT_TIMESTAMP)"),
+    ("mysql", "duckdb", "INSERT INTO t1 VALUES (RAND())", "INSERT INTO t1 VALUES (RAND())"),
+    ("mysql", "postgresql", "INSERT INTO t1 VALUES (UUID())", "INSERT INTO t1 VALUES (UUID())"),
+    ("mysql", "duckdb", "INSERT INTO t (a) SELECT a FROM u LIMIT 1", "INSERT INTO t (a) SELECT a FROM u LIMIT 1"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT a FROM u LIMIT 1", "CREATE TABLE x AS SELECT a FROM u LIMIT 1"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT group_concat(b) FROM u", "CREATE TABLE x AS SELECT group_concat(b) FROM u"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT a, row_number() OVER (ORDER BY b) FROM u", "CREATE TABLE x AS SELECT a, row_number() OVER (ORDER BY b) FROM u"),
+    # something outside the inner query differs
+    ("mysql", "duckdb", "INSERT INTO t (a) SELECT a FROM u", "INSERT INTO u (a) SELECT a FROM u"),
+    ("mysql", "duckdb", "INSERT INTO t (a, b) VALUES (1, 2)", "INSERT INTO t (b, a) VALUES (1, 2)"),
+    ("mysql", "duckdb", "INSERT INTO t (a, b) VALUES (1, 2)", "INSERT INTO t VALUES (1, 2)"),
+    ("mysql", "mariadb", "INSERT INTO t (a) VALUES (1 + 1)", "INSERT IGNORE INTO t (a) VALUES (2)"),
+    ("mysql", "clickhouse", "CREATE TABLE t2 AS SELECT a FROM t", "CREATE TABLE t2 ENGINE=MergeTree ORDER BY tuple() AS SELECT a FROM t"),
+    ("mysql", "duckdb", "CREATE TABLE t2 AS SELECT a FROM t", "CREATE TABLE t2 (a BIGINT) AS SELECT a FROM t"),
+    ("mysql", "duckdb", "CREATE TABLE t2 AS SELECT a FROM t", "CREATE TABLE t3 AS SELECT a FROM t"),
+    ("mysql", "duckdb", "CREATE TABLE t2 AS SELECT a FROM t", "CREATE TEMPORARY TABLE t2 AS SELECT a FROM t"),
+    ("mysql", "duckdb", "CREATE TABLE t2 AS SELECT a FROM t", "CREATE VIEW t2 AS SELECT a FROM t"),
+    ("mysql", "duckdb", "CREATE TABLE t2 AS SELECT a FROM t", "INSERT INTO t2 SELECT a FROM t"),
+    # the inner proof is not a proof
+    ("mysql", "duckdb", "INSERT INTO t (a) SELECT a FROM u WHERE a > 1", "INSERT INTO t (a) SELECT a FROM u WHERE a >= 1"),
+    ("mysql", "duckdb", "INSERT INTO t VALUES (1, 2)", "INSERT INTO t VALUES (1, 3)"),
+    ("mysql", "duckdb", "INSERT INTO t VALUES (1, 2)", "INSERT INTO t VALUES (1, 2), (1, 2)"),
+    ("mysql", "duckdb", "INSERT INTO t VALUES (1, 2), (3, 4)", "INSERT INTO t VALUES (1, 4), (3, 2)"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT a FROM u", "CREATE TABLE x AS SELECT DISTINCT a FROM u"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT a AS n FROM u", "CREATE TABLE x AS SELECT a AS m FROM u"),  # the new table's column is named differently
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT a FROM u", "CREATE TABLE x AS SELECT a + 0 FROM u"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT * FROM u", "CREATE TABLE x AS SELECT a, b FROM u"),
+    ("mysql", "duckdb", "INSERT INTO t SELECT a, b FROM u", "INSERT INTO t SELECT b, a FROM u"),
+    # not an INSERT or a CREATE TABLE AS
+    ("mysql", "duckdb", "CREATE TABLE x (a INT)", "CREATE TABLE x (a INT)"),
+    ("mysql", "duckdb", "DELETE FROM t WHERE a > 1", "DELETE FROM t WHERE a > 1"),
+    ("mysql", "duckdb", "UPDATE t SET a = 1", "UPDATE t SET a = 1"),
+    ("mysql", "duckdb", "EXPLAIN SELECT a FROM t", "EXPLAIN SELECT a FROM t"),
+    ("mysql", "duckdb", "SHOW TABLES", "SHOW TABLES"),
+    ("mysql", "duckdb", "DESCRIBE t", "DESCRIBE t"),
+    # a call the two engines compute differently, and an engine that was never run
+    ("postgresql", "duckdb", "create table wide as select generate_series(1, 2) as id", "create table wide as select generate_series(1, 2) as id"),
+    ("mysql", "postgresql", "INSERT INTO t1 VALUES (LOG(2))", "INSERT INTO t1 VALUES (LOG(2))"),
+    ("mysql", "monetdb", "CREATE TABLE t2 AS SELECT REPEAT(1,2) FROM t1", "CREATE TABLE t2 AS SELECT REPEAT(1,2) FROM t1"),
+    ("postgresql", "monetdb", "INSERT INTO d (id) VALUES (2)", "INSERT INTO d (id) VALUES (2)"),
+])
+def test_other_statements_are_not_decided(source, target, left, right):
+    result = bench.decide(_pair(source, target, left, right, STATEMENTS))
+    assert result["outcome"] != "proven", result["detail"]
+
+
+def test_values_rows_are_read_as_a_union_of_selects():
+    inner = bench._inner_query(bench.parse("INSERT INTO t VALUES (1, 'a'), ((2), ('b'))", "mysql"))
+    assert bench._rows_as_select(inner).sql(dialect="mysql") == "SELECT 1 AS c0, 'a' AS c1 UNION ALL SELECT 2 AS c0, 'b' AS c1"
+    assert bench._rows_as_select(bench._inner_query(bench.parse("INSERT INTO t VALUES (1, 2), (3)", "mysql"))) is None
+    assert bench._inner_query(bench.parse("CREATE TABLE x (a INT)", "mysql")) is None
+    assert bench._inner_query(bench.parse("CREATE VIEW x AS SELECT 1", "mysql")) is None
+    assert bench._inner_query(bench.parse("SELECT 1", "mysql")) is None
+
+
 @pytest.mark.parametrize("source, target, left, right, gap", [
     ("sqlite", "postgresql", "SELECT a FROM t WHERE b LIKE 'x%'", "SELECT a FROM t WHERE b LIKE 'x%'", "LIKE and case"),
     ("sqlite", "mysql", "SELECT a FROM t WHERE b = 'x'", "SELECT a FROM t WHERE b = 'x'", "MySQL string comparison"),

@@ -1020,23 +1020,115 @@ def same_statement(pair: Pair) -> bool:
     tree = parse(pair.source_query, pair.source_dbms)
     if not isinstance(tree, (exp.Query, exp.Insert, exp.Create, exp.Update, exp.Delete)):
         return False
-    for index, (kind, text) in enumerate(left):
+    return not _rerun_dependent(pair.source_query, pair.source_dbms)
+
+
+def _rerun_dependent(sql: str, dbms: str) -> bool:
+    """Whether two runs of the statement need not do the same thing (or it cannot be told)."""
+
+    tokens, tree = _tokens(sql, dbms), parse(sql, dbms)
+    if not tokens or tree is None:
+        return True
+    for index, (kind, text) in enumerate(tokens):
         if kind in ("PARAMETER", "SESSION_PARAMETER", "PLACEHOLDER") or text in RERUN_DEPENDENT:
-            return False
-        if text in VOLATILE_NO_ARGUMENT and left[index + 1:index + 3] == [("L_PAREN", "("), ("R_PAREN", ")")]:
-            return False
+            return True
+        if text in VOLATILE_NO_ARGUMENT and tokens[index + 1:index + 3] == [("L_PAREN", "("), ("R_PAREN", ")")]:
+            return True
         if "STRING" in kind and text != text.rstrip():
-            return False
+            return True
     from kumo_sql_prover.smt_equivalence import _NONDETERMINISTIC_NAMES, _NONDETERMINISTIC_TYPES
 
     for node in tree.walk():
         if type(node).__name__ in _NONDETERMINISTIC_TYPES or isinstance(node, (exp.Window, exp.Parameter, exp.SessionParameter, exp.Placeholder, exp.TableSample)):
-            return False
+            return True
         if isinstance(node, exp.Anonymous) and node.name.upper() in _NONDETERMINISTIC_NAMES:
-            return False
+            return True
         if (node.args.get("limit") or node.args.get("offset")) and not node.args.get("order"):
-            return False
-    return True
+            return True
+    return False
+
+
+def _inner_query(tree):
+    """The query an ``INSERT`` or a ``CREATE TABLE ... AS`` takes its rows from, or ``None`` for any other statement."""
+
+    if isinstance(tree, exp.Insert) or (isinstance(tree, exp.Create) and str(tree.args.get("kind") or "").upper() == "TABLE"):
+        inner = tree.args.get("expression")
+        return inner if isinstance(inner, (exp.Query, exp.Values)) else None
+    return None
+
+
+def _rows_as_select(inner):
+    """``VALUES (1, 'a'), (2, 'b')`` as ``SELECT 1, 'a' UNION ALL SELECT 2, 'b'``; a query as it is."""
+
+    if not isinstance(inner, exp.Values):
+        return inner
+    selects = []
+    for row in inner.expressions:
+        if not isinstance(row, exp.Tuple) or not row.expressions:
+            return None
+        selects.append(exp.Select(expressions=[exp.alias_(value.unnest().copy(), f"c{i}") for i, value in enumerate(row.expressions)]))
+    if not selects or len({len(select.expressions) for select in selects}) != 1:
+        return None
+    query = selects[0]
+    for select in selects[1:]:
+        query = exp.Union(this=query, expression=select, distinct=False)
+    return query
+
+
+def statement_proof(pair: Pair, left: str, right: str, schema: dict[str, dict[str, str]]) -> str | None:
+    """How an ``INSERT`` or ``CREATE TABLE ... AS`` pair is decided although the provers read queries only, or ``None``.
+
+    ``left`` and ``right`` are the two statements as sqlglot writes them in the source's dialect (the
+    translation's names read back), so the dialect-gap rules have passed already.
+
+    * ``"same statement, read back"``: the two are then the same statement token for token, the way
+      ``INSERT INTO t1 (data) VALUES (repeat('a',1*1024))`` and its re-capitalised translation are.
+    * ``"inner query proved"``: everything outside the inner query is the same text (the table, the
+      column list, ``IGNORE``, every table property), and the provers prove the two inner queries
+      equal, ``VALUES`` rows read as ``SELECT ... UNION ALL SELECT ...``.
+
+    Refused, as by the same-statement rule: a statement whose second run need not do what the first
+    did (the clock, random values, the session, variables, ``GROUP_CONCAT``, windows, ``LIMIT``
+    without ``ORDER BY``) on either side, and any statement that is not an ``INSERT`` or a
+    ``CREATE TABLE ... AS`` (a table definition means what its engine's types mean). The decision is
+    about the rows the statement writes: what the table's column types then do to them (rounding,
+    truncation, an error) is the engine's own and is not modelled.
+    """
+
+    dialect = SQLGLOT[pair.source_dbms]
+    if "monetdb" in (pair.source_dbms, pair.target_dbms):
+        return None  # read as PostgreSQL and never run: a statement is not decided on a name alone
+    try:
+        trees = [sqlglot.parse_one(left, read=dialect), sqlglot.parse_one(right, read=dialect)]
+    except Exception:
+        return None
+    inner = [_inner_query(tree) for tree in trees]
+    if inner[0] is None or inner[1] is None or type(trees[0]) is not type(trees[1]):
+        return None
+    if _rerun_dependent(pair.source_query, pair.source_dbms) or _rerun_dependent(pair.target_query, pair.target_dbms):
+        return None
+    if _tokens(left, pair.source_dbms) == _tokens(right, pair.source_dbms):
+        return "same statement, read back"
+    outside = []
+    for tree in trees:
+        rest = tree.copy()
+        rest.set("expression", exp.Placeholder())
+        outside.append(_tokens(rest.sql(dialect=dialect), pair.source_dbms))
+    queries = [_rows_as_select(query) for query in inner]
+    if outside[0] is None or outside[0] != outside[1] or queries[0] is None or queries[1] is None:
+        return None
+    if isinstance(trees[0], exp.Create):  # the inner query's output names are the new table's columns
+        try:
+            names = [[name.lower() for name in query.named_selects] for query in inner]
+        except Exception:
+            return None
+        if names[0] != names[1] or any(e.find(exp.Star) for query in inner for e in query.selects):
+            return None
+    try:
+        proved = prove(queries[0].sql(dialect=dialect), queries[1].sql(dialect=dialect), schema, dialect)
+    except Exception:
+        return None
+    return "inner query proved" if proved else None
 
 
 # -- checking proofs by running them --------------------------------------------------
@@ -1222,6 +1314,8 @@ def decide(pair: Pair) -> dict:
                 wrong, detail = True, difference
         elif same_statement(pair):
             outcome, detail = "proven", "same statement"
+        elif (how := statement_proof(pair, left, right, schema)) is not None:
+            outcome, detail = "proven", how
         else:
             outcome = "unknown"
     else:
@@ -1270,6 +1364,8 @@ def results_rows(results: list[dict]) -> dict[str, dict]:
     parsed = sum(r["parsed"] for r in results)
     gaps = sum(r["detail"].startswith("dialect gap") for r in results)
     same = sum(r["outcome"] == "proven" and r["detail"] == "same statement" for r in exact)
+    read_back = sum(r["outcome"] == "proven" and r["detail"] == "same statement, read back" for r in exact)
+    inner = sum(r["outcome"] == "proven" and r["detail"] == "inner query proved" for r in exact)
     volatile_calls = sum(r["detail"].startswith("volatile") for r in results)
     listed = sum(r["detail"].startswith("contradicted natively") for r in results)
     return {
@@ -1280,7 +1376,7 @@ def results_rows(results: list[dict]) -> dict[str, dict]:
             "score": f"{proven}/{len(exact)} exact pairs proved, {sum(r['wrong'] for r in results)} wrong; {parsed}/{len(results)} parsed",
             "metric": "Translations from SQLite, MySQL and PostgreSQL into six databases' dialects, proved equal to the source in the source's dialect after sqlglot reads both; parsed means both sides parse in their own dialect.",
             "evidence": "proof",
-            "correctness": f"Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); {gaps} pairs where the two databases read the same text differently (LIKE case, string collations, integer and decimal division, Unix time ranges, row values, SQLite type conversion; the docs list every rule) are left unproved, and so are {volatile_calls} that call the clock, a random value, a sequence or the session{f' and {listed} whose proof an earlier native replay contradicted' if listed else ''}. {replay_sentence(results)} {sum(r['outcome'] == 'proven' for r in approx)}/{len(approx)} 'approximate' pairs are proved (listed in the docs). {same} of the exact proofs are a MariaDB translation that is its MySQL source token for token, where the provers have nothing to read (an INSERT, a table with no published definition); statements whose answer can change between two runs are refused.",
+            "correctness": f"Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); {gaps} pairs where the two databases read the same text differently (LIKE case, string collations, integer and decimal division, Unix time ranges, row values, SQLite type conversion; the docs list every rule) are left unproved, and so are {volatile_calls} that call the clock, a random value, a sequence or the session{f' and {listed} whose proof an earlier native replay contradicted' if listed else ''}. {replay_sentence(results)} {sum(r['outcome'] == 'proven' for r in approx)}/{len(approx)} 'approximate' pairs are proved (listed in the docs). {same} of the exact proofs are a MariaDB translation that is its MySQL source token for token, where the provers have nothing to read (an INSERT, a table with no published definition); statements whose answer can change between two runs are refused. {read_back} more are an INSERT or CREATE TABLE AS that, read back into the source's dialect, is the source statement token for token, and {inner} an INSERT or CREATE TABLE AS whose inner queries the provers prove equal with everything else the same text; these decide the rows written, not what the table's column types do to them.",
             "coverage": {k: counts[k] for k in ("proven", "unknown", "unsupported") if counts[k]},
             "held_out": f"{sum(r['outcome'] == 'proven' for r in held)}/{len(held)} exact pairs proved",
             "docs": "docs/evals/dlbench.md",
