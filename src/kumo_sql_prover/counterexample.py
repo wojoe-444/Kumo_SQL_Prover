@@ -799,7 +799,9 @@ class Searcher:
                 table = self.spec.tables[name]
                 pools = []
                 for column in table.columns:
-                    if referenced(table, column):
+                    if column.name in table.sequential:
+                        pools.append(list(range(1, rows_allowed + 1)))  # consecutive ids: 1..n, checked in _satisfies
+                    elif referenced(table, column):
                         pools.append(self._small_domain(column))
                     else:
                         pools.append(self._small_domain(column)[:1])
@@ -857,6 +859,13 @@ class Searcher:
         return "verified", None
 
     def _satisfies(self, data, generator) -> bool:
+        for name, rows in data.items():
+            table = self.spec.tables[name]
+            names = [c.name for c in table.columns]
+            for column_name in table.sequential:
+                # a column declared consecutive holds 1..n, as in the random databases
+                if sorted(r[names.index(column_name)] for r in rows) != list(range(1, len(rows) + 1)):
+                    return False
         for child, column, parent, parent_column in self.spec.foreign_keys:
             if child not in data:
                 continue

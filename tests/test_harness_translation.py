@@ -186,3 +186,17 @@ def test_each_primary_entry_of_a_verieql_schema_is_its_own_key():
             values = [row[position] for row in rows]
             assert None not in values and len(set(values)) == len(values)
     assert seen_rows > 60
+
+
+def test_every_small_database_keeps_consecutive_ids():
+    # the "all small databases" step used to try seat ids 0 and 2 for a column declared consecutive
+    seats = cx.Table("SEATS", [cx.Column("ID", "INT", not_null=True), cx.Column("FREE", "INT")], primary_key=("ID",), sequential=("ID",))
+    spec = cx.Spec({"SEATS": seats})
+    # equal when the ids are 1..n (every seat but the last has a successor), different on ids 1 and 3
+    successor = "SELECT a.ID FROM SEATS AS a JOIN SEATS AS b ON b.ID = a.ID + 1"
+    not_last = "SELECT a.ID FROM SEATS AS a WHERE a.ID < (SELECT MAX(ID) FROM SEATS)"
+    outcome, found = cx.Searcher(spec, successor, not_last).exhaustive(2, 3000)
+    assert (outcome, found) == ("verified", None)
+    # a real difference is still found, on a database with ids 1..n
+    outcome, found = cx.Searcher(spec, "SELECT ID FROM SEATS", "SELECT ID FROM SEATS WHERE ID > 1").exhaustive(2, 3000)
+    assert outcome == "found"
