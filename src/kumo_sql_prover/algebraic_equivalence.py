@@ -122,6 +122,7 @@ from .one_row_groups import collapse_one_row_groups
 from .one_row_tails import drop_one_row_tail
 from .plain_grouping_calls import fold_plain_grouping_calls
 from .string_spelling_rules import string_spelling_rules
+from .tagged_union_groups import split_tagged_union_group
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
@@ -4960,6 +4961,7 @@ def normalize(
         lambda sel: spell_windowed_input(sel, types_map),
         collapse_one_row_groups,
         key_expression_having_to_where,
+        split_tagged_union_group,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:

@@ -33,7 +33,9 @@ Conditions, all checked:
   ``DISTINCT``, ``QUALIFY``, ``ORDER BY``, ``LIMIT``, ``OFFSET`` or window, and distinct output names; a ``HAVING``
   there only removes groups;
 * every key of the derived table is one of its outputs (by its text) and the outer select groups by an output
-  of each key. Grouping by fewer keys (a real roll-up) is left alone;
+  of each key. Grouping by fewer keys (a real roll-up) is left alone. A key that is ``TRUE``, ``FALSE`` or ``NULL``
+  is the same on every row and needs no output: a derived table grouped by such keys alone has at most one row,
+  and any ``GROUP BY`` of the outer select over its columns has that row as its one group (none when it is empty);
 * or neither select has a ``GROUP BY``, the derived table aggregates and has no ``HAVING`` (which could leave it
   empty), and the outer select aggregates;
 * every aggregate of the outer select is one of those listed above, over an expression without a subquery,
@@ -151,7 +153,8 @@ def collapse_one_row_groups(select: exp.Select) -> exp.Select | None:
             if not isinstance(key, exp.Column) or (key.table and key.table.lower() != source.alias.lower()) or key.name.lower() not in outputs:
                 return None
             grouped.add(outputs[key.name.lower()].sql())
-        if any(key.sql() not in grouped for key in inner_keys):
+        # TRUE, FALSE or NULL as a key is the same on every row: it tells no two rows apart
+        if any(key.sql() not in grouped for key in inner_keys if not isinstance(key, (exp.Boolean, exp.Null))):
             return None
     else:
         if outer_keys or inner.args.get("having") is not None or not calls:

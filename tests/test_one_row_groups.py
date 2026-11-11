@@ -59,6 +59,10 @@ def test_a_regrouping_by_every_key_becomes_a_projection():
     )
     # an unnamed output stays unnamed
     assert collapsed(f"SELECT d.a, MAX(d.a), COUNT(*) FROM {GROUPED} GROUP BY d.a") == "SELECT a, (a), (1) FROM t GROUP BY a"
+    # a constant key tells no rows apart: at most one row below, so one row per outer group
+    assert collapsed("SELECT d.tag, SUM(d.n) AS n FROM (SELECT 1 AS tag, COUNT(*) AS n FROM t GROUP BY TRUE) AS d GROUP BY d.tag") == (
+        "SELECT 1 AS tag, COUNT(*) AS n FROM t GROUP BY TRUE"
+    )
     # one row over one row
     assert collapsed("SELECT MIN(d.s) AS s, COUNT(*) AS n FROM (SELECT SUM(b) AS s FROM t) AS d") == "SELECT SUM(b) AS s, 1 AS n FROM t"
 
@@ -85,6 +89,7 @@ def test_a_regrouping_by_every_key_becomes_a_projection():
     "SELECT COUNT(*) AS n FROM (SELECT SUM(b) AS s FROM t) AS d",  # SELECT 1 FROM t would be a row per row
     "SELECT MIN(d.s) AS s FROM (SELECT SUM(b) AS s FROM t HAVING COUNT(*) > 1) AS d",  # the one row may be gone
     "SELECT MIN(d.s) AS s FROM (SELECT b AS s FROM t) AS d",
+    "SELECT SUM(d.n) AS n FROM (SELECT COUNT(*) AS n FROM t GROUP BY TRUE) AS d",  # no row below over no input, one row above
 ])
 def test_other_shapes_are_left_alone(sql):
     assert collapsed(sql) is None
@@ -129,6 +134,8 @@ NEAR_MISSES = [
     ("SELECT d.a, MIN(d.b) AS s FROM (SELECT a, b FROM t) AS d GROUP BY d.a", "SELECT a, b AS s FROM t"),
     # a global aggregate over a grouped table is one row, not one per group
     (f"SELECT MIN(d.s) AS s FROM {GROUPED}", f"SELECT d.s FROM {GROUPED}"),
+    # grouped by a constant, the derived table is empty over no input, and a global aggregate above still returns a row
+    ("SELECT SUM(d.n) AS n FROM (SELECT COUNT(*) AS n FROM u GROUP BY TRUE) AS d", "SELECT COUNT(*) AS n FROM u GROUP BY TRUE"),
     # the derived table's one row removed by HAVING: the outer aggregate still returns a row
     ("SELECT MIN(d.s) AS s FROM (SELECT SUM(b) AS s FROM t HAVING COUNT(*) > 99) AS d", "SELECT SUM(b) AS s FROM t HAVING COUNT(*) > 99"),
 ]
@@ -149,6 +156,7 @@ COLLAPSED_QUERIES = [
     "SELECT d.a, MIN(d.s) AS s FROM (SELECT a, SUM(b) AS s FROM t GROUP BY a HAVING COUNT(*) > 1) AS d GROUP BY d.a",
     "SELECT MIN(d.s) AS s, COUNT(*) AS n, COUNT(d.s) AS k FROM (SELECT SUM(b) AS s FROM t) AS d",
     "SELECT d.p, BIT_OR(d.s) AS s FROM (SELECT a > 1 AS p, SUM(b) AS s FROM t GROUP BY a > 1) AS d GROUP BY d.p",
+    "SELECT d.tag, SUM(d.n) AS n, MAX(d.m) AS m FROM (SELECT 1 AS tag, COUNT(*) AS n, MIN(b) AS m FROM t GROUP BY TRUE) AS d GROUP BY d.tag",
 ]
 
 
