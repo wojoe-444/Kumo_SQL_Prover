@@ -4876,6 +4876,7 @@ def normalize(
 
     from .mysql_exists_casts import drop_mysql_exists_cast
     from .single_source_columns import qualify_single_source_columns
+    from .keyed_self_membership import keyed_self_membership
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
@@ -4960,6 +4961,7 @@ def normalize(
         wrap_tailed_outer_join_aggregate,
         push_filter_into_wrapped_join,
         drop_one_row_tail,
+        lambda sel: keyed_self_membership(sel, schema, keys, not_null),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
