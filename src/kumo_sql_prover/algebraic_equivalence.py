@@ -126,6 +126,8 @@ from .substring_casts import drop_substring_casts
 from .cased_group_sums import unnest_cased_sums
 from .counted_outer_groups import count_outer_groups
 from .discrete_bounds import close_strict_bounds, fold_chained_dates
+from .group_total_windows import read_group_totals
+from .closed_scalar_outputs import inline_closed_outputs
 from .guarded_outer_counts import guard_outer_counts
 from .tuple_membership import expand_row_membership
 from .closed_scalar_filters import fold_scalar_filter, lift_scalar_arithmetic
@@ -4959,6 +4961,7 @@ def normalize(
     tree = resolve_alias_reads(tree, schema, dialect)
     if shapes:
         tree = count_constant_window_sums(tree)  # pre-pass: SUM(c) OVER w is c * COUNT(*) OVER w, before windows are kept whole
+        tree = read_group_totals(tree)  # pre-pass: SUM(SUM(e)) OVER () of a grouped select is the ungrouped sum
     tree = _isolate_windows(canonical_windows(drop_unread_windows(tree), types))
     if schema:
         # name each bare column's source before any rewrite reads a derived table as its base table, whose
@@ -5000,6 +5003,7 @@ def normalize(
         lambda sel: filter_own_groups(sel, schema, keys, not_null, dialect),
         lambda sel: pull_up_keyed_join(sel, schema, keys),
         lambda sel: read_one_row_source(sel, schema),
+        lambda sel: inline_closed_outputs(sel, schema),
         lambda sel: fold_scalar_filter(sel, schema),
         lift_scalar_arithmetic,
         lambda sel: drop_substring_casts(sel, types_map),
