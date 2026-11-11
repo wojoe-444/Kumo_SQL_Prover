@@ -5228,6 +5228,17 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
     result = prove_equivalent_smt(left, right, types=types, **kwargs)
     if normalization_assumptions:
         result = dataclasses.replace(result, assumptions=tuple(dict.fromkeys((*result.assumptions, *sorted(normalization_assumptions)))))
+    if result.status is SmtStatus.NOT_PROVEN and not replaced and not keyed_distinct:
+        from . import window_inputs
+
+        try:
+            unified = window_inputs.unify(left, right, dialect=dialect, prove=same)  # two spellings of the rows a window reads
+        except sqlglot.errors.SqlglotError:
+            unified = None
+        if unified is not None:
+            retry = prove_equivalent_smt(*unified, types=types, **kwargs)
+            if retry.proven:
+                return dataclasses.replace(retry, assumptions=tuple(dict.fromkeys((*retry.assumptions, *sorted(normalization_assumptions)))))
     if result.status is SmtStatus.NOT_PROVEN and not replaced:
         reduced = set_aggregates.reduce(left, right, dialect, kwargs.get("compare_names", True))
         if reduced:
