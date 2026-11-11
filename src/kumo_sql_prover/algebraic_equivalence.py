@@ -104,6 +104,7 @@ from . import numeric_column_reading, string_number_compare, string_number_liter
 from .constant_correlation import propagate_constant_correlations
 from .constant_window_sums import count_constant_window_sums
 from .conditional_count_sums import count_conditional_sums
+from .counted_known_values import count_known_values
 from .constant_regroup_rules import collapse_constant_regroup
 from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
@@ -4967,6 +4968,7 @@ def normalize(
         key_expression_having_to_where,
         split_tagged_union_group,
         count_conditional_sums,
+        count_known_values,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
