@@ -4875,6 +4875,10 @@ def normalize(
     tree = _resolve_ordinals(tree, group_by=not group_by_constants)
     tree = _lowercase_columns(tree)
     tree = _inline_ctes(tree)
+    if shape_fallback.enabled():
+        from .joined_key_restrictions import drop_joined_key_restrictions
+
+        tree = drop_joined_key_restrictions(tree, _assumptions)  # pre-pass: while the two copies of an inlined CTE still have one text
     tree = rewrite_bigquery_constructs(tree, schema, types, dialect)  # pre-pass: UNNEST of literals, STRUCT fields
     tree = inline_named_windows(tree)
     from .nonnull_any import rewrite_nonnull_any
