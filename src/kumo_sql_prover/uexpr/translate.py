@@ -29,6 +29,8 @@ import re
 import sqlglot
 from sqlglot import exp
 
+from .. import volatile_calls
+
 from .ir import (
     NULL,
     ONE,
@@ -371,6 +373,8 @@ class Translator:
                 raise Unsupported(f"{name} is not modeled")
             if isinstance(sub, exp.Anonymous) and (sub.name or "").upper() in _NONDETERMINISTIC:
                 raise Unsupported(f"{sub.name} is not modeled")
+            if volatile_calls.kind(sub, self.dialect) is not None:
+                raise Unsupported(volatile_calls.reason(sub, self.dialect))
             if isinstance(sub, (exp.Pivot, exp.Unnest, exp.Lateral)):
                 raise Unsupported(f"{name} is not modeled")
         return self.query(tree, None, {})
@@ -970,6 +974,8 @@ class Translator:
             name = (e.sql_name() if not isinstance(e, exp.Anonymous) else e.name).upper()
             if name in _NONDETERMINISTIC or type(e).__name__ in _NONDETERMINISTIC_TYPES:
                 raise Unsupported(f"{name} is not modeled")
+            if volatile_calls.kind(e, self.dialect) is not None:
+                raise Unsupported(volatile_calls.reason(e, self.dialect))
             args = []
             for key, arg in e.args.items():
                 if arg is None or key in ("safe", "big_int"):
