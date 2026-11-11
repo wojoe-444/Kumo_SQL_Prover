@@ -72,7 +72,7 @@ def test_a_sum_of_indicator_sums_is_one_sum():
     )
     # IF, parentheses, three sums, the HAVING and a global aggregate
     assert merged("SELECT (SUM(IF(g.w1 = 1, 1, 0)) + SUM(IF(g.w2 = 1, 2, 0))) + SUM(3) AS n FROM games AS g HAVING SUM(1) + SUM(IF(g.w3 IS NULL, 0, 1)) > 2") == (
-        "SELECT SUM(IF(g.w1 = 1, 1, 0) + IF(g.w2 = 1, 2, 0) + 3) AS n FROM games AS g HAVING SUM(1 + IF(g.w3 IS NULL, 0, 1)) > 2"
+        "SELECT SUM(CASE WHEN g.w1 = 1 THEN 1 ELSE 0 END + CASE WHEN g.w2 = 1 THEN 2 ELSE 0 END + 3) AS n FROM games AS g HAVING SUM(1 + CASE WHEN g.w3 IS NULL THEN 0 ELSE 1 END) > 2"
     )
     # an argument that is itself a sum of indicators
     assert merged(f"SELECT p.id, SUM({ONE} + {TWO}) + SUM(CASE WHEN g.w3 > 0 THEN 1 ELSE 0 END * 2) FROM people AS p, games AS g GROUP BY p.id") == (
@@ -82,7 +82,7 @@ def test_a_sum_of_indicator_sums_is_one_sum():
 
 def test_counts_of_a_test_join_the_sum_in_a_grouped_select():
     assert merged("SELECT p.id, COUNT(CASE WHEN p.id = g.w1 THEN 1 END) + COUNT(IF(p.id = g.w2, 'x', NULL)) + SUM(IF(p.id = g.w3, 1, 0)) FROM people AS p, games AS g GROUP BY p.id") == (
-        f"SELECT p.id, SUM({ONE} + {TWO} + IF(p.id = g.w3, 1, 0)) FROM people AS p, games AS g GROUP BY p.id"
+        f"SELECT p.id, SUM({ONE} + {TWO} + CASE WHEN p.id = g.w3 THEN 1 ELSE 0 END) FROM people AS p, games AS g GROUP BY p.id"
     )
     assert merged("SELECT p.id, COUNT(CASE WHEN p.id = g.w1 THEN 1 ELSE NULL END) + COUNT(CASE WHEN p.id = g.w2 THEN 1 END) FROM people AS p, games AS g GROUP BY p.id") == (
         f"SELECT p.id, {SUM2} FROM people AS p, games AS g GROUP BY p.id"

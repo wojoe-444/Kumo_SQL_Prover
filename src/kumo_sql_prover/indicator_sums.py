@@ -18,7 +18,8 @@ the first spelling to the second.
 
 **1. A sum of indicator sums is one sum** (:func:`merge_indicator_sums`). ``SUM(a) + SUM(b)``, outside any
 aggregate, becomes ``SUM(a + b)`` when ``a`` and ``b`` are *integer values*: built from integer literals alone
-through ``CASE .. ELSE ..`` (or ``IF(c, x, y)``), ``+``, ``-`` and ``*``, with any conditions. Such a value is an
+through ``CASE .. ELSE ..`` (or ``IF(c, x, y)``, which the merged sum writes as that ``CASE``), ``+``, ``-`` and
+``*``, with any conditions. Such a value is an
 integer and never NULL on any row, so neither sum skips a row and the two sums range over the same rows:
 adding them row by row or sum by sum is the same integer. Over no rows (a global aggregate of an empty input,
 the total row of a ``ROLLUP``) both sides are NULL. In a select with a plain ``GROUP BY``, where every group has
@@ -158,9 +159,19 @@ def merge_indicator_sums(select: exp.Select) -> exp.Expression | None:
             if not isinstance(value, (exp.Case, exp.If, exp.Literal, exp.Paren)):
                 value = exp.Paren(this=value)
             total = value if total is None else exp.Add(this=total, expression=value)
-        node.replace(exp.Sum(this=total))
+        node.replace(exp.Sum(this=_cases(total)))
         changed = True
     return copy if changed else None
+
+
+def _cases(node: exp.Expression) -> exp.Expression:
+    """An integer value with each ``IF(c, x, y)`` written as ``CASE WHEN c THEN x ELSE y END``, the same value."""
+
+    node = exp.Paren(this=node)
+    for call in list(node.find_all(exp.If)):
+        if not isinstance(call.parent, exp.Case) and call.args.get("false") is not None:
+            call.replace(exp.Case(ifs=[exp.If(this=call.this, true=call.args["true"])], default=call.args["false"]))
+    return node.this
 
 
 def _disjuncts(node: exp.Expression) -> list[exp.Expression] | None:

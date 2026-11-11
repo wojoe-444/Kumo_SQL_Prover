@@ -24,14 +24,16 @@ least one *grouped branch*: a select with a plain ``GROUP BY`` over base tables 
 optional ``WHERE``), whose every output is either ``COUNT(*)`` / ``COUNT(x)`` or fixed by the group (a group
 key, or a column of a table whose declared NOT NULL key is among the key columns). Call a column of ``u`` a
 *count column* when some grouped branch computes it with ``COUNT``; every grouped branch must then compute it
-with ``COUNT``. If the select reads the count columns only as ``SUM(u.n)`` (the whole argument), and has no
-other aggregate, each grouped branch loses its ``GROUP BY`` and writes ``1`` for ``COUNT(*)`` and
-``CASE WHEN x IS NULL THEN 0 ELSE 1 END`` for ``COUNT(x)``.
+with ``COUNT`` (or with ``SUM(v)`` of a value built from integer literals alone, as a ``COUNT`` pushed into the
+branch of a union reads: ``SUM(1)``). If the select reads the count columns only as ``SUM(u.n)`` (the whole
+argument), and has no other aggregate, each grouped branch loses its ``GROUP BY`` and writes ``1`` for
+``COUNT(*)``, ``CASE WHEN x IS NULL THEN 0 ELSE 1 END`` for ``COUNT(x)`` and ``v`` for ``SUM(v)``. A ``GROUP BY``
+name that no source of the branch has is read as the branch's output of that name, as MySQL reads it.
 
 **Why it is sound.** A plain ``GROUP BY`` makes one row per non-empty group, so each row ``b`` of a grouped
 branch stands for the rows ``b'`` of the ungrouped branch that fall in its group: at least one, all with the
 same values in the columns that are not counts (they are fixed by the group), and with ``n`` of ``b`` equal to
-the sum of ``n`` over them (``COUNT(*)`` counts them, ``COUNT(x)`` those whose ``x`` is not NULL). The select
+the sum of ``n`` over them (``COUNT(*)`` counts them, ``COUNT(x)`` those whose ``x`` is not NULL, ``SUM(v)`` adds an integer that is never NULL). The select
 reads only the other columns outside ``SUM(u.n)``, so its ``WHERE``, ``ON`` and group keys treat ``b`` and each
 ``b'`` alike: a kept ``b`` becomes its ``b'`` rows in the same group of the select, a dropped ``b`` drops them
 all, and the select has the same groups (a group that held ``b`` holds some ``b'``). ``SUM(u.n)`` adds, for
@@ -169,7 +171,7 @@ def ungroup_counted_branches(
             argument = call.this
             if isinstance(call, exp.Sum):
                 value: exp.Expression = _wrapped(argument)
-            elif argument is None or isinstance(argument, exp.Star):
+            elif argument is None or isinstance(argument, (exp.Star, exp.Literal)):
                 value = exp.Literal.number(1)
             else:
                 value = exp.Case(ifs=[exp.If(this=exp.Is(this=_wrapped(argument), expression=exp.Null()), true=exp.Literal.number(0))], default=exp.Literal.number(1))
