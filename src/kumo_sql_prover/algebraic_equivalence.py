@@ -4896,6 +4896,11 @@ def normalize(
 
         tree = read_extreme_joins(tree, schema, not_null)  # pre-pass: a join with the table's own grouped MIN or MAX is that comparison
         tree = read_extreme_rows(tree, schema, keys)  # pre-pass: under a key the rows holding a group's MIN or MAX are one row per group
+        from .absolute_values import read_absolute_values
+        from .keyed_lookups import read_keyed_lookups
+
+        tree = read_keyed_lookups(tree, schema, keys)  # pre-pass: a filter on a value looked up by key is an EXISTS
+        tree = read_absolute_values(tree, types)  # pre-pass: ABS(x) = n says x is n or -n
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
     tree = trim_redundant_row_clauses(tree)
