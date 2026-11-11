@@ -35,7 +35,7 @@ import sqlglot
 from sqlglot import exp
 from . import proof_columns
 from .clause_alias_reads import resolve_alias_reads
-from .ast_utils import FROM_KEY, UnmodeledConstruct, canonical_negation, check_modeled, distinct_on, drop_case_conflicts, expand_alias_columns, extended_grouping, faithful_sql, free_reads, parenthesize_is_operands, plain_distinct, same_table, select_sources as _sources_of, star_modified, strip_positions, visible_ctes
+from .ast_utils import inside, FROM_KEY, UnmodeledConstruct, canonical_negation, check_modeled, distinct_on, drop_case_conflicts, expand_alias_columns, extended_grouping, faithful_sql, free_reads, parenthesize_is_operands, plain_distinct, same_table, select_sources as _sources_of, star_modified, strip_positions, visible_ctes
 from .set_operations import positional_sql_pair
 from .literal_fold_rules import distribute_over_constant_union, fold_string_literals
 from .parse_check import refuse_misread_proofs
@@ -1513,7 +1513,11 @@ def _qualify_outer_join_columns(tree: exp.Expression, schema: dict[str, list[str
             if column.table or isinstance(column.this, exp.Star) or column.find_ancestor(exp.Select) is not select:
                 continue
             name = column.name.lower()
-            if name in outputs or len(owners.get(name, [])) != 1:
+            if len(owners.get(name, [])) != 1:
+                continue
+            # a select item cannot read another item's alias, so ``SUM(paid) AS paid`` reads the column; HAVING and ORDER BY may read the alias
+            listed = shape_fallback.enabled() and any(inside(column, item) for item in select.expressions)
+            if name in outputs and not listed:
                 continue
             column.set("table", exp.to_identifier(owners[name][0]))
     return tree
@@ -4895,6 +4899,8 @@ def normalize(
     tree = rewrite_bigquery_constructs(tree, schema, types, dialect)  # pre-pass: UNNEST of literals, STRUCT fields
     tree = inline_named_windows(tree)
     from .nonnull_any import rewrite_nonnull_any
+    from .join_distinct_aggregates import count_distinct_under_key, rewrite_join_distinct_select
+    from .keyed_group_filters import rewrite_keyed_group_filter
 
     from .aggregate_presence import rewrite_aggregate_presence
     from .mysql_exists_casts import drop_mysql_exists_cast
@@ -4919,6 +4925,12 @@ def normalize(
 
         tree = read_keyed_lookups(tree, schema, keys)  # pre-pass: a filter on a value looked up by key is an EXISTS
         tree = read_absolute_values(tree, types)  # pre-pass: ABS(x) = n says x is n or -n
+        from .join_distinct_aggregates import read_join_distinct_aggregates
+
+        tree = read_join_distinct_aggregates(tree, schema)  # pre-pass: a join that only asks for a match, under COUNT(DISTINCT), is an IN
+        from .key_group_choice import choose_key_groups
+
+        tree = choose_key_groups(tree, schema, keys, not_null)  # pre-pass: grouping by any NOT NULL key of a table is one grouping, so name the first
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
     tree = trim_redundant_row_clauses(tree)
@@ -4989,6 +5001,9 @@ def normalize(
         push_filter_into_wrapped_join,
         drop_one_row_tail,
         rewrite_aggregate_presence,  # (SELECT MIN(TRUE) FROM ..) IS NOT NULL asks whether a row exists
+        lambda sel: rewrite_join_distinct_select(sel, schema),  # a join under COUNT(DISTINCT) that only asks for a match is an IN
+        lambda sel: rewrite_keyed_group_filter(sel, schema, keys),  # a keyed table joined to a grouped table under HAVING is one join with the grouped subquery
+        lambda sel: count_distinct_under_key(sel, keys, not_null),  # COUNT(DISTINCT c) of a group whose columns and c hold a key is COUNT(c)
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
