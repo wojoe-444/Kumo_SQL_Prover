@@ -30,8 +30,17 @@ def _own(node: exp.Expression, select: exp.Select) -> bool:
     return node.find_ancestor(exp.Select) is select
 
 
-def prune_windowed_derived(select: exp.Select) -> exp.Expression | None:
-    """``select`` with the unread outputs of its windowed derived tables removed, or ``None``."""
+def prune_windowed_derived(select: exp.Select, schema: dict | None = None) -> exp.Expression | None:
+    """``select`` with the unread outputs of its windowed derived tables removed, or ``None``.
+
+    An unread output is removed only when every column it reads is found in a source of the derived table (a base
+    table's columns are the declared ones, in ``schema``): an output that reads a column nothing provides is an error
+    when the query runs, and removing it would turn a query that fails into one that answers.
+    """
+
+    from .windowed_output_pruning import _reads_only_known_columns
+
+    schema = {str(name).lower(): {str(column).lower() for column in columns} for name, columns in (schema or {}).items()}
 
     if any(isinstance(star, exp.Star) and not isinstance(star.parent, exp.Count) for star in select.find_all(exp.Star)):
         return None
@@ -58,7 +67,7 @@ def prune_windowed_derived(select: exp.Select) -> exp.Expression | None:
         alias = source.alias.lower()
         # every read that could be of this source: qualified with its alias, or unqualified
         read = {c.name.lower() for c in select.find_all(exp.Column) if c.find_ancestor(exp.Subquery) is not source and (not c.table or c.table.lower() == alias)}
-        keep = [i for i, name in enumerate(names) if name in read] or [0]
+        keep = [i for i, name in enumerate(names) if name in read or not _reads_only_known_columns(inner.expressions[i], inner, schema)] or [0]
         if len(keep) < len(names):
             plans.append((index, keep))
     if not plans:

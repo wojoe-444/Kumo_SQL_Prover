@@ -5033,7 +5033,7 @@ def normalize(
     if shapes:
         tree = count_constant_window_sums(tree)  # pre-pass: SUM(c) OVER w is c * COUNT(*) OVER w, before windows are kept whole
         tree = read_group_totals(tree)  # pre-pass: SUM(SUM(e)) OVER () of a grouped select is the ungrouped sum
-        tree = settle_window_levels(tree)
+        tree = settle_window_levels(tree, schema)
     tree = _isolate_windows(canonical_windows(drop_unread_windows(tree), types))
     if schema:
         # name each bare column's source before any rewrite reads a derived table as its base table, whose
@@ -5089,7 +5089,7 @@ def normalize(
         roll_up_grouped_union,
         cross_join_one_row,
         inline_windowed_source,
-        prune_windowed_derived,
+        lambda sel: prune_windowed_derived(sel, schema),
         push_filter_below_windows,
         lambda sel: literal_like_to_equality(sel, types_map, dialect),
         merge_exists_disjunction,

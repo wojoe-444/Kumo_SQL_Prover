@@ -23,7 +23,8 @@ COUNTED = "SELECT t.k AS n, t.a AS d, t.b AS m, COUNT(*) OVER (PARTITION BY t.a)
 
 
 def applied(rule, sql):
-    out = rule(sqlglot.parse_one(sql, read="postgres"))
+    tree = sqlglot.parse_one(sql, read="postgres")
+    out = rule(tree, SCHEMA) if rule in (prune_windowed_derived, settle_window_levels) else rule(tree)
     return out.sql(dialect="postgres") if out is not None else None
 
 
@@ -195,6 +196,11 @@ PRUNE_NEAR_MISSES = [
     "SELECT d.* FROM (SELECT t.k AS n, t.b AS m, SUM(t.c) OVER (PARTITION BY t.a) AS c FROM t) AS d",
     "SELECT d.n, d.m, d.c FROM (SELECT t.k AS n, t.b AS m, SUM(t.c) OVER (PARTITION BY t.a) AS c FROM t) AS d",  # all read
     "SELECT d.n FROM (SELECT t.k AS n, t.b AS m FROM t) AS d",  # no window: left to the general rule
+    # an output that reads a column nothing provides is an error when the query runs: dropping it would turn a
+    # query that fails into one that answers
+    "SELECT d.n, d.c FROM (SELECT t.k AS n, t.nope AS m, SUM(t.c) OVER (PARTITION BY t.a) AS c FROM t) AS d",
+    "SELECT d.n, d.c FROM (SELECT t.k AS n, nope AS m, SUM(t.c) OVER (PARTITION BY t.a) AS c FROM t) AS d",
+    "SELECT d.n, d.c FROM (SELECT x.k AS n, x.b AS m, SUM(x.c) OVER (PARTITION BY x.a) AS c FROM nowhere AS x) AS d",  # no schema for the table
 ]
 
 

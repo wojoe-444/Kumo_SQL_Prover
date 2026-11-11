@@ -25,14 +25,18 @@ _RULES = (push_filter_below_windows, inline_windowed_source, prune_windowed_deri
 _MAX_STEPS = 24
 
 
-def settle_window_levels(tree: exp.Expression) -> exp.Expression:
+def _apply(rule, select: exp.Select, schema: dict | None) -> exp.Expression | None:
+    return rule(select, schema) if rule is prune_windowed_derived else rule(select)
+
+
+def settle_window_levels(tree: exp.Expression, schema: dict | None = None) -> exp.Expression:
     """``tree`` with the rules above applied until none does (at most ``_MAX_STEPS`` rewrites)."""
 
     if tree.find(exp.Window) is None:
         return tree
     for _ in range(_MAX_STEPS):
         for select in tree.find_all(exp.Select):
-            rewritten = next((out for out in (rule(select) for rule in _RULES) if out is not None), None)
+            rewritten = next((out for out in (_apply(rule, select, schema) for rule in _RULES) if out is not None), None)
             if rewritten is None:
                 continue
             if select is tree:
