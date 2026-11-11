@@ -418,8 +418,16 @@ def search_counterexample(
     dialect: str = "bigquery",
     time_limit: float = 3.0,
 ) -> Counterexample | None:
-    """A database on which the two queries return different bags, or ``None``."""
+    """A database on which the two queries return different bags, or ``None``.
 
+    BigQuery queries are run through the faithful reading described above. DuckDB queries are run as they are
+    written (:mod:`kumo_sql_prover.duckdb_refutation`); no other dialect is searched.
+    """
+
+    if dialect == "duckdb":
+        from . import duckdb_refutation
+
+        return duckdb_refutation.search(left_sql, right_sql, schema=schema, types=types, constraints=constraints, time_limit=time_limit)
     if dialect != "bigquery" or not schema or not types:
         return None
     if invalid_type_name(left_sql) or invalid_type_name(right_sql):

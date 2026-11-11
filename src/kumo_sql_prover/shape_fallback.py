@@ -33,7 +33,9 @@ The shape rules: ``single_source_columns``, ``grouped_self_membership``, ``disjo
 ``tailed_grouping_sets``, ``mysql_exists_casts``, ``case_arm_rules``, ``unmatched_outer_join``,
 ``having_count_rules``, ``semijoin_shapes``, ``string_spelling_rules``, ``tailed_outer_aggregates``,
 ``wrapped_join_filters``, ``one_row_tails``, and the derived-table and ``JOIN .. ON`` sources that
-``closed_sources`` lets the scalar-aggregate decorrelation read. Not in the list, because each only reads a
+``closed_sources`` lets the scalar-aggregate decorrelation read. Added 2026-11-11: ``inline_rows``,
+``closed_queries``, ``counted_joins``, ``count_exists_rules``, ``subquery_absorption``, ``typed_comparisons``
+and ``sqlite_date_text``. Not in the list, because each only reads a
 query that was declined before it: ``listed_output_names`` and ``printed_spelling``.
 
 The batch of 2026-11-11, written for QUITE's TPC-H and Calcite development pairs, is in the list too:

@@ -26,7 +26,13 @@ Adding decimal numbers is not exactly the same in every order: 10000000000000000
 
 One more trap is about sums. `SELECT y, SUM(x) FROM t GROUP BY y HAVING y > 0` and `SELECT y, SUM(x) FROM t WHERE y > 0 GROUP BY y` return the same rows, but the first also adds up the group `y = 0` before throwing it away, and two huge values in that group overflow a 64-bit integer. So the rewrite is safer, and the reverse is not. 17 pairs check that the prover tells these apart group by group (a `HAVING` moved into `WHERE` and back, a filter spelled another way, `SUM(DISTINCT)`, a join, a window), and that it stays unknown when a sum is split into partial sums and added up again.
 
+## Running the pair when the proof is not enough
+
+When the prover cannot decide a pair, the suite now also tries to find a small table on which the two queries return different rows, by running both on DuckDB set up to read them the way BigQuery does. For example `SELECT x FROM t WHERE x = 9007199254740993` and `SELECT x FROM t WHERE x = 9007199254740992.0` differ on the row `x = 9007199254740992` (only the second returns it), and the search finds it. A difference found this way counts as "refuted"; the score says how many came from the search. It runs on DuckDB, not BigQuery, so it only runs queries it knows DuckDB reads the same way.
+
 ## What to keep in mind
+
+- A later pass added three small rules after reading the open development pairs (a filter inside `SUM`, `x * 0.5` as `x / 2`, a whole-number sum over a `UNION ALL`). Those pairs are "tuned on test"; the held-out quarter was only looked at by its verdicts.
 
 - The pairs were written by the person who changed the prover, from the issue's list of traps. They were fixed before the change and a quarter was held out, but this is a safety net, not an independent test.
 - A few labels rest on behaviour the author could not confirm in the documentation (for example how a decimal literal is rounded, and that multiplying or dividing two `NUMERIC` values rounds half away from zero). Those cases say so, and "unknown" is an acceptable answer for them. The prover assumes that rounding rule, so an answer that depends on it is only as good as the rule.

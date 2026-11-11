@@ -21,3 +21,5 @@ That is a heuristic judgment of the task's visible information. It is different 
 Published labels can differ from semantic results because of row ordering, tied sort keys, or assumptions about real data. The full guide records disputed answers and the checks used to investigate them.
 
 Read label agreement, proof coverage, replayed counterexamples, and heuristic-task accuracy separately. The reference has the task-specific commands and results files.
+
+A second audit (November 2026) sorted the 211 answers that disagree with the labels. For 135 of them KumoSQL holds a small database on which the two queries really return different results although the label says "equivalent". For 22 it holds a proof although the label says "different", and thousands of random databases showed no difference for any of them. That leaves 54 real guesses: pairs where no difference was found and the label says there is one. So most of the remaining gap is disagreement with the labels, not something a better prover would close.

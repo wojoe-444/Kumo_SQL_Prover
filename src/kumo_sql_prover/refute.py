@@ -179,6 +179,22 @@ def _confirmed(runner, left: str, right: str, dataset: SyntheticDataset, compare
     return compare_outputs(a1, a2, **compare)[0] and compare_outputs(b1, b2, **compare)[0]
 
 
+def _reads_collation(left: str, right: str, dialect: str) -> bool:
+    """Whether either query names a collation (``COLLATE``) or does not parse (then the question is not asked)."""
+
+    import sqlglot
+    from sqlglot import exp
+
+    for sql in (left, right):
+        try:
+            tree = sqlglot.parse_one(sql, read=dialect)
+        except Exception:
+            return False  # the runners report an unreadable query themselves
+        if tree is not None and tree.find(exp.Collate) is not None:
+            return True
+    return False
+
+
 def find_targeted_difference(
     left: str,
     right: str,
@@ -206,6 +222,11 @@ def find_targeted_difference(
     dialect without a boolean type.
     """
 
+    if _reads_collation(left, right, dialect):
+        # A column's collation is not part of ``schema``, so a database built from the declared types can make a
+        # COLLATE-ed query differ from one that leans on the column's own collation (a difference the real table
+        # would not show).
+        return None
     compare = {
         "check_column_names": False,
         "ignore_row_order": not ordered,

@@ -4932,6 +4932,8 @@ def normalize(
     from .nonnull_any import rewrite_nonnull_any
 
     from .counted_subqueries import count_subquery_as_join
+    from .exists_disjunction import merge_exists_disjunction
+    from .literal_like import literal_like_to_equality
     from .mysql_exists_casts import drop_mysql_exists_cast
     from .never_null_cases import drop_never_null_padding
     from .preserved_counts import count_preserved_not_null
@@ -4940,6 +4942,26 @@ def normalize(
     from .windowed_output_pruning import prune_windowed_outputs
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
+    if shapes:
+        from .closed_queries import fold_closed_query
+        from .inline_rows import inline_struct_rows
+
+        tree = fold_closed_query(inline_struct_rows(tree, dialect), dialect)  # pre-pass: inline rows as a table; a query that reads no table as its rows
+        from .counted_joins import counted_join_rules
+
+        tree = counted_join_rules(tree)  # pre-pass: COUNT(*) over a FULL JOIN as the count of its two halves
+        from .count_exists_rules import count_tests_to_exists
+
+        tree = count_tests_to_exists(tree)  # pre-pass: (SELECT COUNT(*) ..) > 0 as EXISTS
+        from .subquery_absorption import absorb_subquery_tests
+
+        tree = absorb_subquery_tests(tree)  # pre-pass: x IN (..) OR x IN (the same with one more filter) is the first
+        from .typed_comparisons import typed_comparison_rules
+
+        tree = typed_comparison_rules(tree, types, dialect)  # pre-pass: date + INTERVAL as DATE_ADD in a comparison; x + 1 = y + 1 as x = y
+        from .sqlite_date_text import sqlite_date_text_rules
+
+        tree = sqlite_date_text_rules(tree, dialect)  # pre-pass: SQLite's STRFTIME digits as text or as a number
     if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
     tree = rewrite_quantified(tree, schema, not_null, keys)
@@ -5052,6 +5074,8 @@ def normalize(
         lambda sel: close_strict_bounds(sel, types_map, dialect),
         unnest_cased_sums,
         lambda sel: expand_row_membership(sel, dialect),
+        lambda sel: literal_like_to_equality(sel, types_map, dialect),
+        merge_exists_disjunction,
     ) if shapes else ()
 
     # shape rules that must read a select before ``_wrap_outer_join_aggregate`` wraps its outer joins
@@ -5346,6 +5370,11 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
     except sqlglot.errors.SqlglotError:
         replaced = False
     result = prove_equivalent_smt(left, right, types=types, **kwargs)
+    if result.proven:
+        from . import normalized_disclosure
+
+        # the error comparison and the FLOAT64 sum pairing were read off the normalized text
+        result = normalized_disclosure.settle(result, (left_sql, right_sql), (left, right), {**kwargs, "types": types})
     if normalization_assumptions:
         result = dataclasses.replace(result, assumptions=tuple(dict.fromkeys((*result.assumptions, *sorted(normalization_assumptions)))))
     if result.status is SmtStatus.NOT_PROVEN and not replaced and not keyed_distinct and shapes:

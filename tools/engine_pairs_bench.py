@@ -524,9 +524,10 @@ def results_row(rows: list[dict], cases: list[Case]) -> dict:
             "pairs are kept unscored (two Trino clock reads, Trino array_intersect, two Spark multi-column NOT IN, a DuckDB "
             "row_number without ORDER BY). Trino pairs are translated by sqlglot plus recorded hand edits, and the "
             "translations were run on DuckDB through KumoSQL's BigQuery reading, not on BigQuery; the Spark pairing, the "
-            "PostgreSQL and DuckDB counterparts and the JoinEquiv and jOOQ guards are ours. Most unknowns are Trino's "
-            "inline VALUES, which sqlglot writes as UNNEST of STRUCT arrays and the prover does not read. Every case, "
-            "held-out ones included, was seen while building the harness and the Trino translations (tuned on test); no prover change was made for this eval."
+            "PostgreSQL and DuckDB counterparts and the JoinEquiv and jOOQ guards are ours. Every case, held-out ones "
+            "included, was seen while building the harness and the Trino translations (tuned on test). The prover rules of "
+            "2026-11-11 (inline rows, queries that read no table, FULL JOIN counts, COUNT against EXISTS, implied subquery "
+            "tests, typed comparisons) were written for this eval on its development pairs; the baseline without them was 41/157."
         ),
     }
 
