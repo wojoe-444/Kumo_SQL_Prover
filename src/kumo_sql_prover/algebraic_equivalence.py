@@ -4895,6 +4895,9 @@ def normalize(
         from .typed_comparisons import typed_comparison_rules
 
         tree = typed_comparison_rules(tree, types, dialect)  # pre-pass: date + INTERVAL as DATE_ADD in a comparison; x + 1 = y + 1 as x = y
+        from .sqlite_date_text import sqlite_date_text_rules
+
+        tree = sqlite_date_text_rules(tree, dialect)  # pre-pass: SQLite's STRFTIME digits as text or as a number
     if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
     tree = rewrite_quantified(tree, schema, not_null, keys)
