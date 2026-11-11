@@ -24,9 +24,9 @@ native = importlib.util.module_from_spec(_native_spec)
 sys.modules["dlbench_native"] = native
 _native_spec.loader.exec_module(native)
 
-# measured 799/807 and 161/604 on b5192d3. Of the 156 before, 21 were removed as false-proof classes (the native
-# replay showed the engines disagree); the string rule narrowed with the same replay and new prover rules added 26.
-FLOORS = {"parsed": 799, "exact_proven": 161}
+# measured 799/807 and 190/604. Of the 156 measured first on 2026-11-11, 21 were removed as false-proof classes (the
+# native replay showed the engines disagree); the later harness rules and new prover rules added the rest.
+FLOORS = {"parsed": 799, "exact_proven": 190}
 
 
 def _pair(source_dbms, target_dbms, source, target, schema=(), renames=None):
@@ -437,6 +437,8 @@ def test_narrowed_gaps_let_numbers_through(source, target, left, right):
     ("postgresql", "duckdb", "SELECT generate_series(1, 2) AS id", "SELECT generate_series(1, 2) AS id", "set-returning function"),
     ("sqlite", "postgresql", "SELECT date(b, '+1 month') FROM t", "SELECT date(b, '+1 month') FROM t", "SQLite month arithmetic"),
     ("mysql", "mariadb", "SELECT STD(a) FROM t", "SELECT STD(a) FROM t", "deviation precision"),
+    ("mysql", "clickhouse", "SELECT MD5(b) FROM t", "SELECT MD5(b) FROM t", "ClickHouse digest"),
+    ("mysql", "clickhouse", "INSERT INTO t1 VALUES (md5('test'))", "INSERT INTO t1 VALUES (MD5('test'))", "ClickHouse digest"),
 ])
 def test_calls_two_engines_compute_differently_are_gaps(source, target, left, right, gap):
     schema = ["Table: `t`\nColumns:\n(`a`, integer)\n(`b`, text)\n"]

@@ -121,6 +121,7 @@ MYSQL_FAMILY = {"mysql", "mariadb"}
 SET_RETURNING = {"generate_series", "unnest", "range", "generate_subscripts", "arrayjoin", "numbers", "json_each", "regexp_split_to_table"}
 NAN_IN_CLICKHOUSE = {"acos", "asin", "ln", "log10", "log1p", "log2", "pow", "power", "sqrt"}  # NULL in MySQL outside the domain
 SUBSTRINGS = {"mid", "substr", "substring"}
+DIGESTS = {"md4", "md5", "sha", "sha1", "sha2", "sha224", "sha256", "sha384", "sha512"}  # raw bytes in ClickHouse, hex digits elsewhere
 BITWISE = (exp.BitwiseAnd, exp.BitwiseOr, exp.BitwiseXor, exp.BitwiseNot, exp.BitwiseLeftShift, exp.BitwiseRightShift)
 DATE_BUILDERS = {"from_days", "make_date", "make_timestamp", "makedate", "makedate32", "makedatetime", "makedatetime64"}
 CONTRADICTIONS = FIXTURES / "native_contradictions.json"
@@ -615,6 +616,7 @@ def _engine_specific(pair: Pair, trees: list, words: set[str], types: "_Types") 
     * SQLite's ``date(x, '+1 month')`` runs past the end of a shorter month (January 31 gives March 2);
       the others stop at its last day.
     * ``generate_series`` and other calls that return rows in one engine and a list in another.
+    * ``MD5`` and the SHA functions return raw bytes in ClickHouse and hex digits elsewhere.
     """
 
     engines = {pair.source_dbms, pair.target_dbms}
@@ -636,6 +638,8 @@ def _engine_specific(pair: Pair, trees: list, words: set[str], types: "_Types") 
     ):
         return "SQLite month arithmetic"
     if "clickhouse" in engines:
+        if words & DIGESTS:
+            return "ClickHouse digest"
         for _, arguments in _calls(tokens, NAN_IN_CLICKHOUSE):
             if not all(kind in ("NUMBER", "DASH") for argument in arguments for kind, _ in argument):
                 return "ClickHouse NaN"
