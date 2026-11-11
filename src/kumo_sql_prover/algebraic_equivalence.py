@@ -116,11 +116,12 @@ from .semijoin_shapes import rewrite_semijoin_shapes
 from .grouped_self_membership import read_grouped_self_membership
 from .disjoint_union import separate_disjoint_unions
 from .one_row_tails import drop_one_row_tail
-from .string_spelling_rules import string_spelling_rules
+from .string_spelling_rules import bigquery_string_column, string_spelling_rules
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
 from .wrapped_join_filters import push_filter_into_wrapped_join
+from .grouped_source_filters import drop_rejected_null_filter, push_filter_into_grouped_source
 from .smt_equivalence import SmtEquivalenceResult, SmtStatus, prove_equivalent_smt
 
 MAX_BRANCHES = 16
@@ -1708,7 +1709,7 @@ def _fold_identity_casts(select: exp.Select, types: dict[str, dict[str, str]], d
     for cast in [c for c in copy.find_all(exp.Cast) if c.find_ancestor(exp.Select) is copy and input_column(c) is not None and isinstance(c.args.get("to"), exp.DataType)]:
         if isinstance(cast.this, exp.Column) and not isinstance(cast, exp.TryCast) and _unbounded_text_cast(cast.args["to"], dialect):
             declared = _origin_type(copy, cast.this, types)
-            if declared and re.match(r"^\s*(VARCHAR|TEXT|STRING)\b", declared, re.I):
+            if declared and (re.match(r"^\s*(VARCHAR|TEXT|STRING)\b", declared, re.I) or bigquery_string_column(declared, dialect)):
                 cast.replace(cast.this.copy())
                 changed = True
             continue
@@ -4949,6 +4950,8 @@ def normalize(
         wrap_tailed_outer_join_aggregate,
         push_filter_into_wrapped_join,
         drop_one_row_tail,
+        push_filter_into_grouped_source,
+        drop_rejected_null_filter,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:

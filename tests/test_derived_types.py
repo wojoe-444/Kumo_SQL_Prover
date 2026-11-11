@@ -23,11 +23,21 @@ def test_aggregates_of_declared_columns_have_bigquery_types():
     assert classes("SELECT s.k, MIN(s.cost) AS m FROM sale AS s GROUP BY s.k") == [smt_values.INT64, smt_values.FLOAT64]
 
 
+def test_a_nested_derived_table_passes_its_types_on():
+    nested = "SELECT d.k, AVG(d.s) AS a, AVG(n) AS b, MAX(d.q) AS c FROM (SELECT k, cost, SUM(amt) AS s, COUNT(*) AS n, SUM(qty) AS q FROM sale GROUP BY k, cost) AS d GROUP BY d.k"
+    assert classes(nested) == [smt_values.INT64, smt_values.NUMERIC, smt_values.FLOAT64, smt_values.INT64]
+    assert classes("SELECT AVG(d.amt) AS a FROM (SELECT amt FROM sale) AS d") == [smt_values.NUMERIC]
+
+
 @pytest.mark.parametrize(
     "sql",
     [
         "SELECT AVG(amt * 2) AS a FROM sale",  # an expression: its type is not read here
-        "SELECT AVG(d.amt) AS a FROM (SELECT amt FROM sale) AS d",  # a nested derived table
+        "SELECT AVG(d.x) AS a FROM (SELECT amt + 1 AS x FROM sale) AS d",  # a nested derived table that computes
+        "SELECT AVG(d.amt) AS a FROM (SELECT * FROM sale) AS d",  # a star
+        "WITH sale AS (SELECT name AS amt FROM item) SELECT AVG(amt) AS a FROM sale",  # a name a WITH redefines
+        "SELECT AVG(amt) AS a FROM (SELECT amt FROM sale UNION ALL SELECT price FROM item) AS d",  # a set operation
+        "SELECT AVG(amt) AS a FROM sale, (SELECT amt FROM sale) AS d",  # a name two sources hold
         "SELECT AVG(k) AS a FROM sale, item",  # a name two tables hold
         "SELECT AVG(x.amt) AS a FROM sale",  # an alias the select does not have
         "SELECT name FROM item",  # not a number

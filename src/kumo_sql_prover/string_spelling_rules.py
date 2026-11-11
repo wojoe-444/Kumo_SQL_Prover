@@ -60,6 +60,20 @@ def _declared(type_sql: str | None, dialect: str) -> tuple[str, int] | None:
         return None
 
 
+_CHARACTER = re.compile(r"^\s*(CHAR|CHARACTER|NCHAR|BPCHAR|NVARCHAR|VARCHAR|TEXT|STRING)\b", re.I)
+
+
+def bigquery_string_column(type_sql: str | None, dialect: str) -> bool:
+    """Whether a column declared ``type_sql`` is a STRING when the query is read as BigQuery.
+
+    BigQuery has one character type. A schema written for another engine may declare ``CHAR(2)``, but the column a
+    BigQuery query reads is a STRING, with no padding and no special comparison, so ``CAST(c AS STRING)`` is ``c``.
+    A translated query has such casts wherever the original had ``CAST(c AS CHAR(2))`` or ``CAST(c AS VARCHAR)``.
+    In other dialects a ``CHAR`` is a different type from ``VARCHAR`` and the cast is kept (see the module text)."""
+
+    return dialect == "bigquery" and bool(type_sql) and _CHARACTER.match(type_sql) is not None
+
+
 def _keeps_every_value(declared: tuple[str, int], target: tuple[str, int]) -> bool:
     if declared[0] != target[0]:
         return False
