@@ -4906,6 +4906,9 @@ def normalize(
         from .fk_membership import read_fk_membership
 
         tree = read_fk_membership(tree, schema, foreign_keys)  # pre-pass: a foreign-key column is in its parent's key exactly when it is not NULL
+        from .unmatched_groups import read_unmatched_groups
+
+        tree = read_unmatched_groups(tree, schema, not_null, keys)  # pre-pass: LEFT JOIN .. GROUP BY key HAVING COUNT(joined) = 0 keeps the rows without a match
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
     tree = trim_redundant_row_clauses(tree)
