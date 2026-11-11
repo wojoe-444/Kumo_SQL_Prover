@@ -515,9 +515,48 @@ class RexParser:
             elif self.i != close:
                 raise Skip(f"argument list shape after {op}: {s[self.i:self.i + 20]!r}")
         self.i = close + 1
-        if self.peek(" OVER") or self.peek(" FILTER") or self.peek(" WITHIN"):
+        if self.peek(" OVER ("):
+            return {"k": "over", "op": op, "args": args, **self.window()}
+        if self.peek(" OVER") or self.peek(" FILTER") or self.peek(" WITHIN") or self.peek(" IGNORE NULLS"):
             raise Skip("window function")
         return {"k": "call", "op": op, "args": args}
+
+    def window(self) -> dict:
+        """The window of ``op(args) OVER (...)`` as RexWindow prints it: partition keys, order keys (each with its
+        direction words) and the frame text left over, which is empty for the default frame."""
+        s = self.s
+        close = match_close(s, self.i + len(" OVER "), "(", ")")
+        self.i += len(" OVER (")
+        partition, order = [], []
+        if self.peek("PARTITION BY "):
+            self.i += len("PARTITION BY ")
+            while True:
+                partition.append(self.expr())
+                if not self.peek(", "):
+                    break
+                self.i += 2
+            if self.peek(" "):
+                self.i += 1
+        if self.peek("ORDER BY "):
+            self.i += len("ORDER BY ")
+            while True:
+                key = self.expr()
+                words = ""
+                for word in (" DESC", " NULLS FIRST", " NULLS LAST"):
+                    if self.peek(word):
+                        words += word
+                        self.i += len(word)
+                order.append((key, words))
+                if not self.peek(", "):
+                    break
+                self.i += 2
+            if self.peek(" "):
+                self.i += 1
+        if self.i > close:
+            raise Skip("window function")
+        frame = s[self.i:close]
+        self.i = close + 1
+        return {"partition": partition, "order": order, "frame": frame}
 
 
 def parse_rex(raw: str):
@@ -578,6 +617,7 @@ ALLOWED_ATTRS = {
 class Converter:
     def __init__(self, root_types_hint: list | None = None, empty_tables: list | None = None):
         self.empty_tables = list(empty_tables or [])  # catalog paths of the plan's empty LogicalValues, in order
+        self.windows_allowed = False  # a windowed call is SQL only in a select list
         self.n = 0
         self.tables: dict = {}  # path -> catalog entry
         self.root_hint = root_types_hint
@@ -744,10 +784,133 @@ class Converter:
             raise Skip("flag outside call")
         if k == "plan":
             raise Skip("subquery outside call")
+        if k == "over":
+            return self.over(e, ctx, ctypes, env)
         op, args = e["op"], e["args"]
         suf = e.get("suffix")
         out = self.call(op, args, suf, ctx, ctypes, env)
         return out
+
+    WHOLE_FRAMES = ("ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING",
+                    "RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING")
+
+    def over(self, e, ctx, ctypes, env) -> tuple[str, T]:
+        """``op(args) OVER (window)`` in a projection, as RexOver prints it (see ``window_call``)."""
+        if not self.windows_allowed:
+            raise Skip("window function outside a projection")
+        if e.get("suffix"):
+            raise Skip("typed window function")
+        partition = [self.expr(key, ctx, ctypes, env)[0] for key in e["partition"]]
+        order = []
+        for key, words in e["order"]:
+            desc = " DESC" in words
+            nulls_last = " NULLS LAST" in words or (not desc and " NULLS FIRST" not in words)
+            order.append((self.expr(key, ctx, ctypes, env)[0], desc, nulls_last))
+        frame = e["frame"]
+        if frame and (frame not in self.WHOLE_FRAMES or not order):
+            # RexWindow prints no frame for the default one; with no ORDER BY it prints any ROWS frame
+            raise Skip("window frame (its result depends on the order of ties)")
+        args = [self.expr(a, ctx, ctypes, env) for a in e["args"]]
+        return self.window_call(e["op"], args, partition, order, whole=bool(frame) or not order)
+
+    def window_call(self, op: str, args: list, partition: list, order: list, whole: bool) -> tuple[str, T]:
+        """A windowed call whose value does not depend on how tied rows are ordered.
+
+        ``whole``: the frame is the whole partition (no ``ORDER BY``, or a frame unbounded on both sides);
+        otherwise it is the default frame of an ``ORDER BY``, every row up to the current row's last peer, which
+        MySQL and DuckDB share. Translated: SUM, $SUM0, COUNT, MIN, MAX and integer or approximate AVG over
+        either frame, and RANK / DENSE_RANK. Not translated: ROW_NUMBER, LAG, LEAD, FIRST_VALUE and the like and
+        every other ``ROWS`` or ``RANGE`` frame: their result changes with the order of tied rows, so two plans
+        need not agree row for row. ``order`` is ``(sql, descending, nulls_last)`` per key; the null position is
+        written as a key of its own because MySQL has no ``NULLS FIRST/LAST``.
+        """
+        keys = []
+        for x, desc, nulls_last in order:
+            keys.append(f"({x} IS NULL){'' if nulls_last else ' DESC'}")
+            keys.append(f"{x}{' DESC' if desc else ''}")
+        by = "PARTITION BY " + ", ".join(partition) if partition else ""
+        ordered = " ".join(part for part in (by, "ORDER BY " + ", ".join(keys) if keys else "") if part)
+        if op in ("RANK", "DENSE_RANK"):
+            if args or not order:
+                raise Skip(f"window function {op} shape")
+            return f"{op}() OVER ({ordered})", BIGINT
+        if op not in ("SUM", "$SUM0", "COUNT", "MIN", "MAX", "AVG"):
+            raise Skip(f"window function {op} (not modelled, or its result depends on the order of ties)")
+        # over the whole partition these aggregates do not read the order at all
+        w = f"OVER ({by if whole else ordered})"
+        if op == "COUNT":
+            if not args:
+                return f"COUNT(*) {w}", BIGINT
+            if len(args) > 1:
+                nn = " AND ".join(f"{x} IS NOT NULL" for x, _ in args)
+                return f"COUNT(CASE WHEN {nn} THEN 1 END) {w}", BIGINT
+            return f"COUNT({args[0][0]}) {w}", BIGINT
+        if len(args) != 1:
+            raise Skip(f"window function {op} with {len(args)} arguments")
+        x, t = args[0]
+        if op in ("MIN", "MAX"):
+            return f"{op}({x}) {w}", t
+        if op in ("SUM", "$SUM0"):
+            if t.fam not in NUMERIC and t.base != "NULL":
+                raise Skip("SUM of non-numeric")
+            rt = T("DECIMAL", 19, t.s) if t.base == "DECIMAL" else t
+            return (f"SUM({x}) {w}" if op == "SUM" else f"COALESCE(SUM({x}) {w}, 0)"), rt
+        if t.fam == "int":
+            return f"(SUM({x}) {w} DIV COUNT({x}) {w})", t
+        if t.fam == "approx":
+            return f"AVG({x}) {w}", DOUBLE
+        raise Skip("AVG of DECIMAL (Calcite result scale not modelled)")
+
+    WINDOW_GROUP_RE = re.compile(r"window\((?:partition \{([\d, ]*)\})? ?(?:order by \[([^\]]*)\])? ?"
+                                 r"(?:(rows|range) between (.+?) and (.+?))? ?(?:aggs \[(.*)\])?\)")
+
+    def rel_LogicalWindow(self, node, env):
+        """The input's columns followed by every windowed call of every ``window#i`` group, in order.
+
+        A group prints as ``window(partition {7} order by [0 DESC] aggs [COUNT($0), SUM($5)])`` (Window.Group):
+        no frame text is the whole partition without ``order by`` and the default frame with it.
+        """
+        src = self.nonempty(self.one_child(node, env), "a window")
+        a = self.alias()
+        cols, ctypes = self.cols(a, len(src.types)), list(src.types)
+        exprs, types, names = list(cols), list(ctypes), list(src.names) if src.names else [None] * len(cols)
+        for k, v in node.attrs:
+            if not re.fullmatch(r"window#\d+", k):
+                raise Skip(f"LogicalWindow attribute {k}")
+            m = self.WINDOW_GROUP_RE.fullmatch(v.strip())
+            if not m or not m.group(6):
+                raise Skip("LogicalWindow group shape")
+            part_txt, order_txt, unit, lower, upper, aggs_txt = m.groups()
+            partition = [int(x) for x in re.findall(r"\d+", part_txt or "")]
+            order = []
+            for item in [x.strip() for x in (order_txt or "").split(",") if x.strip()]:
+                om = re.fullmatch(r"(\d+)(?: (ASC|DESC))?(?: (FIRST|LAST))?", item)
+                if not om:
+                    raise Skip(f"window order key {item!r}")
+                desc = om.group(2) == "DESC"
+                nulls_last = om.group(3) == "LAST" if om.group(3) else not desc
+                order.append((int(om.group(1)), desc, nulls_last))
+            if any(not 0 <= i < len(cols) for i in partition + [i for i, _, _ in order]):
+                raise Skip("window key out of range")
+            whole = not order
+            if unit:
+                bounds = (lower, upper)
+                if bounds == ("UNBOUNDED PRECEDING", "UNBOUNDED FOLLOWING"):
+                    whole = True
+                elif not (unit == "range" and not order and bounds == ("UNBOUNDED PRECEDING", "CURRENT ROW")):
+                    # (RANGE up to the current row with no ORDER BY: every row is a peer, the whole partition)
+                    raise Skip("window frame (its result depends on the order of ties)")
+            for call in split_top(aggs_txt, ","):
+                e = parse_rex(call.strip())
+                if e.get("k") != "call" or e.get("suffix"):
+                    raise Skip("windowed call shape")
+                args = [self.expr(arg, cols, ctypes, env) for arg in e["args"]]
+                x, t = self.window_call(e["op"], args, [cols[i] for i in partition],
+                                        [(cols[i], desc, nulls_last) for i, desc, nulls_last in order], whole)
+                exprs.append(x)
+                types.append(t)
+                names.append(None)
+        return Rel(f"SELECT {self.select_list(exprs)} FROM ({src.sql}) AS {a}", types, names)
 
     def call(self, op, args, suf, ctx, ctypes, env) -> tuple[str, T]:
         if op in NONDET:
@@ -1064,6 +1227,7 @@ class Converter:
 
     def rel(self, node: PNode, env: dict) -> Rel:
         self.depth += 1
+        windows, self.windows_allowed = self.windows_allowed, False  # a nested plan starts outside any select list
         try:
             if self.depth > 60:
                 raise Skip("plan too deep")
@@ -1078,6 +1242,7 @@ class Converter:
             return fn(node, env)
         finally:
             self.depth -= 1
+            self.windows_allowed = windows
 
     @staticmethod
     def attr(node: PNode, name: str, default=None):
@@ -1154,7 +1319,11 @@ class Converter:
         for k, v in node.attrs:
             if k == "variablesSet":
                 continue
-            x, t = self.expr(parse_rex(v), cols, ctypes, env2)
+            self.windows_allowed = True
+            try:
+                x, t = self.expr(parse_rex(v), cols, ctypes, env2)
+            finally:
+                self.windows_allowed = False
             exprs.append(x)
             types.append(t)
             names.append(k)

@@ -109,6 +109,10 @@ from . import shape_fallback
 from . import union_source_names
 from .union_rollup import roll_up_grouped_union
 from .one_row_joins import cross_join_one_row
+from .window_sources import inline_windowed_source
+from .window_pruning import prune_windowed_derived
+from .window_filters import push_filter_below_windows
+from .window_levels import settle_window_levels
 from .expansion_layers import collapse_layered_expansion
 from .closed_sources import closed_derived_source, inner_join_conditions, plain_inner_join
 from .listed_output_names import name_listed_outputs
@@ -4928,6 +4932,8 @@ def normalize(
     if schema:
         tree = _expand_stars(tree, schema)
     tree = resolve_alias_reads(tree, schema, dialect)
+    if shapes:
+        tree = settle_window_levels(tree)
     tree = _isolate_windows(canonical_windows(drop_unread_windows(tree), types))
     if schema:
         # name each bare column's source before any rewrite reads a derived table as its base table, whose
@@ -4958,6 +4964,9 @@ def normalize(
         drop_one_row_tail,
         roll_up_grouped_union,
         cross_join_one_row,
+        inline_windowed_source,
+        prune_windowed_derived,
+        push_filter_below_windows,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:

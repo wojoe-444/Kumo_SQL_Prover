@@ -10,11 +10,7 @@
 {"name": "testProjectCorrelateTransposeRuleSemiCorrelate", "reason": "projection with no columns"}
 {"name": "testProjectFilterTransposeRuleOnEmptyRowType", "reason": "projection with no columns"}
 {"name": "testProjectJoinTransposeItem", "reason": "column type ANY"}
-{"name": "testProjectSetOpTranspose", "reason": "window function"}
 {"name": "testPushAggregateThroughJoin7", "reason": "nondeterministic aggregate ANY_VALUE"}
-{"name": "testPushProjectWithOverPastJoin1", "reason": "window function"}
-{"name": "testPushProjectWithOverPastJoin2", "reason": "window function"}
-{"name": "testPushProjectWithOverPastJoin3", "reason": "window function"}
 {"name": "testReduceAggregateFunctionsByGroup", "reason": "nondeterministic aggregate ANY_VALUE"}
 {"name": "testReduceAllAggregateFunctions", "reason": "integer-typed STDDEV/VAR aggregate (Calcite integer arithmetic not modelled)"}
 {"name": "testReduceAverageAndSumWithNoReduceStddevAndVar", "reason": "integer-typed STDDEV/VAR aggregate (Calcite integer arithmetic not modelled)"}

@@ -575,7 +575,7 @@ def convert_from_plans(doc: dict) -> dict:
 # Skip reasons that say the IR lost part of the plan (or this converter does not model an aggregate the plan
 # converter does): only for these is the plan text tried.
 PLAN_TEXT_REASONS = ("aggregate FILTER clause", "multi-column COUNT(DISTINCT)", "unsupported aggregate LITERAL_AGG",
-                     "unsupported aggregate GROUPING", "unsupported aggregate SINGLE_VALUE")
+                     "unsupported aggregate GROUPING", "unsupported aggregate SINGLE_VALUE", "window function")
 
 
 def convert_case(doc: dict) -> dict:

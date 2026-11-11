@@ -100,6 +100,16 @@ catalogs (GEO, STRUCT, nested, custom) 17, `CURRENT_TIMESTAMP`/`RAND`/`USER` 10.
   several rows is an error in Calcite too and is skipped, like one where a CAST overflows).
   `testPushAggregateThroughJoin8` is equal only in that sense: its two sides raise the
   error on different databases, so it is not expected to prove.
+* A window function (`fn(x) OVER (PARTITION BY .. ORDER BY ..)` in a projection, or a
+  `LogicalWindow` operator, which adds one column per call to its input's) is translated
+  when its value does not depend on how tied rows are ordered: `SUM`, `$SUM0`, `COUNT`,
+  `MIN`, `MAX` and integer `AVG` over the whole partition (no `ORDER BY`, or a frame
+  unbounded on both sides) or over the default frame of an `ORDER BY` (every row up to
+  the current row's last peer, which MySQL and DuckDB share), and `RANK` / `DENSE_RANK`.
+  `ROW_NUMBER`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE` and every other `ROWS` or
+  `RANGE` frame are skipped: two plans need not number or frame tied rows the same way,
+  so the pair would not be a row-for-row equivalence. Window order keys carry the same
+  explicit null-ordering key as `ORDER BY`.
 * `ORDER BY` keys carry an explicit null-ordering key, `(x IS NULL)` / `(x IS NULL) DESC`,
   because MySQL has no `NULLS FIRST/LAST`; Calcite's default is ASC NULLS LAST, DESC
   NULLS FIRST. `OFFSET` without a fetch is `LIMIT 9223372036854775807 OFFSET n`.

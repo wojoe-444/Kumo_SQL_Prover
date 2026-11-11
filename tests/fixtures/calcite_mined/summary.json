@@ -10,15 +10,15 @@
   "core/src/test/resources/org/apache/calcite/test/OuterJoinToAntiJoinRuleTest.xml"
  ],
  "tests": 1016,
- "translated": 564,
+ "translated": 578,
  "unchanged": 182,
  "unchanged_identical_sql": 3,
- "skipped": 270,
+ "skipped": 256,
  "translated_coverage": {
-  "new": 176,
+  "new": 184,
   "in_sqlsolver": 192,
-  "in_qed": 386,
-  "in_rbot": 36
+  "in_qed": 390,
+  "in_rbot": 38
  },
  "unchanged_coverage": {
   "new": 154,
@@ -27,13 +27,12 @@
   "in_rbot": 0
  },
  "skipped_coverage": {
-  "new": 210,
+  "new": 202,
   "in_sqlsolver": 7,
-  "in_qed": 56,
-  "in_rbot": 9
+  "in_qed": 52,
+  "in_rbot": 7
  },
  "skip_reasons": {
-  "window function": 23,
   "unsupported relational operator HyperGraph": 13,
   "unsupported relational operator Combine": 13,
   "aggregate WITHIN DISTINCT": 11,
@@ -41,20 +40,22 @@
   "LIMIT/OFFSET without ORDER BY (nondeterministic)": 10,
   "unsupported aggregate STDDEV_POP": 8,
   "unsupported relational operator MultiJoin": 8,
-  "unsupported relational operator LogicalWindow": 8,
   "non-deterministic function CURRENT_TIMESTAMP": 7,
   "unsupported relational operator Uncollect": 7,
   "table CATALOG.GEO.RESTAURANTS outside the modelled catalogs": 7,
   "dynamic-star table (schema unknown)": 6,
   "join type left_mark": 6,
+  "input ref out of range (plan refers past its input row)": 6,
   "unsupported aggregate ANY_VALUE": 6,
   "lambda expression": 6,
+  "window function ROW_NUMBER (not modelled, or its result depends on the order of ties)": 5,
   "unsupported relational operator Sample": 5,
   "join with correlation variables": 5,
   "projection with no columns": 5,
   "unsupported relational operator EnumerableProject": 4,
   "unsupported operator ARRAY": 4,
   "table CATALOG.SALES.A outside the modelled catalogs": 4,
+  "window frame (its result depends on the order of ties)": 4,
   "unsupported relational operator EnumerableLimitSort": 4,
   "measure expression (Calcite-specific)": 4,
   "unsupported operator SPLIT": 4,
@@ -71,7 +72,6 @@
   "VALUES column of untyped NULLs": 2,
   "table is empty only by catalog convention (not expressible in a schema)": 2,
   "table CATALOG.SALES.EMP_ADDRESS outside the modelled catalogs": 2,
-  "input ref out of range (plan refers past its input row)": 2,
   "unsupported relational operator LogicalTableFunctionScan": 2,
   "CAST from INTEGER to VARCHAR": 2,
   "custom catalog reader (tables not in MockCatalogReaderSimple)": 2,
@@ -89,6 +89,7 @@
   "unsupported relational operator EnumerableValues": 1,
   "aggregate call shape 'COUNT(APPROXIMATE DISTINCT $1)'": 1,
   "non-finite floating-point literal": 1,
+  "empty LogicalValues under a window (row width not in the digest)": 1,
   "unsupported relational operator LogicalSortExchange": 1,
   "unsupported relational operator MyProject": 1,
   "CAST from DOUBLE to INTEGER": 1,
@@ -98,6 +99,8 @@
   "unsupported relational operator EnumerableSort": 1,
   "unsupported operator LPAD": 1,
   "unbound correlation variable $cor0": 1,
+  "window function LAST_VALUE (not modelled, or its result depends on the order of ties)": 1,
+  "window function FIRST_VALUE (not modelled, or its result depends on the order of ties)": 1,
   "unsupported aggregate BOOL_AND": 1,
   "CAST from CHAR to INTEGER": 1,
   "string CAST that may truncate or pad": 1,
@@ -109,12 +112,13 @@
   "unsupported operator RPAD": 1,
   "unsupported operator SPACE": 1,
   "table CATALOG.SALES.DEPT_NESTED outside the modelled catalogs": 1,
-  "DECIMAL division (Calcite result scale not modelled)": 1
+  "DECIMAL division (Calcite result scale not modelled)": 1,
+  "unsupported relational operator LogicalConditionalCorrelate": 1
  },
  "duckdb_validation": {
   "databases_per_pair": 8,
   "seed": 1,
-  "agree": 561,
+  "agree": 575,
   "differs": 1,
   "duckdb_unsupported": 2,
   "errors": 0,

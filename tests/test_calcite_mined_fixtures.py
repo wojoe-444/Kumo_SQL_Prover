@@ -175,6 +175,56 @@ LogicalAggregate(group=[{}], agg#0=[SINGLE_VALUE($0)])
             conv.Converter().top(conv.parse_plan(plan.replace("group=[{}], agg#0=[SINGLE_VALUE($0)]", other)))
 
 
+def test_converter_writes_windows_whose_value_ignores_the_order_of_ties():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import calcite_plan_to_sql as conv
+
+    def project(call):
+        plan = f"LogicalProject(X=[{call}])\n  LogicalTableScan(table=[[CATALOG, SALES, EMP]])"
+        return conv.Converter().top(conv.parse_plan(plan)).sql
+
+    assert "SUM((t1.c5 + 100)) OVER (PARTITION BY t1.c7)" in project("SUM(+($5, 100)) OVER (PARTITION BY $7)")
+    assert "COUNT(*) OVER ()" in project("COUNT() OVER ()")
+    # the default frame of an ORDER BY; Calcite's NULLS LAST for ascending keys is a key of its own
+    assert "OVER (PARTITION BY t1.c7 ORDER BY (t1.c0 IS NULL), t1.c0)" in project("COUNT($0) OVER (PARTITION BY $7 ORDER BY $0)")
+    assert "RANK() OVER (ORDER BY (t1.c5 IS NULL) DESC, t1.c5 DESC)" in project("RANK() OVER (ORDER BY $5 DESC)")
+    assert "ORDER BY (t1.c5 IS NULL), t1.c5 DESC)" in project("DENSE_RANK() OVER (ORDER BY $5 DESC NULLS LAST)")
+    # unbounded on both sides: the whole partition, where the order does not matter
+    whole = project("MIN($5) OVER (PARTITION BY $7 ORDER BY $0 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)")
+    assert "MIN(t1.c5) OVER (PARTITION BY t1.c7)" in whole
+    assert "COALESCE(SUM(t1.c5) OVER (PARTITION BY t1.c7), 0)" in project("$SUM0($5) OVER (PARTITION BY $7)")
+    for call in (
+        "ROW_NUMBER() OVER (ORDER BY $0)",  # tied rows may be numbered either way
+        "SUM($5) OVER (ORDER BY $0 ROWS 2 PRECEDING)",
+        "SUM($5) OVER (PARTITION BY $7 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        "LAG($5) OVER (ORDER BY $0)",
+        "FIRST_VALUE($5) OVER (ORDER BY $0)",
+        "RANK() OVER (PARTITION BY $7)",
+        "COUNT(DISTINCT $5) OVER (PARTITION BY $7)",
+    ):
+        with pytest.raises(conv.Skip):
+            project(call)
+    with pytest.raises(conv.Skip):  # a windowed call is SQL only in a select list
+        conv.Converter().top(conv.parse_plan("LogicalFilter(condition=[>(COUNT() OVER (PARTITION BY $7), 1)])\n  LogicalTableScan(table=[[CATALOG, SALES, EMP]])"))
+
+    def window(group):
+        plan = f"LogicalWindow(window#0=[{group}])\n  LogicalTableScan(table=[[CATALOG, SALES, DEPT]])"
+        return conv.Converter().top(conv.parse_plan(plan))
+
+    rel = window("window(partition {1} order by [0 DESC] aggs [COUNT($0), SUM($0)])")
+    assert len(rel.types) == 4  # DEPT's two columns, then one per call
+    assert rel.sql.count("OVER (PARTITION BY t1.c1 ORDER BY (t1.c0 IS NULL) DESC, t1.c0 DESC)") == 2
+    assert "COUNT(*) OVER (PARTITION BY t1.c1)" in window("window(partition {1} aggs [COUNT()])").sql
+    for group in (
+        "window(rows between 10 PRECEDING and 1 PRECEDING aggs [COUNT($0)])",
+        "window(partition {1} order by [0] rows between UNBOUNDED PRECEDING and CURRENT ROW aggs [SUM($0)])",
+        "window(partition {1} order by [0] aggs [ROW_NUMBER()])",
+        "window(partition {5} aggs [COUNT()])",
+    ):
+        with pytest.raises(conv.Skip):
+            window(group)
+
+
 def test_duckdb_runs_a_sample():
     duckdb = pytest.importorskip("duckdb")
     for case in CASES[:25]:
