@@ -117,6 +117,7 @@ from .grouped_self_membership import read_grouped_self_membership
 from .disjoint_union import separate_disjoint_unions
 from .keyed_only_grouping import key_only_group_to_distinct
 from .one_row_tails import drop_one_row_tail
+from .plain_grouping_calls import fold_plain_grouping_calls
 from .string_spelling_rules import string_spelling_rules
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .printed_spelling import spell_as_printed
@@ -4907,6 +4908,8 @@ def normalize(
             else:
                 select.replace(replacement)
     tree = grouping_sets_to_union(isolate_tailed_grouping_sets(tree) if shapes else tree)  # pre-pass: a row tail moves one level up first
+    if shapes:
+        tree = fold_plain_grouping_calls(tree)  # pre-pass: one grouping set, so every GROUPING() bit is 0
     tree = _drop_group_in_membership_tests(tree)
     tree = _fold_dates(extract_to_ranges(tree))
     tree = _fold_boolean_constants(_fold_constants(tree))
