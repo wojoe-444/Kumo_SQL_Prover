@@ -3761,7 +3761,11 @@ def _lateral_joins(tree: exp.Expression) -> exp.Expression:
                 for column in uses:
                     probe = body.copy()
                     probe.set("expressions", [values[column.name.lower()].copy()])
-                    column.replace(exp.Subquery(this=probe))
+                    scalar: exp.Expression = exp.Subquery(this=probe)
+                    if any(column is item for item in select.expressions):
+                        # a bare output keeps the name the query around this select reads it by
+                        scalar = exp.Alias(this=scalar, alias=column.this.copy())
+                    column.replace(scalar)
                 select.set("joins", [j for j in select.args["joins"] if j is not join] or None)
                 continue
             if aggregated or body.args.get("group") is not None or kind not in ("INNER", "") or side:
@@ -4874,6 +4878,7 @@ def normalize(
     tree = inline_named_windows(tree)
     from .nonnull_any import rewrite_nonnull_any
 
+    from .aggregate_presence import rewrite_aggregate_presence
     from .mysql_exists_casts import drop_mysql_exists_cast
     from .single_source_columns import qualify_single_source_columns
 
@@ -4960,6 +4965,7 @@ def normalize(
         wrap_tailed_outer_join_aggregate,
         push_filter_into_wrapped_join,
         drop_one_row_tail,
+        rewrite_aggregate_presence,  # (SELECT MIN(TRUE) FROM ..) IS NOT NULL asks whether a row exists
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
