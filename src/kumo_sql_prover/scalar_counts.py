@@ -65,7 +65,7 @@ from sqlglot import exp
 
 from .aggregate_membership import _base_table, _table_key
 from .ast_utils import FROM_KEY, select_sources
-from .union_all_counts import _BRANCH_ARGS, _COMPARISONS, _all, _plain_joins, _row_value
+from .union_all_counts import _BRANCH_ARGS, _COMPARISONS, _all, _plain_joins, _row_value, _stands_alone
 
 _FILTERS = {exp.GT: "0", exp.GTE: "1", exp.NEQ: "0"}
 
@@ -166,24 +166,6 @@ def _direct(select: exp.Select, known):
     if [name.lower() for _, name, _ in items].count(test[0]) != 1:
         return None
     return sources[0], items, test[:3]
-
-
-def _stands_alone(select: exp.Select) -> bool:
-    """Whether no query around the select can lend it a column: it is the statement, or (a branch of) a derived table.
-
-    In a nested query of a ``WHERE`` or of a select list, a bare ``n`` in the filter could be a column of the
-    query around it instead of the select's own output.
-    """
-
-    node: exp.Expression = select
-    while node.parent is not None:
-        parent = node.parent
-        if isinstance(parent, exp.Subquery) and node is parent.this and isinstance(parent.parent, (exp.From, exp.Join)):
-            return True
-        if not isinstance(parent, (exp.Subquery, exp.Paren, exp.Union)):
-            return False
-        node = parent
-    return True
 
 
 def _through_derived(select: exp.Select, known):

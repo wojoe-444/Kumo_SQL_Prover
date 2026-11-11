@@ -78,8 +78,9 @@ branch with ``DISTINCT``, grouping, aggregates, windows, ``LIMIT``, a nested que
 not fixed by the row, branches over different tables, outer joins in the select or in a branch (a NULL-padded
 row is not a filter of the product), ``USING``, a star, a second derived table, ``LIMIT``, grouping sets, any
 other aggregate (``MIN``, ``AVG``, ``COUNT(DISTINCT ..)``, a ``SUM`` of a column), a varying column read outside
-an aggregate with no equality to replace it, a column that cannot be attributed to one source, and a
-select-list alias read where a source column of the same name exists.
+an aggregate with no equality to replace it, a column that cannot be attributed to one source, a
+select-list alias read where a source column of the same name exists, and a select-list alias read in a select
+nested in a condition or a select list (the name could be a column of the query around it).
 """
 
 from __future__ import annotations
@@ -402,7 +403,8 @@ class _Site:
 
     def rewritten(self, keys: dict[str, list[tuple[str, ...]]], not_null: dict[str, frozenset[str]]) -> exp.Expression | None:
         select = self.select
-        names = {item.alias.lower() for item in select.expressions if isinstance(item, exp.Alias)}
+        # an output is read by its name only where no query around the select can own the name
+        names = {item.alias.lower() for item in select.expressions if isinstance(item, exp.Alias)} if _stands_alone(select) else set()
         pool: list[exp.Expression] = []
         for join in select.args.get("joins") or []:
             if join.args.get("on") is not None:
@@ -611,6 +613,24 @@ def _fixed(read: list[exp.Expression], group_keys: list[exp.Expression], keys, d
         return all(fixed(child) for child in node.iter_expressions())
 
     return all(fixed(node) for node in read)
+
+
+def _stands_alone(select: exp.Select) -> bool:
+    """Whether no query around the select can own a bare name of its ``HAVING``: the statement, or a derived table.
+
+    Nested in a condition or in a select list, a bare name that is an output of the select could instead be a
+    column of the query around it (the dialects differ on which wins), so the rules read outputs by name only here.
+    """
+
+    node: exp.Expression = select
+    while node.parent is not None:
+        parent = node.parent
+        if isinstance(parent, exp.Subquery) and node is parent.this and isinstance(parent.parent, (exp.From, exp.Join)):
+            return True
+        if not isinstance(parent, (exp.Subquery, exp.Paren, exp.Union)):
+            return False
+        node = parent
+    return True
 
 
 def _with_positive(having: exp.Expression, test: exp.GT, outputs: list[exp.Expression]) -> exp.Expression:

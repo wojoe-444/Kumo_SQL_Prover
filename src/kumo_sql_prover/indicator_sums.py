@@ -51,8 +51,9 @@ key: a key expression, or a column of a table whose declared key (all NOT NULL) 
 (built from the literals through ``CASE .. ELSE ..``, ``IF``, ``+`` and ``*`` only, no ``-``): ``s`` is then a
 whole number that is not negative, or NULL over no rows, and the three tests are TRUE on the same values (none
 is TRUE on NULL). ``s`` may be read by the name of the output that is such a sum, when every source is a base
-table and none has a column of that name. The prover then sees one spelling of "at least one". A ``COUNT`` is
-left to the rules that already read its tests.
+table, none has a column of that name, and the select is the whole statement or a derived table (nested in a
+condition, the name could be a column of the query around it). The prover then sees one spelling of "at least
+one". A ``COUNT`` is left to the rules that already read its tests.
 
 **What is refused.** Rule 3: any other comparison or number, a sum that could be negative or is not built from
 literals. Rule 1: ``DISTINCT`` aggregates, ``FILTER``, window aggregates, a ``SUM`` of a column or of
@@ -69,7 +70,7 @@ from sqlglot import exp
 
 from .aggregate_membership import _base_table, _table_key
 from .ast_utils import FROM_KEY, conjuncts, extended_grouping, select_sources
-from .union_all_counts import _SELECT_ARGS, _all, _fixed, _integer_value, _owner, _plain_joins, _row_value, _with_positive
+from .union_all_counts import _SELECT_ARGS, _all, _fixed, _integer_value, _owner, _plain_joins, _row_value, _stands_alone, _with_positive
 
 
 def indicator_sum_rules(
@@ -279,7 +280,8 @@ def disjunction_to_having(
         if listed is None or not alias or alias in columns:
             return None
         columns[alias], spelling[alias], base[alias] = listed, source.alias_or_name, _table_key(source)
-    names = {item.alias.lower() for item in select.expressions if isinstance(item, exp.Alias)}
+    # an output is read by its name only where no query around the select can own the name
+    names = {item.alias.lower() for item in select.expressions if isinstance(item, exp.Alias)} if _stands_alone(select) else set()
 
     def resolved(node: exp.Expression, allowed: set[str] = frozenset()) -> exp.Expression | None:
         node = exp.Paren(this=node.copy())
@@ -375,7 +377,7 @@ def positive_tests(select: exp.Select, schema: dict[str, list[str]] | None) -> e
     if having is None:
         return None
     named: set[str] = set()
-    if schema:
+    if schema and _stands_alone(select):
         known = {key.lower(): [c.lower() for c in columns] for key, columns in schema.items()}
         listed = [_base_table(source, known) for source in select_sources(select)]
         if listed and all(columns is not None for columns in listed):

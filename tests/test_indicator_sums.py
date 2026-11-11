@@ -184,6 +184,11 @@ def test_a_sum_of_indicators_that_is_not_zero_is_positive():
     assert positive(start.replace("AS n", "AS name") + "name <> 0") is None
     assert positive(start.replace("games AS g", "(SELECT * FROM games) AS g") + "n <> 0") is None
     assert positive(start.replace("AS n", "AS n, p.id + 1 AS n") + "n <> 0") is None
+    # nested in a condition, the name could belong to the query around the select
+    nested = sqlglot.parse_one(f"SELECT * FROM notes AS x WHERE EXISTS ({start}n <> 0)", read="mysql")
+    assert positive_tests(nested.find(sqlglot.exp.Exists).this, SCHEMA) is None
+    derived = sqlglot.parse_one(f"SELECT * FROM ({start}n <> 0) AS d", read="mysql")
+    assert positive_tests(derived.find(sqlglot.exp.Subquery).this, SCHEMA) is not None
 
 
 @pytest.mark.parametrize("having", [
