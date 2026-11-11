@@ -128,6 +128,7 @@ from .setop_operand_sources import merge_operand_sources
 from .spread_aggregates import rewrite_spread_aggregates
 from .star_source_columns import list_read_star_columns
 from .existence_joins import read_existence_joins, read_existence_joins_everywhere
+from .grouped_conditional_counts import grouped_conditional_counts
 from .integer_expression_bounds import integer_expression_bounds
 from .extreme_group_sources import read_extreme_group_source
 from .printed_spelling import spell_as_printed
@@ -4996,6 +4997,7 @@ def normalize(
         merge_operand_sources,
         lambda sel: read_existence_joins(sel, schema),
         lambda sel: integer_expression_bounds(sel, types_map, dialect),
+        grouped_conditional_counts,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:

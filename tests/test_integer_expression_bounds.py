@@ -42,6 +42,25 @@ def test_strict_becomes_non_strict():
     assert read("SELECT a.id FROM a GROUP BY a.id HAVING SUM(a.x) - COUNT(*) > 3") == "SELECT a.id FROM a GROUP BY a.id HAVING SUM(a.x) - COUNT(*) >= 4"
 
 
+def test_a_derived_column_that_names_the_arithmetic():
+    derived = "(SELECT a.id, a.x - a.y AS d, a.x AS x, a.price - a.x AS p FROM a) AS s"
+    assert read(f"SELECT s.id FROM {derived} WHERE s.d > 30") == f"SELECT s.id FROM {derived} WHERE s.d >= 31"
+    assert read(f"SELECT id FROM {derived} WHERE d < 30") == f"SELECT id FROM {derived} WHERE d <= 29"
+    assert read(f"SELECT s.id FROM b LEFT JOIN {derived} ON b.id = s.id WHERE s.d > 30") == (
+        f"SELECT s.id FROM b LEFT JOIN {derived} ON b.id = s.id WHERE s.d >= 31"
+    )
+    for sql in (
+        f"SELECT s.id FROM {derived} WHERE s.x > 30",  # a column under another name
+        f"SELECT s.id FROM {derived} WHERE s.p > 30",  # a decimal
+        f"SELECT s.id FROM b, {derived} WHERE d > 30",  # whose d is not said
+        "SELECT s.id FROM (SELECT a.id, a.x - a.y AS d FROM a UNION ALL SELECT b.id, b.n FROM b) AS s WHERE s.d > 30",
+        "SELECT s.id FROM (SELECT a.id, a.x - a.y FROM a) AS s(id, d) WHERE s.d > 30",
+        "SELECT s.id FROM (SELECT a.id, a.x - a.y AS d, a.price AS d FROM a) AS s WHERE s.d > 30",
+        "SELECT s.id FROM (SELECT a.id, MAX(a.x) OVER () - a.y AS d FROM a) AS s WHERE s.d > 30",
+    ):
+        assert read(sql) is None, sql
+
+
 @pytest.mark.parametrize(
     "sql",
     [
@@ -82,6 +101,10 @@ def test_pairs_it_proves():
         "SELECT s.id, SUM(CASE WHEN s.d BETWEEN 31 AND 60 THEN 1 ELSE 0 END) FROM (SELECT a.id, a.x - a.y AS d FROM a) AS s GROUP BY s.id",
     )
     assert proved("SELECT a.id FROM a WHERE a.x * 2 < 10", "SELECT a.id FROM a WHERE a.x * 2 <= 9")
+    assert proved(
+        bucket.format("a.x - a.y > 120"),
+        "SELECT s.id, SUM(CASE WHEN s.d > 120 THEN 1 ELSE 0 END) FROM (SELECT a.id, a.x - a.y AS d FROM a) AS s GROUP BY s.id",
+    )
 
 
 def test_near_misses_stay_unproven():
@@ -110,6 +133,8 @@ def test_the_engine_agrees_on_random_tables():
         "SELECT a.id, SUM(CASE WHEN x - y > 3 AND x - y <= 60 THEN 1 ELSE 0 END), COUNT(*) FROM a GROUP BY a.id",
         "SELECT a.id, a.x, b.n FROM a JOIN b ON a.id = b.id WHERE a.x - b.n > 3",
         "SELECT a.id FROM a GROUP BY a.id HAVING SUM(a.x) - COUNT(*) > 3",
+        "SELECT s.id, s.d FROM (SELECT a.id, a.x - a.y AS d FROM a) AS s WHERE s.d > 3 OR s.d < -3",
+        "SELECT b.id, s.d FROM b LEFT JOIN (SELECT a.id, a.x - a.y AS d FROM a) AS s ON b.id = s.id AND s.d > 3 WHERE NOT s.d < 9",
     ):
         after = read(sql)
         assert after is not None, sql

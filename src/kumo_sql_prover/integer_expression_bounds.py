@@ -17,7 +17,11 @@ Read only when:
   products, a ``CAST`` to an integer type, ``COUNT``, ``SUM``/``MIN``/``MAX`` of integers, ``CASE`` and
   ``COALESCE`` of integers. ``/`` is not read (a fraction in most engines), and a column whose table or type
   is not known stops the rule;
-* a bare column or a ``COUNT`` call compared directly is left as written. For a column the solver keeps
+* a column of a derived table of the select counts as the arithmetic it names
+  (``(SELECT a.x - a.y AS d FROM a) AS s`` and ``s.d > 30``): the derived table is a plain ``SELECT``, the
+  column is qualified with its alias or it is the select's only source, and the named expression passes the
+  test above inside the derived table. A row an outer join fills with NULLs has NULL in both spellings;
+* any other bare column or a ``COUNT`` call compared directly is left as written. For a column the solver keeps
   ``x > 50`` and ``x <= 50`` complementary, which a rewrite to ``x >= 51`` would lose; a ``COUNT`` is
   ``cast_rules``'s and ``count_column_bounds``'s.
 """
@@ -54,6 +58,37 @@ def _number(value: int) -> exp.Expression:
     return exp.Neg(this=exp.Literal.number(-value)) if value < 0 else exp.Literal.number(value)
 
 
+def _integer_arithmetic(inner: exp.Expression, select: exp.Select, types: dict, dialect: str) -> bool:
+    if not isinstance(inner, _ARITHMETIC) or _int_literal(inner) is not None:
+        return False
+    if any(isinstance(n, (exp.Subquery, exp.Window, exp.Anonymous)) for n in inner.walk()):
+        return False
+    kind = expression_type(inner, select, types, 0, dialect)
+    return kind is not None and kind[0] == "int"
+
+
+def _named_arithmetic(column: exp.Column, select: exp.Select, types: dict, dialect: str) -> bool:
+    """``column`` is an output of a derived table of ``select`` that names integer arithmetic."""
+
+    source = select.args.get("from_") or select.args.get("from")
+    relations = ([source.this] if source is not None else []) + [join.this for join in select.args.get("joins") or []]
+    if column.table:
+        relations = [r for r in relations if r.alias_or_name.lower() == column.table.lower()]
+    if len(relations) != 1:
+        return False
+    derived = relations[0]
+    alias = derived.args.get("alias")
+    if not isinstance(derived, exp.Subquery) or not isinstance(derived.this, exp.Select) or (alias is not None and alias.columns):
+        return False
+    inner = derived.this
+    if inner.args.get("with_") or inner.args.get("with") or any(isinstance(item, exp.Star) or item.is_star for item in inner.expressions):
+        return False
+    named = [item for item in inner.expressions if item.alias_or_name.lower() == column.name.lower()]
+    if len(named) != 1 or not isinstance(named[0], exp.Alias):
+        return False
+    return _integer_arithmetic(_unparen(named[0].this), inner, types, dialect)
+
+
 def integer_expression_bounds(select: exp.Select, types: dict | None, dialect: str = "postgres") -> exp.Expression | None:
     """Rewrite the select's own strict comparisons of integer arithmetic with a whole number, in place."""
 
@@ -68,12 +103,10 @@ def integer_expression_bounds(select: exp.Select, types: dict | None, dialect: s
             if value is None:
                 continue
             inner = _unparen(other)
-            if not isinstance(inner, _ARITHMETIC) or _int_literal(inner) is not None:
-                break
-            if any(isinstance(n, (exp.Subquery, exp.Window, exp.Anonymous)) for n in inner.walk()):
-                break
-            kind = expression_type(inner, select, types, 0, dialect)
-            if kind is None or kind[0] != "int":
+            if isinstance(inner, exp.Column):
+                if not _named_arithmetic(inner, select, types, dialect):
+                    break
+            elif not _integer_arithmetic(inner, select, types, dialect):
                 break
             greater = isinstance(node, exp.GT) == literal_on_right  # "other > n", else "other < n"
             bound = _number(value + 1 if greater else value - 1)
