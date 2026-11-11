@@ -28,9 +28,11 @@ nearest even digit on most platforms. A string arm brings the same conversion. S
 
 A missing ``ELSE`` is a NULL arm, and ``ROUND(NULL, d)`` is NULL.
 
-**Rule 2: ROUND of an integer is the integer.** ``ROUND(e)`` and ``ROUND(e, d)`` with ``d`` a literal ``0`` or
-more are ``e`` when ``e`` is integer-valued: an integer column, an integer literal, or ``+``, ``-``, ``*`` and
-unary minus over those. MySQL returns the integer itself (as ``BIGINT``), and NULL for NULL.
+**Rule 2: ROUND of a whole number is the number.** ``ROUND(e)`` and ``ROUND(e, d)`` with ``d`` a literal ``0``
+or more are ``e`` when ``e`` is an exact whole number: an integer column, a plain number literal with a whole
+value (``7``, ``1.0``), or ``+``, ``-``, ``*`` and unary minus over those. MySQL returns the same number (an
+integer for an integer, a ``DECIMAL`` without decimals for ``pay * 1.0``; the prover compares numbers by value,
+as it does for ``pay * 1.0`` and ``pay``), and NULL for NULL.
 
 **What is read.** Only on MySQL (BigQuery's ``ROUND`` of an ``INT64`` is a ``FLOAT64``). The number of decimals
 is absent or a non-negative integer literal. A column is typed through the select the ``ROUND`` is in: its
@@ -42,6 +44,7 @@ unknown type is not exact, and the ``ROUND`` is left as written.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 from sqlglot import exp
 
@@ -147,6 +150,19 @@ def _integer(node: exp.Expression, column_type) -> bool:
     return False
 
 
+def _whole(node: exp.Expression, column_type) -> bool:
+    """Whether ``node`` is an exact number with a whole value: ``_integer``, with whole decimal literals too."""
+
+    node = _unwrap(node)
+    if isinstance(node, exp.Literal):
+        return not node.is_string and bool(_PLAIN_NUMBER.match(node.name)) and Decimal(node.name) == Decimal(node.name).to_integral_value()
+    if isinstance(node, exp.Neg):
+        return _whole(node.this, column_type)
+    if type(node) in (exp.Add, exp.Sub, exp.Mul):
+        return _whole(node.this, column_type) and _whole(node.expression, column_type)
+    return _integer(node, column_type)
+
+
 def _exact(node: exp.Expression, column_type) -> bool:
     node = _unwrap(node)
     if isinstance(node, exp.Null):
@@ -185,7 +201,7 @@ def _rounded(value: exp.Expression, call: exp.Round, decimals: int, column_type,
     ``value`` is read where it stands in the select (a column is typed through its select); the result is new."""
 
     inner = _unwrap(value)
-    if _integer(inner, column_type):
+    if _whole(inner, column_type):
         return exp.Paren(this=inner.copy()) if isinstance(inner, exp.Binary) else inner.copy()
     if isinstance(inner, exp.Null):
         return inner.copy()

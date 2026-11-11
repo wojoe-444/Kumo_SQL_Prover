@@ -59,6 +59,8 @@ def test_round_of_an_integer_is_the_integer():
     assert rewritten("SELECT ROUND(a), ROUND(x.b, 0), ROUND(a * 2 - b, 3) * 2, ROUND(-a), ROUND(7) FROM t AS x") == "SELECT a, x.b, (a * 2 - b) * 2, -a, 7 FROM t AS x"
     assert rewritten("SELECT ROUND(CASE WHEN b > 100 THEN a * 0.5 ELSE a END, 0) AS a FROM t") == "SELECT CASE WHEN b > 100 THEN ROUND(a * 0.5, 0) ELSE a END AS a FROM t"
     assert rewritten("SELECT CASE WHEN b > 100 THEN ROUND(a * 0.5) ELSE ROUND(a) END FROM t") == "SELECT CASE WHEN b > 100 THEN ROUND(a * 0.5) ELSE a END FROM t"
+    # a whole number written with decimals
+    assert rewritten("SELECT ROUND(a * (1 - 0.0), 0), ROUND(b * 1.00 - 2.0) FROM t") == "SELECT (a * (1 - 0.0)), (b * 1.00 - 2.0) FROM t"
     # a column is typed through the sources of its own select
     assert rewritten("SELECT ROUND(t.a), ROUND(u.e) FROM t JOIN u ON u.a = t.a") == "SELECT t.a, u.e FROM t JOIN u ON u.a = t.a"
 
@@ -66,6 +68,8 @@ def test_round_of_an_integer_is_the_integer():
 @pytest.mark.parametrize("sql", [
     "SELECT ROUND(c) FROM t",  # a decimal is rounded
     "SELECT ROUND(a * 0.5) FROM t",
+    "SELECT ROUND(a * 1.5 - 0.5) FROM t",
+    "SELECT ROUND(a * (1 - 0.1)) FROM t",
     "SELECT ROUND(a / 2) FROM t",  # MySQL's / of integers is a decimal
     "SELECT ROUND(d) FROM t",
     "SELECT ROUND(s) FROM t",
@@ -101,6 +105,7 @@ PROOFS = [
     ("SELECT ROUND(CASE WHEN b > 100 THEN a * 0.5 ELSE a END, 0) FROM t", "SELECT CASE WHEN NOT b > 100 OR b IS NULL THEN ROUND(a, 0) ELSE ROUND(a - a * 0.5, 0) END FROM t"),
     ("SELECT ROUND(IF(b > 100, c, a), 1) FROM t", "SELECT CASE WHEN b > 100 THEN ROUND(c, 1) ELSE a END FROM t"),
     ("SELECT ROUND(a + b) FROM t", "SELECT a + b FROM t"),
+    ("SELECT ROUND(CASE WHEN b > 100 THEN a * 0.5 ELSE a END, 0) FROM t", "SELECT ROUND(a * (1 - CASE WHEN b > 100 THEN 0.5 ELSE 0.0 END)) FROM t"),
 ]
 
 
@@ -136,6 +141,7 @@ QUERIES = [
     "SELECT ROUND(CASE WHEN b > 1 THEN a * 0.5 ELSE a END, 0) AS a FROM t",
     "SELECT CASE WHEN b > 1 THEN ROUND(a * 0.25, 1) ELSE ROUND(a, 1) END FROM t",
     "SELECT ROUND(CASE WHEN b > 1 THEN a * 1.5 WHEN b = 1 THEN c ELSE a + b END, 1) FROM t",
+    "SELECT ROUND(a * (1 - 0.0), 0), ROUND(b * 1.00 - 2.0) FROM t",
 ]
 
 
