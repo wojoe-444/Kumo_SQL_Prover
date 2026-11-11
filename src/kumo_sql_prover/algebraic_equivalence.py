@@ -110,6 +110,14 @@ from .constant_regroup_rules import collapse_constant_regroup
 from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
 from . import shape_fallback
+from . import union_source_names
+from .union_rollup import roll_up_grouped_union
+from .one_row_joins import cross_join_one_row
+from .window_sources import inline_windowed_source
+from .window_pruning import prune_windowed_derived
+from .window_filters import push_filter_below_windows
+from .window_levels import settle_window_levels
+from .expansion_layers import collapse_layered_expansion
 from .closed_sources import closed_derived_source, inner_join_conditions, plain_inner_join
 from .listed_output_names import name_listed_outputs
 from .membership_dedup import relax_membership_dedup
@@ -2386,8 +2394,11 @@ def _canonicalize_union_source(node: exp.Subquery) -> exp.Expression | None:
             targets.append(column)
         elif column.name.lower() in renames:
             return None  # ambiguous unqualified use: leave it alone
+    clashing = union_source_names.select_aliases(outer) if shape_fallback.enabled() else set()
     for column in targets:
-        column.set("this", exp.to_identifier(renames[column.name.lower()]))
+        old_name = column.name
+        column.set("this", exp.to_identifier(renames[old_name.lower()]))
+        union_source_names.qualify(column, old_name, node.alias, clashing)  # a new name that is also a select alias
     canonical.sort(key=lambda b: b.sql(dialect="bigquery"))
     union: exp.Expression = canonical[0]
     for branch in canonical[1:]:
@@ -4989,7 +5000,7 @@ def normalize(
         tree = group_by_named_outputs(tree, schema)  # pre-pass: before any rule reads a key as a column
     tree = expand_grouping_sets(tree)
     for select in list(tree.find_all(exp.Select))[::-1]:
-        replacement = collapse_grouping_expansion(select) or collapse_counted_intersection(select)
+        replacement = collapse_grouping_expansion(select) or (collapse_layered_expansion(select) if shapes else None) or collapse_counted_intersection(select)
         if replacement is not None:
             if select is tree:
                 tree = replacement
@@ -5022,6 +5033,7 @@ def normalize(
     if shapes:
         tree = count_constant_window_sums(tree)  # pre-pass: SUM(c) OVER w is c * COUNT(*) OVER w, before windows are kept whole
         tree = read_group_totals(tree)  # pre-pass: SUM(SUM(e)) OVER () of a grouped select is the ungrouped sum
+        tree = settle_window_levels(tree)
     tree = _isolate_windows(canonical_windows(drop_unread_windows(tree), types))
     if schema:
         # name each bare column's source before any rewrite reads a derived table as its base table, whose
@@ -5074,6 +5086,11 @@ def normalize(
         lambda sel: close_strict_bounds(sel, types_map, dialect),
         unnest_cased_sums,
         lambda sel: expand_row_membership(sel, dialect),
+        roll_up_grouped_union,
+        cross_join_one_row,
+        inline_windowed_source,
+        prune_windowed_derived,
+        push_filter_below_windows,
         lambda sel: literal_like_to_equality(sel, types_map, dialect),
         merge_exists_disjunction,
     ) if shapes else ()

@@ -82,6 +82,149 @@ LogicalFilter(condition=[=($cor0.DEPTNO, $0)])
                                              "  LogicalTableScan(table=[[CATALOG, SALES, DEPT]])"))
 
 
+JAVA = """
+class T {
+  @Test void testLeftEmpty() {
+    check(JoinRelType.SEMI);
+  }
+
+  private void check(JoinRelType type) {
+    final Function<RelBuilder, RelNode> relFn = b -> b
+        .scan("EMP").empty()
+        .scan("DEPT")
+        .join(type, b.equals(b.field(2, 0, "DEPTNO"), b.field(2, 1, "DEPTNO")))
+        .build();
+    relFn(relFn).check();
+  }
+
+  @Test void testBothEmpty() {
+    relFn(correlated(JoinRelType.LEFT, true, true)).check();
+  }
+
+  @Test void testRightEmpty() {
+    relFn(correlated(JoinRelType.LEFT, false, true)).check();
+  }
+
+  @Test void testUndecided() {
+    relFn(correlated(JoinRelType.LEFT, flag(), true)).check();
+  }
+
+  @Test void testEmptyProjection() {
+    relFn(b -> b.scan("EMP").project(b.field("EMPNO")).empty().build()).check();
+  }
+
+  private static Function<RelBuilder, RelNode> correlated(JoinRelType joinType, boolean emptyLeft, boolean emptyRight) {
+    final Holder<RexCorrelVariable> v = Holder.empty();
+    return b -> {
+      b.scan("EMP").variable(v::set);
+      if (emptyLeft) {
+        b.empty();
+      }
+      b.scan("DEPT").filter(b.equals(b.field(v.get(), "DEPTNO"), b.field("DEPTNO")));
+      if (emptyRight) {
+        b.empty();
+      }
+      return b.correlate(joinType, v.get().id, b.field("EMP", "DEPTNO")).build();
+    };
+  }
+}
+"""
+
+
+def test_converter_reads_emptied_scans_from_the_java(tmp_path):
+    """``b.scan("EMP").empty()`` prints as ``LogicalValues(tuples=[[]])`` with no row type: the Java states it."""
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import calcite_plan_to_sql as conv
+
+    (tmp_path / "T.java").write_text(JAVA)
+    methods = conv.java_methods(tmp_path / "T.java")
+    emp, dept = ("scott", "EMP"), ("scott", "DEPT")
+    assert conv.java_empty_tables("testLeftEmpty", methods) == [emp]
+    assert conv.java_empty_tables("testBothEmpty", methods) == [emp, dept]
+    assert conv.java_empty_tables("testRightEmpty", methods) == [dept]
+    # a flag that is not a literal, and an empty() on more than a filtered scan, are not followed
+    assert conv.java_empty_tables("testUndecided", methods) is None
+    assert conv.java_empty_tables("testEmptyProjection", methods) is None
+    assert conv.java_empty_tables("testMissing", methods) is None
+
+    plan = """
+LogicalJoin(condition=[=($7, $8)], joinType=[semi])
+  LogicalValues(tuples=[[]])
+  LogicalTableScan(table=[[scott, DEPT]])
+"""
+    rel = conv.Converter(empty_tables=[emp]).top(conv.parse_plan(plan))
+    assert len(rel.types) == 8 and "WHERE 1 = 0" in rel.sql and "EXISTS" in rel.sql
+    with pytest.raises(conv.Skip):  # without the Java the width of the empty side is unknown
+        conv.Converter().top(conv.parse_plan(plan))
+
+
+def test_converter_writes_keyless_single_value_as_a_scalar_subquery():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import calcite_plan_to_sql as conv
+
+    plan = """
+LogicalAggregate(group=[{}], agg#0=[SINGLE_VALUE($0)])
+  LogicalProject(DEPTNO=[$0])
+    LogicalTableScan(table=[[CATALOG, SALES, DEPT]])
+"""
+    rel = conv.Converter().top(conv.parse_plan(plan))
+    assert rel.sql.startswith("SELECT (SELECT ") and "SINGLE_VALUE" not in rel.sql and len(rel.types) == 1
+    for other in ("group=[{0}], agg#0=[SINGLE_VALUE($0)]", "group=[{}], agg#0=[SINGLE_VALUE($0)], agg#1=[COUNT()]"):
+        with pytest.raises(conv.Skip):  # per group, or beside another aggregate, it is not one scalar subquery
+            conv.Converter().top(conv.parse_plan(plan.replace("group=[{}], agg#0=[SINGLE_VALUE($0)]", other)))
+
+
+def test_converter_writes_windows_whose_value_ignores_the_order_of_ties():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import calcite_plan_to_sql as conv
+
+    def project(call):
+        plan = f"LogicalProject(X=[{call}])\n  LogicalTableScan(table=[[CATALOG, SALES, EMP]])"
+        return conv.Converter().top(conv.parse_plan(plan)).sql
+
+    assert "SUM((t1.c5 + 100)) OVER (PARTITION BY t1.c7)" in project("SUM(+($5, 100)) OVER (PARTITION BY $7)")
+    assert "COUNT(*) OVER ()" in project("COUNT() OVER ()")
+    # the default frame of an ORDER BY; Calcite's NULLS LAST for ascending keys is a key of its own
+    assert "OVER (PARTITION BY t1.c7 ORDER BY (t1.c0 IS NULL), t1.c0)" in project("COUNT($0) OVER (PARTITION BY $7 ORDER BY $0)")
+    assert "RANK() OVER (ORDER BY (t1.c5 IS NULL) DESC, t1.c5 DESC)" in project("RANK() OVER (ORDER BY $5 DESC)")
+    assert "ORDER BY (t1.c5 IS NULL), t1.c5 DESC)" in project("DENSE_RANK() OVER (ORDER BY $5 DESC NULLS LAST)")
+    # unbounded on both sides: the whole partition, where the order does not matter
+    whole = project("MIN($5) OVER (PARTITION BY $7 ORDER BY $0 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)")
+    assert "MIN(t1.c5) OVER (PARTITION BY t1.c7)" in whole
+    assert "COALESCE(SUM(t1.c5) OVER (PARTITION BY t1.c7), 0)" in project("$SUM0($5) OVER (PARTITION BY $7)")
+    for call in (
+        "ROW_NUMBER() OVER (ORDER BY $0)",  # tied rows may be numbered either way
+        "SUM($5) OVER (ORDER BY $0 ROWS 2 PRECEDING)",
+        "SUM($5) OVER (PARTITION BY $7 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        "LAG($5) OVER (ORDER BY $0)",
+        "FIRST_VALUE($5) OVER (ORDER BY $0)",
+        "RANK() OVER (PARTITION BY $7)",
+        "COUNT(DISTINCT $5) OVER (PARTITION BY $7)",
+    ):
+        with pytest.raises(conv.Skip):
+            project(call)
+    with pytest.raises(conv.Skip):  # a windowed call is SQL only in a select list
+        conv.Converter().top(conv.parse_plan("LogicalFilter(condition=[>(COUNT() OVER (PARTITION BY $7), 1)])\n  LogicalTableScan(table=[[CATALOG, SALES, EMP]])"))
+
+    def window(group):
+        plan = f"LogicalWindow(window#0=[{group}])\n  LogicalTableScan(table=[[CATALOG, SALES, DEPT]])"
+        return conv.Converter().top(conv.parse_plan(plan))
+
+    rel = window("window(partition {1} order by [0 DESC] aggs [COUNT($0), SUM($0)])")
+    assert len(rel.types) == 4  # DEPT's two columns, then one per call
+    assert rel.sql.count("OVER (PARTITION BY t1.c1 ORDER BY (t1.c0 IS NULL) DESC, t1.c0 DESC)") == 2
+    assert "COUNT(*) OVER (PARTITION BY t1.c1)" in window("window(partition {1} aggs [COUNT()])").sql
+    for group in (
+        "window(rows between 10 PRECEDING and 1 PRECEDING aggs [COUNT($0)])",
+        "window(partition {1} order by [0] rows between UNBOUNDED PRECEDING and CURRENT ROW aggs [SUM($0)])",
+        "window(partition {1} order by [0] aggs [ROW_NUMBER()])",
+        "window(partition {5} aggs [COUNT()])",
+    ):
+        with pytest.raises(conv.Skip):
+            window(group)
+
+
 def test_duckdb_runs_a_sample():
     duckdb = pytest.importorskip("duckdb")
     for case in CASES[:25]:

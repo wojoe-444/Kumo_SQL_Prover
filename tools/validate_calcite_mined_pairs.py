@@ -132,19 +132,32 @@ def main() -> int:
     fx = args.dir
     schemas = json.loads((fx / "schemas.json").read_text())
     cases = [json.loads(l) for l in (fx / "pairs.jsonl").read_text().splitlines() if l.strip()]
-    errors, unsupported, differ, agree, nonempty, rejected = [], [], [], 0, 0, 0
+    errors, unsupported, differ, agree, nonempty, rejected, scalar_rejected = [], [], [], 0, 0, 0, 0
     examples = []
     status = {}
     for case in cases:
         rng = random.Random(f"{args.seed}:{case['name']}")
+        several_rows = 0
         st = "agree"
-        for _ in range(args.dbs):
+        ran = attempts = 0
+        # a pair with a scalar subquery draws further databases (up to 25 times as many) until enough of them run
+        while attempts < args.dbs or (several_rows and ran < args.dbs and attempts < 25 * args.dbs):
+            attempts += 1
             try:
                 con, data = make_db(schemas[case["schema_id"]], rng)
                 (ca, ra), (cb, rb) = run(con, case["sql_a"]), run(con, case["sql_b"])
             except duckdb.ConversionException:
                 # a CAST in the plan overflows on this random database: an error in Calcite too
                 rejected += 1
+                continue
+            except duckdb.InvalidInputException as e:
+                if "More than one row returned by a subquery" not in str(e):
+                    errors.append((case["name"], f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"))
+                    st = "error"
+                    break
+                # a scalar subquery (Calcite's $SCALAR_QUERY or keyless SINGLE_VALUE) met several rows: an error
+                # in Calcite too. The pair is compared on the databases where both queries run.
+                several_rows += 1
                 continue
             except duckdb.NotImplementedException as e:
                 unsupported.append((case["name"], str(e).splitlines()[0][:160]))
@@ -154,6 +167,7 @@ def main() -> int:
                 errors.append((case["name"], f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"))
                 st = "error"
                 break
+            ran += 1
             nonempty += bool(ra)
             if ca != cb:
                 st = "differs"
@@ -164,13 +178,18 @@ def main() -> int:
                     "result_b": sorted(([jsonable(v) for v in r] for r in rb), key=repr),
                 })
                 break
+        if st == "agree" and not ran and several_rows:
+            errors.append((case["name"], "no database on which both queries run"))
+            st = "error"
+        scalar_rejected += several_rows
         status[case["name"]] = st
         if st == "differs":
             differ.append(case["name"])
         elif st == "agree":
             agree += 1
     print(f"cases {len(cases)}  agree {agree}  differ {len(differ)}  duckdb-unsupported {len(unsupported)}"
-          f"  errors {len(errors)}  (non-empty sql_a results: {nonempty}; databases rejected by a CAST overflow: {rejected})")
+          f"  errors {len(errors)}  (non-empty sql_a results: {nonempty}; databases rejected by a CAST overflow: {rejected}, "
+          f"by a scalar subquery with several rows: {scalar_rejected})")
     for n, e in unsupported:
         print("DUCKDB-UNSUPPORTED", n, e)
     for n, e in errors:
