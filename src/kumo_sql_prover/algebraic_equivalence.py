@@ -4882,6 +4882,7 @@ def normalize(
     from .nonempty_group_counts import drop_nonempty_group_counts
     from .grouped_membership_filters import grouped_membership_filters
     from .grouped_source_dedup import drop_dedup_over_grouped
+    from .unique_join_membership import read_unique_joins, unique_join_to_membership
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
@@ -4901,7 +4902,6 @@ def normalize(
         tree = read_extreme_joins(tree, schema, not_null)  # pre-pass: a join with the table's own grouped MIN or MAX is that comparison
         tree = read_extreme_rows(tree, schema, keys)  # pre-pass: under a key the rows holding a group's MIN or MAX are one row per group
         from .membership_key_counts import read_membership_key_counts
-        from .unique_join_membership import read_unique_joins
 
         tree = read_unique_joins(tree, schema)  # pre-pass: an inner join with a grouped derived table on all of its keys is an IN test
         tree = read_membership_key_counts(tree, schema)  # pre-pass: COUNT(k) is COUNT(*) in the HAVING of x IN (SELECT k .. GROUP BY k ..)
@@ -4980,6 +4980,7 @@ def normalize(
         lambda sel: grouped_membership_filters(sel, schema),  # a test on group keys with a subquery filters before the grouping
         lambda sel: drop_dedup_over_grouped(sel, schema),  # DISTINCT or GROUP BY over the keys of a grouped derived table
         lambda sel: drop_keyed_aggregate_distinct(sel, schema, keys, not_null),  # COUNT(DISTINCT c) where a key keeps c from repeating
+        lambda sel: unique_join_to_membership(sel, schema),  # a join on every key of a grouped derived table that other steps exposed
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:

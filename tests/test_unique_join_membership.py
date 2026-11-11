@@ -8,7 +8,7 @@ import sqlglot
 pytest.importorskip("z3")
 
 from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
-from kumo_sql_prover.unique_join_membership import read_unique_joins
+from kumo_sql_prover.unique_join_membership import read_unique_joins, unique_join_to_membership
 from kumo_sql_prover.smt_equivalence import TableConstraints
 
 # t: (a, b) is a key and both are NOT NULL; c and d may be NULL and repeat. u has no key: its rows repeat and hold NULLs.
@@ -89,6 +89,17 @@ def test_conditions_on_the_derived_table_alone_move_into_the_test():
     )
 
 
+def test_one_select_at_a_time():
+    nested = "(SELECT x.b FROM t AS x JOIN (SELECT d FROM t GROUP BY d) AS h ON x.d = h.d)"
+    tree = sqlglot.parse_one(f"SELECT t.a FROM t JOIN {G} ON t.c = g.c WHERE t.b IN {nested}", read="mysql")
+    assert unique_join_to_membership(tree, SCHEMA) is tree
+    assert tree.sql(dialect="mysql") == f"SELECT t.a FROM t WHERE t.b IN {nested} AND t.c IN (SELECT c FROM t GROUP BY c HAVING COUNT(*) > 1)"
+    assert unique_join_to_membership(tree, SCHEMA) is None
+    # a nested select that names its own source like the derived table: its reads are not told apart, the join stays
+    tree = sqlglot.parse_one(f"SELECT t.a FROM t JOIN {G} ON t.c = g.c WHERE t.b IN (SELECT x.b FROM t AS x JOIN {G} ON x.c = g.c)", read="mysql")
+    assert unique_join_to_membership(tree, SCHEMA) is None
+
+
 @pytest.mark.parametrize("sql", [
     f"SELECT t.a, t.b FROM t LEFT JOIN {G} ON t.c = g.c",  # keeps the rows without a partner
     "SELECT t.a, t.b FROM t JOIN (SELECT c FROM t GROUP BY c) AS g ON t.c = g.c LEFT JOIN u ON u.a = t.a",  # an ON that is not a filter
@@ -129,6 +140,15 @@ PROOFS = [
     ),
     (f"SELECT t.a, t.b FROM t JOIN {N} ON t.c = g.k WHERE g.n > 1", "SELECT a, b FROM t WHERE c IN (SELECT c FROM t GROUP BY c HAVING COUNT(*) > 1)"),
     (f"SELECT t.a, t.b FROM {N}, t WHERE g.n = 2 AND g.k = t.c", "SELECT a, b FROM t WHERE c IN (SELECT c FROM t GROUP BY c HAVING COUNT(*) = 2)"),
+    # a wrapper select and an outer join that the test on the count makes inner: the join appears after other steps
+    (
+        f"SELECT SUM(f.b) FROM (SELECT x.a, x.b, g.n FROM t AS x LEFT JOIN {N} ON x.c = g.k WHERE g.n > 1) AS f",
+        "SELECT SUM(b) FROM t WHERE c IN (SELECT c FROM t GROUP BY c HAVING COUNT(*) > 1)",
+    ),
+    (
+        "SELECT SUM(f.e) FROM (SELECT x.*, g.n FROM u AS x JOIN (SELECT a AS k, COUNT(*) AS n FROM u GROUP BY a) AS g ON x.a = g.k) AS f WHERE f.n = 1",
+        "SELECT SUM(e) FROM u WHERE a IN (SELECT a FROM u GROUP BY a HAVING COUNT(*) = 1)",
+    ),
 ]
 
 

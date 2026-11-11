@@ -31,6 +31,10 @@ aggregates, ``DISTINCT`` and ordering, whatever those are.
 No column is read from another place than before, so no type condition is needed: ``y.a = d.k`` and ``y.a IN
 (SELECT d.k ..)`` are the same comparison.
 
+The rule runs once before the other rules (so that the groups of the membership test are read like those of
+any ``IN`` subquery) and again among the shape rules, for joins that other steps expose: a wrapper select merged
+away, an outer join that a ``WHERE`` on the derived table's count makes inner.
+
 **What is read.** The derived table: ``grouped_source_dedup.unique_key_outputs`` (a plain ``GROUP BY`` of at
 least one key, each key among its outputs, no ``ROLLUP``, window, ``LIMIT`` or ``ORDER BY``, not ``LATERAL``).
 The select: sources with different names; every condition that reads ``d`` is ``d.k = y.c`` with ``y`` another
@@ -145,6 +149,12 @@ def _rewrite(select: exp.Select, schema: dict | None) -> bool:
             select.set("where", exp.Where(this=_and_all(kept + [membership])))
             return True
     return False
+
+
+def unique_join_to_membership(select: exp.Select, schema: dict | None) -> exp.Expression | None:
+    """``select`` (changed in place) with one such join written as a membership test, else ``None``."""
+
+    return select if _rewrite(select, schema) else None
 
 
 def read_unique_joins(tree: exp.Expression, schema: dict | None) -> exp.Expression:
