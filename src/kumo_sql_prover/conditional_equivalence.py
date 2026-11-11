@@ -603,8 +603,14 @@ def add_conditions(
 
     # Foreign keys come second: their rules can rewrite one side out of the shape the other side's proof needs, so a
     # pair the other facts prove is never lost to them.
+    # The NOT NULL facts alone come last. More facts are not always more proofs: a candidate key lets a rule
+    # rewrite one side (a GROUP BY on a key is dropped) out of the shape the other side's proof needs, and a pair
+    # that NOT NULL facts settle was given up because everything together did not.
     without_keys = [c for c in candidates if c.kind != "foreign_key"]
-    for universe in dict.fromkeys([tuple(without_keys), tuple(candidates)]):
+    not_null_only = [c for c in candidates if c.kind == "not_null"]
+    for universe in dict.fromkeys([tuple(without_keys), tuple(candidates), tuple(not_null_only)]):
+        if universe == tuple(not_null_only) and time.monotonic() > deadline:
+            return result  # the extra attempt is made only inside the time allowed
         if universe and proves(list(universe)):
             candidates = list(universe)
             break
