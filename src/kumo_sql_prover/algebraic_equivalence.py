@@ -4889,6 +4889,9 @@ def normalize(
         from .count_exists_rules import count_tests_to_exists
 
         tree = count_tests_to_exists(tree)  # pre-pass: (SELECT COUNT(*) ..) > 0 as EXISTS
+        from .subquery_absorption import absorb_subquery_tests
+
+        tree = absorb_subquery_tests(tree)  # pre-pass: x IN (..) OR x IN (the same with one more filter) is the first
     if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
     tree = rewrite_quantified(tree, schema, not_null, keys)
