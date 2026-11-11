@@ -4878,6 +4878,7 @@ def normalize(
     from .single_source_columns import qualify_single_source_columns
     from .keyed_self_membership import keyed_self_membership
     from .own_group_joins import inner_own_group_join, own_group_join
+    from .exact_rounding import exact_rounding
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
@@ -4969,6 +4970,7 @@ def normalize(
         drop_one_row_tail,
         lambda sel: keyed_self_membership(sel, schema, keys, not_null),
         lambda sel: inner_own_group_join(sel, schema, not_null),
+        lambda sel: exact_rounding(sel, types_map, dialect),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
