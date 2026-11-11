@@ -62,34 +62,39 @@ Without the generated databases, the data check falls back to the small database
 
 - the pins and the TPC-DS adaptations;
 - the outcome rules;
-- the 22 R-Bot TPC-H pairs: no wrong proof, and at least 15 proved;
+- the 22 R-Bot TPC-H pairs: no wrong proof, and at least 18 proved;
 - every recorded label failure stays unproved.
 
 ## Scores
 
-Measured on 2026-10-04 on master `0f13b9a` with this harness (`--jobs 2`). No prover change was made for this eval.
+Measured on 2026-11-10 on commit a861879 with this harness (`--jobs 4`, 4 cores, nothing else running), with both generated databases.
 
 | Results file | Score | Held out |
 | --- | --- | --- |
-| `logos-core-proof` | **36/69 proved, 0 wrong** (4 label failures set aside; 12 unknown, 21 unsupported, 0 timeouts) | 5/11 proved, 1 refuted, 0 wrong |
+| `logos-core-proof` | **40/69 proved, 0 wrong** (4 label failures set aside; 21 unknown, 7 unsupported, 1 timeout) | 7/11 proved, 1 refuted, 0 wrong |
 | `logos-core-executed` | **4/73 shown different, 0 wrong** (3 on a small database, 1 on the generated data) | 1/12 |
 
 By family:
 
 | Family | Proved | Refuted | Unknown | Unsupported | Timeout |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `rbot-tpch` (22) | 16/21 | 1 | 1 | 4 | 0 |
-| `rbot-dsb` (37) | 18/36 | 1 | 11 | 7 | 0 |
-| `tpcds-variants` (14, all adapted) | 2/12 | 2 | 0 | 10 | 0 |
+| `rbot-tpch` (22) | 19/21 | 1 | 1 | 1 | 0 |
+| `rbot-dsb` (37) | 17/36 | 1 | 16 | 2 | 1 |
+| `tpcds-variants` (14, all adapted) | 4/12 | 2 | 4 | 4 | 0 |
 
-Every proof's two queries also return the same rows on the generated data and on every small database. The **baseline**, before either harness fix, was 23/69 proved, 4 refuted and 0 wrong (5/11 held out). Both fixes were developed on the dev split, but the baseline listing showed the failure reason of every pair, held-out ones included. That exposure is recorded as "tuned on test" in the results files; the held-out score did not move. The timeouts depend on load: the 120-second limit is wall-clock time. An earlier measurement on a busier machine (2026-10-03, master `a481075`) recorded 4 timeouts, 7 unknown and 22 unsupported with the same 36 proofs and the same 4 label failures, so only the split among the 18 unproved DSB pairs is load-sensitive.
+Every proof's two queries also return the same rows on the generated data and on every small database.
 
-Most `unsupported` pairs fail on one of these:
+**History.** The **baseline**, before either harness fix, was 23/69 proved, 4 refuted and 0 wrong (5/11 held out). Both fixes were developed on the dev split, but the baseline listing showed the failure reason of every pair, held-out ones included. That exposure is recorded as "tuned on test" in the results files; the held-out score did not move. With the fixes and no prover change, master `0f13b9a` measured 36/69 on 2026-10-04 (16, 18 and 2 by family; 5/11 held out).
 
-- a query that one of KumoSQL's normalisations cannot print back faithfully in the target dialect (most TPC-DS variants, which use `ROLLUP`, `GROUPING` and `||`);
-- `NULLS FIRST`/`NULLS LAST` that MySQL cannot spell;
-- `LIMIT` on a scalar aggregate with no `ORDER BY` (TPC-H Q14, Q17, Q19);
-- a `UNION` inside a predicate subquery (TPC-DS Q35).
+No rule was written for this eval. The 40 come from the rules written for the R-Bot, Singh and QUITE pairs on 2026-11-10 (see [the QUITE page](quite.md)), which carry over. Main without them (839906d), measured the same way on the same machine an hour earlier, proved 33/69 (16, 15 and 2 by family, 5/11 held out) with 10 unknown, 24 unsupported and 2 timeouts. Against that run, seven pairs moved from unsupported to proved (two of them held out), ten from unsupported to unknown and one from timeout to unknown; no pair moved the other way. That same-machine run of main is three DSB proofs short of the October measurement, which was taken with an older Python and z3, and the branch's 17 DSB proofs are one short of it; the difference predates these rules and was not traced.
+
+The timeouts depend on load: the 120-second limit is wall-clock time. An earlier measurement on a busier machine (2026-10-03, master `a481075`) recorded 4 timeouts with the same 36 proofs and the same 4 label failures as the run of 2026-10-04, so the split among the unproved DSB pairs is load-sensitive. Without the generated databases (see above) the harness cannot show the one label failure that only the TPC-DS data separates, and it reports 3 refuted of 70 scored.
+
+The five `unsupported` development pairs fail on these:
+
+- `NULLS FIRST`/`NULLS LAST` that cannot be spelled in the target dialect (three pairs, one of them inside a window function);
+- a `UNION` inside a predicate subquery (TPC-DS Q35);
+- an `ORDER BY` that reads a select alias inside an expression (TPC-DS Q70).
 
 ### Label failures
 

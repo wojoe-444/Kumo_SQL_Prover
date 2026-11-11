@@ -37,14 +37,14 @@ def _number(value: int) -> exp.Expression:
     return exp.Neg(this=exp.Literal.number(-value)) if value < 0 else exp.Literal.number(value)
 
 
-def _rewrite(sql: str, types) -> tuple[str, str | None] | None:
+def _rewrite(sql: str, types, schema=None) -> tuple[str, str | None] | None:
     """``(sql with the strings read as numbers, problem)`` or None when no untyped column meets two strings of one number."""
 
     try:
         tree = sqlglot.parse_one(sql, read=DIALECT)
     except Exception:  # noqa: BLE001 - the prover reports the parse error itself
         return None
-    kinds = string_number_compare._Kinds(tree, types)
+    kinds = string_number_compare._Kinds(tree, types, schema)
     ambiguous = kinds.untyped_text_columns()
     if not ambiguous:
         return None
@@ -62,12 +62,12 @@ def _rewrite(sql: str, types) -> tuple[str, str | None] | None:
     return tree.sql(dialect=DIALECT), None
 
 
-def reading(left_sql: str, right_sql: str, dialect: str, types=None) -> Reading | None:
+def reading(left_sql: str, right_sql: str, dialect: str, types=None, schema=None) -> Reading | None:
     """The numeric reading of a pair, or None when the pair has no untyped column compared with ambiguous strings."""
 
     if dialect != DIALECT or "'" not in left_sql + right_sql:
         return None
-    sides = [_rewrite(sql, types) for sql in (left_sql, right_sql)]
+    sides = [_rewrite(sql, types, schema) for sql in (left_sql, right_sql)]
     if sides == [None, None]:
         return None
     for side in sides:
@@ -82,7 +82,7 @@ def checked(prove: Callable, left_sql: str, right_sql: str, kwargs: dict, declin
     ``decline(reason)`` builds the "not proven" result.
     """
 
-    found = reading(left_sql, right_sql, kwargs.get("dialect", "bigquery"), kwargs.get("types"))
+    found = reading(left_sql, right_sql, kwargs.get("dialect", "bigquery"), kwargs.get("types"), kwargs.get("schema"))
     if found is None:
         return prove(left_sql, right_sql, **kwargs)
     if found.problem:

@@ -6,6 +6,7 @@ a18518d967e3 baseline testAggregateMergeSum0
 b850c7e1974b baseline testAggregateRemove1
 944ca48de2a9 baseline testAggregateRemove2
 aa5ee44d6ef3 baseline testAggregateRemove3
+b01ba5b2fdd3 checked testAnyInProjectNonNullable
 2da5051b7e72 baseline testBitOrReuseDistinctAttrWithMixedOptionality
 6620c00a0a0e baseline testDecorrelateTwoExists
 d6b2b4ff1529 baseline testDecorrelateTwoIn
@@ -33,9 +34,11 @@ c9d3afe93a3a baseline testReduceConstantsNegated
 8b9a8de66efc baseline testReduceConstantsNegatedInverted
 8d2df55551c9 baseline testReduceValuesToEmpty
 7201550eca26 baseline testRemoveDistinctOnAgg
+e43356466b6b checked testSelectAnyCorrelated
 d8ff1d898037 baseline testSelectNotInCorrelated
 120b1e432f30 baseline testSome
 5479959e0447 baseline testSumAndDistinctSumWithExpandSumType
+dff7b95fd10d checked testWhereAnyCorrelatedInSelect
 c8b0a913f286 baseline testWhereInCorrelated
 c8af742f232f baseline testWhereNotInCorrelated
 d7811b231a29 baseline testWhereOrSubQuery
