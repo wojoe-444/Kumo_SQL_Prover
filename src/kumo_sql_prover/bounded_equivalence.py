@@ -42,7 +42,7 @@ from typing import Callable, Mapping, Sequence
 import sqlglot
 from sqlglot import exp
 
-from . import bounded_keyed_joins
+from . import bounded_abstraction, bounded_keyed_joins
 from .ast_utils import MAX_EXPANDED_READS, UnmodeledConstruct, distinct_on, drop_case_conflicts, expand_group_by_all, expanded_reads, is_call, spell_for_duckdb, star_modified
 from .duckdb_load import small_database
 from .set_operations import positional_sql_pair
@@ -2562,6 +2562,7 @@ def _check_bounded(
     translate: Callable[[str], str] | None = None,
     group_constants: bool = False,
     keyed_joins: bool = True,
+    abstract_arithmetic: bool = True,
 ) -> BoundedResult:
     """Check two queries on every database of at most ``rows`` rows per table.
 
@@ -2600,10 +2601,28 @@ def _check_bounded(
                 compiler = Compiler(database, dialect, nulls_first=nulls_first, group_constants=group_constants, keyed_joins=keyed_joins)
                 left = compiler.compile(left_sql)
                 right = compiler.compile(right_sql)
-                remaining = timeout_ms if budget_s is None else int(max(1, min(timeout_ms, (budget_s - (time.time() - began)) * 1000)))
-                solver = bounded_solver(remaining)
-                solver.add(*database.constraints, *compiler.side_conditions)
-                solver.add(bag_difference(left, right))
+                formulas = [*database.constraints, *compiler.side_conditions, bag_difference(left, right)]
+
+                def left_ms() -> int:
+                    return timeout_ms if budget_s is None else int(max(1, min(timeout_ms, (budget_s - (time.time() - began)) * 1000)))
+
+                if abstract_arithmetic:
+                    # first with products, divisions and rounding uninterpreted: no difference there is no difference
+                    # at all, and a model is only a database to try (bounded_abstraction)
+                    loose, replaced = bounded_abstraction.abstract(formulas)
+                    if replaced:
+                        quick = bounded_solver(max(1, left_ms() // 4))
+                        quick.add(*loose)
+                        answer = quick.check()
+                        if answer == z3.unsat:
+                            outcome = "same"
+                            break
+                        if answer == z3.sat:
+                            data = database_from_model(database, quick.model())
+                            if replay.differ(data) if hasattr(replay, "differ") else replay(data):
+                                return BoundedResult(BoundedStatus.DIFFERENT, f"counterexample with at most {bound} rows per table", bound, data, time.time() - began)
+                solver = bounded_solver(left_ms())
+                solver.add(*formulas)
                 verdict = solver.check()
                 if verdict == z3.unsat:
                     outcome = "same"

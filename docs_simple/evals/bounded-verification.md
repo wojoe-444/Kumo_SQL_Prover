@@ -10,6 +10,8 @@ Columns keep to the values they can really hold: a `DATE` stays between year 1 a
 
 Joins used to be the expensive part: with three rows per table, joining three tables meant reasoning about 27 possible combined rows, and eight tables did not fit. Most joins follow a key, for example each order has at most one customer. The checker now notices that (from the keys the schema declares) and keeps one combined row per order instead of one per pair, so the same three-table join is three rows. The answers are the same; they arrive much sooner, and some checks that used to time out now finish.
 
+The checker also asks an easier question first. Two queries often do the same multiplication, division and rounding on the same numbers, just reached by different routes. Instead of working through that arithmetic, the checker first treats "multiply", "divide" and "round" as black boxes: the same inputs give the same output, and nothing else is known. If the queries cannot differ even then, they cannot differ at all, and that is found quickly. If they might differ, the checker tries the suggested data for real, and falls back to the full arithmetic when the data shows no difference.
+
 ## Read the result
 
 - **Bounded, 3 rows** means no difference exists within that model and row limit. It says nothing about larger databases.

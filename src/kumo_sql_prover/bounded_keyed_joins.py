@@ -299,10 +299,11 @@ def _plan(factors, parts_by_step) -> list[int]:
 
 
 def inner_chain(compiler, node: exp.Select, outer):
-    """``(relation, WHERE conjuncts still to apply)`` for a FROM of plain inner joins with a WHERE, else ``None``.
+    """``(relation, WHERE conjuncts still to apply)`` for a FROM of plain inner joins, else ``None``.
 
-    ``None`` leaves the select to the ordinary path; that is the answer whenever no table has a key (nothing to
-    gain) or a join condition cannot be placed.
+    ``None`` leaves the select to the ordinary path. Every ``ON`` and ``WHERE`` conjunct that reads only the joined
+    tables becomes part of the condition of the first join after which its columns are in scope, so a condition
+    written under ``ON`` in one query and under ``WHERE`` in another is encoded the same way in both.
     """
 
     from .bounded_equivalence import MAX_ROWS, Rel, Row, Scope, Unsupported, truth, z3
@@ -310,20 +311,21 @@ def inner_chain(compiler, node: exp.Select, outer):
     clause = node.args.get("from_") or node.args.get("from")
     joins = node.args.get("joins") or []
     where = node.args.get("where")
-    if not compiler.keyed_joins or clause is None or not joins or where is None or not all(_plain_inner(j) for j in joins):
+    if not compiler.keyed_joins or clause is None or not joins or not all(_plain_inner(j) for j in joins):
         return None
+    filters = conjuncts(where.this) if where is not None else []
     factors = [compiler.table_factor(clause.this, outer)] + [compiler.table_factor(j.this, outer) for j in joins]
-    if not any(rel.keys for rel in (factors if compiler.reorder else factors[1:])) or any(rel.hidden for rel in factors):
-        return _ordinary(compiler, factors, joins, outer), [where.this]
+    if any(rel.hidden for rel in factors):
+        return _ordinary(compiler, factors, joins, outer), filters
     placed: dict[int, list[exp.Expression]] = {}
     remaining = []
     for index, join in enumerate(joins, start=1):
         for part in conjuncts(join.args["on"]) if join.args.get("on") is not None else []:
             step = _step(part, factors)
             if step is None or step > index:
-                return _ordinary(compiler, factors, joins, outer), [where.this]
+                return _ordinary(compiler, factors, joins, outer), filters
             placed.setdefault(index, []).append(part)
-    for part in conjuncts(where.this):
+    for part in filters:
         step = _step(part, factors)
         if step is None:
             remaining.append(part)
@@ -331,7 +333,10 @@ def inner_chain(compiler, node: exp.Select, outer):
             placed.setdefault(step, []).append(part)
 
     def holds(parts, scope):
-        return z3.And(*[truth(compiler.expr(part, scope)) for part in parts]) if parts else z3.BoolVal(True)
+        # in one order whatever order (and whichever of ON and WHERE) the conjuncts were written in: two queries
+        # that join the same way then build the very same terms, and the solver has nothing to work out
+        terms = {t.get_id(): t for t in (truth(compiler.expr(part, scope)) for part in parts)}
+        return z3.And(*[terms[k] for k in sorted(terms)]) if terms else z3.BoolVal(True)
 
     # every conjunct is applied as soon as the tables it reads are joined; without a LIMIT or a window function
     # the order of the joined rows is not observable, so the joins may run in the order that keeps them fewest
