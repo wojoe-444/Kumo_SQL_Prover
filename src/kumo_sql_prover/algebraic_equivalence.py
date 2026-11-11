@@ -4901,6 +4901,7 @@ def normalize(
     from .nonnull_any import rewrite_nonnull_any
     from .join_distinct_aggregates import count_distinct_under_key, rewrite_join_distinct_select
     from .keyed_group_filters import rewrite_keyed_group_filter
+    from .anti_membership_joins import rewrite_anti_membership
     from .duplicate_values import rewrite_duplicate_values
 
     from .aggregate_presence import rewrite_aggregate_presence
@@ -5004,6 +5005,7 @@ def normalize(
         rewrite_aggregate_presence,  # (SELECT MIN(TRUE) FROM ..) IS NOT NULL asks whether a row exists
         lambda sel: rewrite_join_distinct_select(sel, schema),  # a join under COUNT(DISTINCT) that only asks for a match is an IN
         lambda sel: rewrite_keyed_group_filter(sel, schema, keys),  # a keyed table joined to a grouped table under HAVING is one join with the grouped subquery
+        lambda sel: rewrite_anti_membership(sel, schema, keys, not_null),  # k NOT IN (the same table's key joined to others) is NOT EXISTS over the others
         lambda sel: rewrite_duplicate_values(sel, schema, keys, not_null),  # the values a table holds twice: a self join or a correlated count is a grouped count
         lambda sel: count_distinct_under_key(sel, keys, not_null),  # COUNT(DISTINCT c) of a group whose columns and c hold a key is COUNT(c)
     ) if shapes else ()
