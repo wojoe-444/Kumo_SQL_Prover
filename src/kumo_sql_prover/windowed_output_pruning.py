@@ -26,6 +26,12 @@ Conditions checked (the derived table is left alone otherwise):
   and is unqualified or qualified by the derived table's alias (a superset of the real reads: a subquery or another
   scope that shadows the alias only makes it keep more), or when the body itself has an unqualified column of that
   name outside its select list (a ``GROUP BY`` or ``HAVING`` that names an output);
+* an unread output is dropped only when every column it reads is found: a qualified column in the source of the
+  body that has that alias, an unqualified one in some source of the body, where a base table's columns are the
+  declared ones (``schema``) and a derived table's are its output names. An output that reads a column nothing
+  provides is an error when the query runs, and dropping it would turn a query that fails into one that answers;
+  so would dropping one whose columns cannot be checked (no schema for its table, a star in a source, a subquery
+  in the output), and those are kept too;
 * outputs without a name are kept, at least one output is kept, and a select that aggregates without ``GROUP BY``
   keeps an output with one of its aggregates.
 """
@@ -59,8 +65,49 @@ def _aggregates(select: exp.Select, item: exp.Expression | None = None) -> bool:
     return False
 
 
-def prune_windowed_outputs(select: exp.Select) -> exp.Expression | None:
+def _known_columns(source: exp.Expression, schema: dict[str, list[str]]) -> set[str] | None:
+    """The column names ``source`` provides, or None when they cannot be listed."""
+
+    if isinstance(source, exp.Table):
+        if any(value for key, value in source.args.items() if key not in ("this", "alias", "db", "catalog")):
+            return None
+        alias = source.args.get("alias")
+        if alias is not None and alias.args.get("columns"):
+            return None
+        return schema.get(".".join(part.name for part in source.parts).lower())
+    if isinstance(source, exp.Subquery) and isinstance(source.this, exp.Select) and not (source.args.get("alias") is not None and source.args["alias"].args.get("columns")):
+        names = set()
+        for item in source.this.expressions:
+            if isinstance(item, exp.Star) or (isinstance(item, exp.Column) and isinstance(item.this, exp.Star)) or not item.alias_or_name:
+                return None
+            names.add(item.alias_or_name.lower())
+        return names
+    return None
+
+
+def _reads_only_known_columns(item: exp.Expression, body: exp.Select, schema: dict[str, list[str]]) -> bool:
+    """Whether every column ``item`` reads is provided by a source of ``body`` (see the module docstring)."""
+
+    if any(isinstance(node, (exp.Query, exp.Subquery)) for node in item.walk()):
+        return False
+    provided = [(source.alias_or_name.lower(), _known_columns(source, schema)) for source in select_sources(body)]
+    for column in item.find_all(exp.Column):
+        if isinstance(column.this, exp.Star):
+            return False
+        name, qualifier = column.name.lower(), column.table.lower()
+        if qualifier:
+            hits = [columns for alias, columns in provided if alias == qualifier]
+            if len(hits) != 1 or hits[0] is None or name not in hits[0]:
+                return False
+        elif not any(columns is not None and name in columns for _, columns in provided):
+            return False
+    return True
+
+
+def prune_windowed_outputs(select: exp.Select, schema: dict[str, list[str]] | None = None) -> exp.Expression | None:
     """``select`` with the unread outputs of its windowed derived tables dropped, or None (see the module docstring)."""
+
+    schema = {name.lower(): {column.lower() for column in columns} for name, columns in (schema or {}).items()}
 
     if any(isinstance(star, exp.Star) and not isinstance(star.parent, exp.Count) for star in select.find_all(exp.Star)):
         return None
@@ -81,7 +128,11 @@ def prune_windowed_outputs(select: exp.Select) -> exp.Expression | None:
         used = {c.name.lower() for c in select.find_all(exp.Column) if not _inside(c, source) and (not c.table or c.table.lower() == alias)}
         in_list = {id(c) for item in body.expressions for c in item.find_all(exp.Column)}
         used |= {c.name.lower() for c in body.find_all(exp.Column) if not c.table and id(c) not in in_list and c.find_ancestor(exp.Select) is body}
-        keep = [index for index, item in enumerate(body.expressions) if not item.alias_or_name or item.alias_or_name.lower() in used]
+        keep = [
+            index
+            for index, item in enumerate(body.expressions)
+            if not item.alias_or_name or item.alias_or_name.lower() in used or not _reads_only_known_columns(item, body, schema)
+        ]
         if not keep:
             keep = [0]
         if _aggregates(body) and not body.args.get("group") and not any(_aggregates(body, body.expressions[index]) for index in keep):

@@ -13,7 +13,7 @@ BODY = "SELECT p.id, p.kind, COUNT(c.id) AS n, RANK() OVER (ORDER BY p.day) AS r
 
 
 def pruned(sql):
-    out = prune_windowed_outputs(sqlglot.parse_one(sql, read="postgres"))
+    out = prune_windowed_outputs(sqlglot.parse_one(sql, read="postgres"), SCHEMA)
     return out.sql(dialect="postgres") if out is not None else None
 
 
@@ -104,3 +104,27 @@ def test_pruned_queries_give_the_same_rows(sql):
     for rows in random_databases(len(sql)):
         assert not differ_on_duckdb(sql, out, rows)
         assert not differ_on_duckdb(sql, normalized, rows)
+
+
+MISNAMED = "SELECT d.id, d.r FROM (SELECT t.id, t.nope AS extra, RANK() OVER (ORDER BY t.id) AS r FROM (SELECT p.id, p.day AS f1 FROM p) AS t) AS d"
+
+
+@pytest.mark.parametrize("sql", [
+    MISNAMED,  # ``t`` has no column ``nope``: the query fails, and must not become one that answers
+    MISNAMED.replace("t.nope", "nope"),
+    MISNAMED.replace("t.nope", "z.f1"),  # no such source
+    "SELECT d.id, d.r FROM (SELECT p.id, p.nope AS extra, RANK() OVER (ORDER BY p.id) AS r FROM p) AS d",  # not a declared column
+    "SELECT d.id, d.r FROM (SELECT x.id, x.owner AS extra, RANK() OVER (ORDER BY x.id) AS r FROM nowhere AS x) AS d",  # a table without a schema
+    "SELECT d.id, d.r FROM (SELECT t.id, t.day AS extra, RANK() OVER (ORDER BY t.id) AS r FROM (SELECT * FROM p) AS t) AS d",  # a star hides the names
+    "SELECT d.id, d.r FROM (SELECT p.id, (SELECT MAX(c.score) FROM c WHERE c.post = p.id) AS extra, RANK() OVER (ORDER BY p.id) AS r FROM p) AS d",
+])
+def test_an_output_whose_columns_cannot_be_checked_is_kept(sql):
+    assert pruned(sql) is None
+
+
+def test_without_a_schema_base_table_columns_are_kept():
+    sql = "SELECT d.id, d.r FROM (SELECT p.id, p.day AS extra, RANK() OVER (ORDER BY p.id) AS r FROM p) AS d"
+    assert prune_windowed_outputs(sqlglot.parse_one(sql, read="postgres")) is None
+    assert pruned(sql) == "SELECT d.id, d.r FROM (SELECT p.id, RANK() OVER (ORDER BY p.id) AS r FROM p) AS d"
+    # a failing query is not proved equal to the query it would be without the bad column
+    assert not proved(MISNAMED, MISNAMED.replace("t.nope AS extra, ", ""))

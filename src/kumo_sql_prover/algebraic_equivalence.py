@@ -5011,7 +5011,7 @@ def normalize(
         push_filter_into_wrapped_join,
         drop_one_row_tail,
         merge_preserved_join_source,
-        prune_windowed_outputs,
+        lambda sel: prune_windowed_outputs(sel, schema),
         count_subquery_as_join,
         drop_never_null_padding,
         lambda sel: spell_windowed_input(sel, types_map),
