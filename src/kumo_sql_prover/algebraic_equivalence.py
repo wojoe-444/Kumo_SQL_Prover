@@ -4882,6 +4882,7 @@ def normalize(
     from .mysql_exists_casts import drop_mysql_exists_cast
     from .preserved_join_sources import merge_preserved_join_source
     from .single_source_columns import qualify_single_source_columns
+    from .windowed_output_pruning import prune_windowed_outputs
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
@@ -4960,6 +4961,7 @@ def normalize(
         push_filter_into_wrapped_join,
         drop_one_row_tail,
         merge_preserved_join_source,
+        prune_windowed_outputs,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
