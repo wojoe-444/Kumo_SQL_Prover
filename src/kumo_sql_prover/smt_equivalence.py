@@ -85,6 +85,7 @@ from .string_literals import canonical_literals
 from .type_names import invalid_type_name
 from .sqlx_fragments import masked_template_problem
 from . import numeric_column_reading, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals
+from . import float_halving, sum_argument_types
 from .float_sum_order import Ledger
 
 try:  # pragma: no cover - exercised by the import itself
@@ -2083,6 +2084,10 @@ class _Compiler:
                 return _Val(z3.BoolVal(False), V.Num(z3.RealVal(f"{typed[1].numerator}/{typed[1].denominator}")))
         if self.dialect == "bigquery" and (scaled := smt_numeric.compile_node(self, e, env, agg, aliases)) is not None:
             return _Val(*scaled)  # NUMERIC and BIGNUMERIC values of known scale: the rounded result (smt_numeric)
+        if self.dialect == "bigquery" and isinstance(e, exp.Mul):
+            halved = float_halving.as_division(e, lambda operand: self._visible_class(operand, env, agg, aliases))
+            if halved is not None:
+                return self._val(halved, env, agg, aliases)  # x * 0.5 is x / 2 in FLOAT64, bit for bit
         if isinstance(e, (exp.Add, exp.Sub, exp.Mul)) and not self.exact:
             folded = _literal_arithmetic(e, self.dialect)
             if folded is not None:
@@ -2393,6 +2398,14 @@ class _Compiler:
             self._operand_depth, self._kept_classes = depth, classes
         if fresh != kept:
             raise AssertionError(f"kept {kind} {kept!r} of {e.sql(dialect='bigquery')[:80]} is now {fresh!r}")
+
+    def _visible_class(self, e, env, agg, aliases) -> str | None:
+        """:meth:`_class_of`, with ``None`` for an operand it cannot compile."""
+
+        try:
+            return self._class_of(e, env, agg, aliases)
+        except Unsupported:
+            return None
 
     def _class_of(self, e, env, agg, aliases) -> str | None:
         """The type of expression ``e`` where it is visible (a declared column, a literal, a cast, arithmetic over
@@ -2908,9 +2921,12 @@ class _Compiler:
             arg = self._val(target, env, None, None)
         if func == "SUM" and self.dialect == "bigquery":
             try:
-                self.sums.observe_sum(e, self._class_of(target, env, None, None))
+                seen = self._class_of(target, env, None, None)
             except Unsupported:
-                self.sums.observe_sum(e, None)
+                seen = None
+            if seen is None and sum_argument_types.is_int64(e, self.types):
+                seen = smt_values.INT64  # a column of a derived table or UNION whose every source is declared INT64
+            self.sums.observe_sum(e, seen)
         all_null = arg is not None and func in ("COUNT", "SUM", "MIN", "MAX", "AVG") and z3.is_true(z3.simplify(arg.null))
         if all_null:
             # An aggregate of values that are all NULL: COUNT is 0, the others are NULL. The call is still
@@ -3624,6 +3640,16 @@ class _Prover:
         for mapping in self._bijections(a.occs, b.occs):
             if self._agg_equal_under(a, b, mapping):
                 return True
+        if a.is_global:
+            # A global aggregate's filter only decides which rows each aggregate skips: compare the two blocks with
+            # the filter read as a NULL argument on the rows it drops (SUM(x) WHERE p against SUM(IF(p, x, NULL))).
+            from . import smt_global_filters
+
+            spelled = [smt_global_filters.pushed(block, _value_sort(), _const_pred, _Val) for block in (a, b)]
+            if None not in spelled and (spelled[0] is not a or spelled[1] is not b):
+                for mapping in self._bijections(a.occs, b.occs):
+                    if self._agg_equal_under(spelled[0], spelled[1], mapping):
+                        return True
         return False
 
     def _agg_equal_under(self, a: _Agg, b: _Agg, mapping) -> bool:

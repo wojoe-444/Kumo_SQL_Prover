@@ -708,10 +708,17 @@ class DatasetRunner:
             if values_sql == current:
                 self._contents[local] = values_sql
                 continue
-            if current != "":
-                self._connection.execute(f'DELETE FROM "{local}"')
-            if table.rows:
-                self._connection.execute(f'INSERT INTO "{local}" VALUES {values_sql}')
+            try:
+                if current != "":
+                    self._connection.execute(f'DELETE FROM "{local}"')
+                if table.rows:
+                    self._connection.execute(f'INSERT INTO "{local}" VALUES {values_sql}')
+            except Exception as exc:
+                # A value the column cannot hold (an integer one past INT64, taken from a literal's neighbours) is not
+                # a database: the run fails like any other, and the table's contents are unknown until the next load.
+                self._loaded = None
+                self._contents[local] = None
+                raise _execution_error(f"DuckDB could not load table {key!r}", exc) from exc
             self._contents[local] = values_sql
         self._loaded = dataset
 
