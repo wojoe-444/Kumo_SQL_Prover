@@ -7,9 +7,11 @@ join) does not: ``LEFT JOIN posts AS p ON p.owner = u.id`` and ``.. ON u.id = p.
 prints join conditions with the left input's column first, whichever way the query wrote them.
 
 ``orient_column_equalities`` runs once, after every other rule (none of them sees the changed order), and swaps the
-operands of an ``=`` between two plain columns when the right one sorts first by column name, then by qualifier.
-The column name comes first because the texts are compared after their table aliases are renamed, and a name
-survives that renaming while an alias does not. Two columns of the same name keep the order their qualifiers give.
+operands of an ``=`` between two plain columns when the right one's column name sorts first. Only the name decides:
+the texts are compared after their table aliases are renamed, and a name survives that renaming while an alias does
+not. Two columns of the same name (``a.id = b.id``) are left as written: ordering them by alias would turn the
+equality one way in a query that names its tables ``b, e`` and the other way in one that names them ``z, a``, and
+``windowed_inputs`` has by then written such an equality in the order of its sources.
 
 Only ``=`` between two columns (a name with an optional table qualifier) is touched: no other comparison, no
 expression operand, no ``IS NOT DISTINCT FROM``, no row comparison.
@@ -20,8 +22,8 @@ from __future__ import annotations
 from sqlglot import exp
 
 
-def _key(column: exp.Column) -> tuple[str, str]:
-    return column.name.lower(), column.table.lower()
+def _key(column: exp.Column) -> str:
+    return column.name.lower()
 
 
 def _plain(node: exp.Expression) -> bool:

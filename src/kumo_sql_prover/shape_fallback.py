@@ -36,6 +36,25 @@ The shape rules: ``single_source_columns``, ``grouped_self_membership``, ``disjo
 ``closed_sources`` lets the scalar-aggregate decorrelation read. Not in the list, because each only reads a
 query that was declined before it: ``listed_output_names`` and ``printed_spelling``.
 
+The batch of 2026-11-11, written for QUITE's TPC-H and Calcite development pairs, is in the list too:
+``anti_join_exists``, ``expanded_not_in``, ``counted_groups``, ``membership_joins``, ``computed_group_outputs``,
+``keyed_join_groups``, ``own_group_filters``, ``exclusive_union_filters``, ``one_row_sources``,
+``closed_scalar_filters``, ``closed_scalar_outputs``, ``substring_casts``, ``discrete_bounds``,
+``cased_group_sums``, ``tuple_membership``, ``counted_outer_groups``, ``guarded_outer_counts``,
+``group_total_windows``, and from the Calcite pairs ``keyed_only_grouping``, ``windowed_inputs``,
+``plain_grouping_calls``, ``one_row_groups``, ``key_expression_having``, ``extremum_comparisons``,
+``tagged_union_groups``, ``conditional_count_sums``, ``constant_window_sums``, ``counted_known_values``,
+``grouped_output_names`` and ``self_outer_join_columns``. Several of these prove a pair only together, and the
+second attempt switches all of them off at once: a shape rule that fires on one query of a pair and not on the
+other loses the proofs the other shape rules gave that pair. Rerun the development pairs after adding one.
+
+From QUITE's SQLStorm development pairs, the same day: ``quoted_names``, ``joined_key_restrictions``,
+``timestamp_shifts``, ``equality_orientation`` (passes over the whole query), ``preserved_counts``,
+``preserved_join_sources``, ``windowed_output_pruning`` and ``counted_subqueries`` (rules of one select). Three
+more modules of that batch are not normalizations. ``window_inputs``, ``derived_table_proofs`` and
+``grouped_aggregate_spellings`` run in ``_prove_algebraic`` on the two normalized texts, only on the attempt with
+the shape rules on and only after the solver has failed on those texts, so they cannot take a verdict away.
+
 A new rule that rewrites queries the prover already read belongs in the list: guard its entry in ``normalize``
 with ``shape_fallback.enabled()``.
 

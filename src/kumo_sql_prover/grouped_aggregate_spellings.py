@@ -1,16 +1,17 @@
-"""Second spellings of grouped aggregates, tried only for a pair the prover did not prove as normalized.
+"""A second spelling of a grouped aggregate, tried only for a pair the prover did not prove as normalized.
 
-Two identities that hold under a plain ``GROUP BY`` (each module states its identity, proof and conditions):
+``padded_sums``: under a plain ``GROUP BY``, ``COALESCE(SUM(x), 0)`` is ``SUM(COALESCE(x, 0))`` (the module states
+the identity, its proof and its conditions).
 
-* ``counted_cases``: ``SUM(CASE WHEN c THEN 1 ELSE 0 END)`` is ``COUNT(CASE WHEN c THEN 1 END)``;
-* ``padded_sums``: ``COALESCE(SUM(x), 0)`` is ``SUM(COALESCE(x, 0))``.
+It is not an entry of ``algebraic_equivalence.normalize``. A normalization changes the spelling on every pair, and
+a pair that is proved today because both queries spell the total one way (or because a rewriter's
+``CASE WHEN SUM(x) IS NULL THEN 0 ..`` is compared with ``COALESCE(SUM(x), 0)`` over the same sum) must stay proved.
+``respell`` is applied to the two normalized texts after the solver has failed on them, and the solver is run once
+more on the result: a pair proved before is proved by the first run, exactly as before. The texts are not
+normalized again, and nothing is proved here: the rewrite is the identity of ``padded_sums``, applied to both texts.
 
-They are not entries of ``algebraic_equivalence.normalize``. A normalization changes the spelling on every pair,
-and a pair that is proved today because both queries spell an aggregate one way (or because a rewriter's
-``CASE WHEN SUM(x) IS NULL THEN 0 ..`` is compared with ``COALESCE(SUM(x), 0)`` over the same sum) must stay
-proved. ``respell`` is applied to the two normalized texts after the solver has failed on them, and the solver is
-run once more on the result: a pair proved before is proved by the first run, exactly as before. The texts are
-not normalized again.
+(The grouped ``SUM(CASE WHEN c THEN 1 ELSE 0 END)`` read as a count is a normalization,
+``conditional_count_sums``.)
 """
 
 from __future__ import annotations
@@ -19,20 +20,18 @@ import sqlglot
 from sqlglot import exp
 
 from .ast_utils import faithful_sql
-from .counted_cases import count_summed_cases
 from .padded_sums import pad_grouped_sums
 
 
 def _respelled(sql: str, dialect: str) -> str:
     tree = sqlglot.parse_one(sql, read=dialect)
-    if not any(tree.find_all(exp.Sum)) or not any(tree.find_all(exp.Group)):
+    if not any(type(node.this) is exp.Sum for node in tree.find_all(exp.Coalesce)) or not any(tree.find_all(exp.Group)):
         return sql
 
     def step(node: exp.Expression) -> exp.Expression:
         if not isinstance(node, exp.Select):
             return node
-        counted = count_summed_cases(node) or node
-        return pad_grouped_sums(counted) or counted
+        return pad_grouped_sums(node) or node
 
     changed = tree.transform(step)
     return faithful_sql(changed, dialect) if changed.sql() != tree.sql() else sql

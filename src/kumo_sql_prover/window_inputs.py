@@ -48,7 +48,9 @@ Conditions checked (the select is left alone otherwise):
   arguments: no ``FILTER``, no ``ORDER BY`` inside the call, no column in the frame bounds;
 * nothing in the select can differ between two evaluations (``RANDOM()``, an unknown function), and no input
   expression holds a subquery;
-* every qualified column of the select names a source declared inside it.
+* every qualified column of the select names a source declared inside it;
+* its ``GROUP BY`` names no output by its position (``GROUP BY 1``): the select list is rebuilt, and the position
+  would name another item.
 
 Nothing is assumed beyond what the prover already assumes for windows: a sub-proof's assumptions are passed on.
 At most ``MAX_PROOFS`` sub-proofs are tried for a pair, on inputs of at most ``MAX_CHARS`` characters, at most
@@ -164,6 +166,20 @@ def _reader_rank(select: exp.Select) -> dict[str, int]:
     return rank
 
 
+def _positional_key(select: exp.Select) -> bool:
+    """Whether the select's own ``GROUP BY`` or ``ORDER BY`` names an output by its position (``GROUP BY 1``)."""
+
+    group, order = select.args.get("group"), select.args.get("order")
+    for node in group.walk() if group is not None else ():
+        if isinstance(node, exp.Literal) and not node.is_string and isinstance(node.parent, (exp.Group, exp.Rollup, exp.Cube, exp.GroupingSets, exp.Tuple, exp.Paren)):
+            return True
+    for key in order.expressions if order is not None else ():
+        key = key.this if isinstance(key, exp.Ordered) else key
+        if isinstance(key, exp.Literal) and not key.is_string:
+            return True
+    return False
+
+
 def split(select: exp.Select) -> _Split | None:
     """The step-1 form of ``select``, or None when a condition of the module docstring fails."""
 
@@ -172,6 +188,8 @@ def split(select: exp.Select) -> _Split | None:
     windows = _own_windows(select)
     if not windows or (select.args.get("from_") or select.args.get("from")) is None:
         return None
+    if _positional_key(select):
+        return None  # the select list is rebuilt below, and a position would then name another item
     if any(isinstance(n, _UNSTABLE) for n in select.walk()):
         return None
     declared = {n.alias_or_name.lower() for n in select.walk() if isinstance(n, (exp.Table, exp.Subquery)) and n.alias_or_name}

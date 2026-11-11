@@ -17,8 +17,9 @@ def oriented(sql):
 def test_the_column_that_sorts_first_is_written_first():
     assert oriented("SELECT p.id FROM p JOIN u ON p.owner = u.id") == "SELECT p.id FROM p JOIN u ON u.id = p.owner"
     assert oriented("SELECT p.id FROM p JOIN u ON u.id = p.owner") == "SELECT p.id FROM p JOIN u ON u.id = p.owner"
-    # the same column name: the qualifier decides
-    assert oriented("SELECT p.id FROM p JOIN u ON u.id = p.id WHERE p.kind = p.day") == "SELECT p.id FROM p JOIN u ON p.id = u.id WHERE p.day = p.kind"
+    # the same column name stays as written: an alias does not decide
+    assert oriented("SELECT p.id FROM p JOIN u ON u.id = p.id WHERE p.kind = p.day") == "SELECT p.id FROM p JOIN u ON u.id = p.id WHERE p.day = p.kind"
+    assert oriented("SELECT p.id FROM p JOIN u ON p.id = u.id") == "SELECT p.id FROM p JOIN u ON p.id = u.id"
     assert oriented("SELECT p.id FROM p WHERE EXISTS (SELECT 1 FROM c WHERE c.post = p.id AND post = id)") == "SELECT p.id FROM p WHERE EXISTS(SELECT 1 FROM c WHERE p.id = c.post AND id = post)"
 
 

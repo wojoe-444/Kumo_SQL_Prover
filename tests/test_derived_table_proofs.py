@@ -45,6 +45,8 @@ def test_the_prover_declines_outputs_that_do_not_line_up():
     "SELECT b.kind, b.cnt FROM (SELECT t.kind + 1 AS kind, COUNT(*) AS cnt FROM p AS t GROUP BY kind) AS b JOIN u ON u.id = b.kind",  # GROUP BY may name the output
     "SELECT u.id, (SELECT MAX(b.cnt) FROM (SELECT t.kind, COUNT(*) AS cnt FROM p AS t WHERE t.owner = u.id GROUP BY t.kind) AS b) AS m, 1 AS one FROM u",  # reads the enclosing row
     "WITH w AS (SELECT 1 AS one) SELECT b.kind, b.cnt FROM (SELECT t.kind, COUNT(*) AS cnt FROM p AS t GROUP BY t.kind) AS b JOIN u ON u.id = b.kind",
+    "SELECT b.cnt, b.kind FROM (SELECT t.kind, COUNT(*) AS cnt FROM p AS t GROUP BY 1) AS b JOIN u ON u.id = b.kind",  # a position: reordering the outputs would regroup by the count
+    "SELECT b.cnt, b.kind FROM (SELECT t.kind, COUNT(*) AS cnt FROM p AS t GROUP BY t.kind ORDER BY 2 LIMIT 3) AS b JOIN u ON u.id = b.kind",
 ])
 def test_other_shapes_are_never_compared(right):
     left = "SELECT a.k, a.n FROM (SELECT p.kind AS k, COUNT(*) AS n FROM p GROUP BY p.kind) AS a JOIN u ON u.id = a.k"

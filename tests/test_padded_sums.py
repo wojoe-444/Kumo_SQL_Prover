@@ -34,10 +34,10 @@ def test_the_coalesce_moves_into_a_grouped_sum():
 
 def test_the_second_spelling_is_tried_on_every_select_of_both_queries():
     nested = f"SELECT p.id, t.s FROM p LEFT JOIN ({OUTSIDE}) AS t ON t.post = p.id WHERE p.day > COALESCE((SELECT SUM(u.rep) FROM u), 0)"
-    counted = "SELECT c.post, SUM(CASE WHEN c.score = 5 THEN 1 ELSE 0 END) AS n, COALESCE(SUM(c.id), 0) AS s FROM c GROUP BY c.post"
-    assert respell(nested, counted, dialect="postgres") == (
+    other = "SELECT c.post, SUM(CASE WHEN c.score = 5 THEN 1 ELSE 0 END) AS n, COALESCE(SUM(c.id), 0) AS s FROM c GROUP BY c.post"
+    assert respell(nested, other, dialect="postgres") == (
         nested.replace(OUTSIDE, INSIDE),
-        "SELECT c.post, COUNT(CASE WHEN c.score = 5 THEN 1 END) AS n, SUM(COALESCE(c.id, 0)) AS s FROM c GROUP BY c.post",
+        "SELECT c.post, SUM(CASE WHEN c.score = 5 THEN 1 ELSE 0 END) AS n, SUM(COALESCE(c.id, 0)) AS s FROM c GROUP BY c.post",
     )
     assert respell(INSIDE, "SELECT COALESCE(SUM(c.score), 0) AS s FROM c", dialect="postgres") is None
 

@@ -39,6 +39,8 @@ Conditions checked (the derived table is left alone otherwise):
   unqualified name equal to the name of an output, unless that output is the same bare column (a ``GROUP BY`` or
   ``ORDER BY`` that reads an output by its alias would read another column after the renaming);
 * every qualified column of the body names a source declared inside it;
+* the body's ``GROUP BY`` and ``ORDER BY`` name no output by its position (``GROUP BY 1``): the outputs are listed in
+  another order here, and the position would name another one;
 * the two bodies have the same number of outputs and read the same tables the same number of times.
 
 A sub-proof's assumptions are passed on by the caller. At most ``MAX_PROOFS`` sub-proofs are tried for a pair, on
@@ -83,6 +85,8 @@ def _candidate(select: exp.Select) -> bool:
         return False
     if any(join.args.get("using") or join.args.get("method") for join in reader.args.get("joins") or []):
         return False
+    if _positional_key(select):
+        return False  # the items are reordered below, and a position would then name another one
     names = [(item.alias_or_name or "").lower() for item in select.expressions]
     if "" in names or len(set(names)) != len(names):
         return False
@@ -98,6 +102,20 @@ def _candidate(select: exp.Select) -> bool:
             if not (isinstance(item, exp.Column) and not item.table):
                 return False  # GROUP BY / ORDER BY / HAVING may be reading an output by its alias
     return True
+
+
+def _positional_key(select: exp.Select) -> bool:
+    """Whether the select's own ``GROUP BY`` or ``ORDER BY`` names an output by its position (``GROUP BY 1``)."""
+
+    group, order = select.args.get("group"), select.args.get("order")
+    for node in group.walk() if group is not None else ():
+        if isinstance(node, exp.Literal) and not node.is_string and isinstance(node.parent, (exp.Group, exp.Rollup, exp.Cube, exp.GroupingSets, exp.Tuple, exp.Paren)):
+            return True
+    for key in order.expressions if order is not None else ():
+        key = key.this if isinstance(key, exp.Ordered) else key
+        if isinstance(key, exp.Literal) and not key.is_string:
+            return True
+    return False
 
 
 def _candidates(tree: exp.Expression) -> list[exp.Select]:

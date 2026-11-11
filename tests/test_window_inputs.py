@@ -83,6 +83,7 @@ def test_the_input_lists_columns_in_the_order_the_reader_uses_them():
     "SELECT p.id AS a, RANK() OVER (ORDER BY x.kind) AS r FROM p",  # a column of no source of the select
     "SELECT RANK() OVER () AS r FROM p",  # no input column at all
     "SELECT *, RANK() OVER (ORDER BY p.kind) AS r FROM p",
+    "SELECT RANK() OVER (ORDER BY COUNT(*)) AS r, p.kind FROM p GROUP BY 2",  # a position: the rebuilt select list would regroup by another item
 ])
 def test_other_shapes_are_left_alone(sql):
     assert step_one(sql) is None
