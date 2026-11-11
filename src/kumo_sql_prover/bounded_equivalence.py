@@ -42,7 +42,7 @@ from typing import Callable, Mapping, Sequence
 import sqlglot
 from sqlglot import exp
 
-from .ast_utils import MAX_EXPANDED_READS, UnmodeledConstruct, distinct_on, drop_case_conflicts, expand_group_by_all, expanded_reads, extended_grouping, is_call, spell_for_duckdb, star_modified
+from .ast_utils import MAX_EXPANDED_READS, UnmodeledConstruct, distinct_on, drop_case_conflicts, expand_group_by_all, expanded_reads, is_call, spell_for_duckdb, star_modified
 from .duckdb_load import small_database
 from .set_operations import positional_sql_pair
 from .solver_lock import Z3_MISSING, bounded_solver, serialized
@@ -529,7 +529,8 @@ class Rel:
 
 
 class Scope:
-    def __init__(self, cols, parent=None, aliases=None, group=None, alias_first=False, hidden=(), window=None, index=None, picker=None, group_keys=None):
+    def __init__(self, cols, parent=None, aliases=None, group=None, alias_first=False, hidden=(), window=None, index=None, picker=None, group_keys=None, grouping=None):
+        self.grouping = grouping  # SQL text of every grouping key -> 1 when it is rolled up in this row's grouping set, else 0
         self.picker = picker  # position in ``cols`` -> the value of an ungrouped column (an arbitrary member of the group)
         self.group_keys = group_keys  # SQL text of each GROUP BY expression -> its value
         self.window = window  # WindowCtx of the select being projected
@@ -814,8 +815,6 @@ class Compiler:
         source = Rel(source.cols, source.kinds, rows, source.hidden, source.first)
         items = list(node.expressions)
         aggregated = self._aggregated(node)
-        if self._windowed(node) and (aggregated or node.args.get("group") is not None):
-            raise Unsupported("window function over a grouped query")
         if node.args.get("group") is not None or aggregated:
             out = self.grouped(node, source, items, outer)
         else:
@@ -836,7 +835,7 @@ class Compiler:
             for found in target.find_all(*AGGREGATES, exp.GroupConcat, exp.AnyValue, exp.ArrayAgg, exp.Anonymous):
                 if isinstance(found, exp.Anonymous) and not _single_value(found):
                     continue
-                if found.find_ancestor(exp.Select) is node and found.find_ancestor(exp.Window) is None:
+                if found.find_ancestor(exp.Select) is node and not _window_call(found):
                     return True
         return False
 
@@ -1164,7 +1163,7 @@ class Compiler:
                     raise Unsupported("ORDER BY position")
                 value = cells[position]
             else:
-                ordering = Scope(scope.cols, scope.parent, dict(outputs), scope.group, alias_first=True, hidden=scope.hidden, window=scope.window, index=scope.index, picker=scope.picker, group_keys=scope.group_keys)
+                ordering = Scope(scope.cols, scope.parent, dict(outputs), scope.group, alias_first=True, hidden=scope.hidden, window=scope.window, index=scope.index, picker=scope.picker, group_keys=scope.group_keys, grouping=scope.grouping)
                 value = self.expr(target, ordering)
             keys.append((value, descending, item.args.get("nulls_first")))
         return keys
@@ -1180,42 +1179,124 @@ class Compiler:
         order = node.args.get("order")
         scopes = [self._scope(source, row, outer) for row in source.rows]
         alias_nodes = {i.alias.lower(): i.this for i in items if isinstance(i, exp.Alias)}
-        key_nodes = []
-        if group is not None:
-            if extended_grouping(group):
-                raise Unsupported("grouping sets")
-            for key in group.expressions:
-                if isinstance(key, exp.Literal) and not key.is_string and not self.group_constants:
-                    position = _whole(key) - 1
-                    if not 0 <= position < len(items):
-                        raise Unsupported("GROUP BY position")
-                    chosen = items[position]
-                    key = chosen.this if isinstance(chosen, exp.Alias) else chosen
-                key_nodes.append(self._select_item_for(key, items, source))
         for scope in scopes:
             scope.aliases = {k: (lambda e=e, s=scope: self.expr(e, s)) for k, e in alias_nodes.items()}
-        keys = []
-        for scope in scopes:
-            keys.append([self._group_key(k, scope) for k in key_nodes])
-        key_sql = [k.sql() for k in key_nodes]
+        # One grouping per grouping set: a plain GROUP BY has one, no GROUP BY has the empty one (a row even over no rows).
+        sets = self._grouping_sets(group, items, source)
+        if len(sets) * max(len(source.rows), 1) > MAX_ROWS:
+            raise Unsupported("grouping too large for the bound")
+        key_nodes = {k.sql(): k for keys in sets for k in keys}
+        key_values = {sql: [self._group_key(k, scope) for scope in scopes] for sql, k in key_nodes.items()}
+        entries: list[tuple[Scope, object]] = []
+        for keys in sets:
+            in_set = list(dict.fromkeys(k.sql() for k in keys))
+            # a key of another grouping set is NULL in this one's rows (unless it is one of this set's columns, spelled differently)
+            grouped_here = lambda sql: sql in in_set or bool(scopes) and any(key_values[sql][0] is key_values[other][0] for other in in_set)
+            rolled = [sql for sql in key_nodes if not grouped_here(sql)]
+            blanks = {sql: null_value(self._null_kind(key_values[sql])) for sql in rolled}
+            rolled_positions = {
+                position: blanks[sql]
+                for sql in rolled if scopes
+                for position, (_, _, value) in enumerate(scopes[0].cols) if value is key_values[sql][0]
+            }
+            bits = {sql: int(sql in rolled) for sql in key_nodes}
+            if in_set:
+                for i, row in enumerate(source.rows):
+                    mine = [key_values[sql][i] for sql in in_set]
+                    members = [z3.And(source.rows[j].present, *[same(a, key_values[sql][j]) for a, sql in zip(mine, in_set)]) for j in range(len(source.rows))]
+                    earlier = [members[j] for j in range(i)]
+                    exists = z3.And(row.present, z3.Not(z3.Or(*earlier))) if earlier else row.present
+                    known = {sql: key_values[sql][i] for sql in key_nodes if sql not in blanks}
+                    known.update(blanks)
+                    scope = Scope(scopes[i].cols, outer, None, Group(members, scopes), hidden=scopes[i].hidden,
+                                  picker=self._picker(scopes, i, members, mine, rolled_positions), group_keys=known or None, grouping=bits)
+                    entries.append((scope, exists))
+            else:
+                members = [r.present for r in source.rows]
+                # without keys one row always comes out, built from the (possibly empty) group
+                blank = [(q, n, null_value(k)) for (q, n), k in zip(source.cols, source.kinds)]
+                scope = Scope(blank, outer, None, Group(members, scopes), picker=self._picker(scopes, None, members, [], rolled_positions),
+                              group_keys=dict(blanks) or None, grouping=bits)
+                entries.append((scope, _true()))
+        for scope, _ in entries:
+            scope.aliases = {k: (lambda e=e, s=scope: self.expr(e, s)) for k, e in alias_nodes.items()}
+        # HAVING decides which groups exist; window functions then run over those groups
+        present = [z3.And(exists, truth(self.expr(having.this, scope))) if having is not None else exists for scope, exists in entries]
+        if self._windowed(node):
+            context = WindowCtx([Row(p, []) for p in present], [scope for scope, _ in entries])
+            for index, (scope, _) in enumerate(entries):
+                scope.window, scope.index = context, index
+        named = [isinstance(i, (exp.Alias, exp.Column)) for i in items]
         out_rows: list[Row] = []
-        if key_nodes:
-            for i, row in enumerate(source.rows):
-                members = [z3.And(source.rows[j].present, *[same(a, b) for a, b in zip(keys[i], keys[j])]) for j in range(len(source.rows))]
-                earlier = [members[j] for j in range(i)]
-                exists = z3.And(row.present, z3.Not(z3.Or(*earlier))) if earlier else row.present
-                scope = Scope(scopes[i].cols, outer, None, Group(members, scopes), hidden=scopes[i].hidden,
-                              picker=self._picker(scopes, i, members, keys[i]), group_keys=dict(zip(key_sql, keys[i])) or None)
-                scope.aliases = {k: (lambda e=e, s=scope: self.expr(e, s)) for k, e in alias_nodes.items()}
-                out_rows.append(self._group_row(items, names, scope, having, order, outer, exists))
-        else:
-            members = [r.present for r in source.rows]
-            # without GROUP BY one row always comes out, built from the (possibly empty) group
-            blank = [(q, n, null_value(k)) for (q, n), k in zip(source.cols, source.kinds)]
-            scope = Scope(blank, outer, {k: (lambda e=e: self.expr(e, scope)) for k, e in alias_nodes.items()}, Group(members, scopes),
-                          picker=self._picker(scopes, None, members, []))
-            out_rows.append(self._group_row(items, names, scope, having, order, outer, _true()))
+        for (scope, _), exists in zip(entries, present):
+            cells = [self.expr(i.this if isinstance(i, exp.Alias) else i, scope) for i in items]
+            keys = self._sort_keys(order, names, named, cells, scope, outer) if order is not None else None
+            out_rows.append(Row(exists, cells, keys))
         return self._finish(names, out_rows)
+
+    @staticmethod
+    def _null_kind(values: list[V]) -> str:
+        kind = values[0].kind if values else "null"
+        return "null" if kind == "unsupported" else kind
+
+    def _grouping_sets(self, group, items, source: Rel) -> list[list]:
+        """The key expressions of every grouping set of a GROUP BY: ``ROLLUP``, ``CUBE`` and ``GROUPING SETS`` items are
+        expanded and combined with the plain keys next to them (``GROUP BY a, ROLLUP (b)`` is ``(a, b), (a)``)."""
+
+        if group is None:
+            return [[]]
+        if any(group.args.get(k) for k in ("rollup", "cube", "grouping_sets", "totals")):
+            # MySQL's ``WITH ROLLUP``: what it returns over no rows is not what ROLLUP () returns in the replay engine
+            raise Unsupported("WITH ROLLUP, WITH CUBE or WITH TOTALS")
+
+        def key(node):
+            if isinstance(node, exp.Literal) and not node.is_string and not self.group_constants:
+                position = _whole(node) - 1
+                if not 0 <= position < len(items):
+                    raise Unsupported("GROUP BY position")
+                chosen = items[position]
+                node = chosen.this if isinstance(chosen, exp.Alias) else chosen
+            return self._select_item_for(node, items, source)
+
+        def unit(node) -> list:  # one element of a ROLLUP, CUBE or GROUPING SETS list: a key or a parenthesized list of keys
+            if isinstance(node, exp.Tuple):
+                return [key(e) for e in node.expressions]
+            return [key(node.this if isinstance(node, exp.Paren) else node)]
+
+        def sets_of(item) -> list[list]:
+            if isinstance(item, exp.Rollup):
+                units = [unit(e) for e in item.expressions]
+                return [[k for u in units[:n] for k in u] for n in range(len(units), -1, -1)]
+            if isinstance(item, exp.Cube):
+                units = [unit(e) for e in item.expressions]
+                if len(units) > 4:
+                    raise Unsupported("more than 16 grouping sets")
+                return [[k for n, u in enumerate(units) if mask >> n & 1 for k in u] for mask in range(2 ** len(units) - 1, -1, -1)]
+            if isinstance(item, exp.GroupingSets):
+                return [s for e in item.expressions for s in (sets_of(e) if isinstance(e, (exp.Rollup, exp.Cube, exp.GroupingSets)) else [unit(e)])]
+            if isinstance(item, exp.Tuple) and not item.expressions:
+                return [[]]
+            return [[key(item)]]
+
+        sets: list[list] = [[]]
+        for item in group.expressions:
+            sets = [left + right for left in sets for right in sets_of(item)]
+            if len(sets) > 16:
+                raise Unsupported("more than 16 grouping sets")
+        return sets
+
+    def _e_Grouping(self, node, scope):
+        """``GROUPING(a, b)``: one bit per argument, leftmost first, set when the argument is not a key of the row's grouping set."""
+
+        bits = scope.grouping
+        if bits is None:
+            raise Unsupported("GROUPING outside a grouped query")
+        value = 0
+        for argument in node.expressions:
+            if argument.sql() not in bits:
+                raise Unsupported("GROUPING of an expression that is not a grouping key")
+            value = value * 2 + bits[argument.sql()]
+        return const(value, "int")
 
     def _select_item_for(self, key, items, source: Rel):
         """MySQL reads an unqualified GROUP BY name that several FROM columns share as the select item of that name
@@ -1234,7 +1315,7 @@ class Compiler:
             return key
         return chosen[0]
 
-    def _picker(self, scopes: list[Scope], rep: int | None, members: list, keys: list[V]):
+    def _picker(self, scopes: list[Scope], rep: int | None, members: list, keys: list[V], rolled: Mapping[int, V] | None = None):
         """The value of a column that is neither grouped nor aggregated.
 
         SQL engines return it from an arbitrary row of the group, so the encoding picks a row freely
@@ -1251,6 +1332,8 @@ class Compiler:
             if own is not None and any(own is key for key in keys):
                 cache[position] = own
                 return own
+            if rolled and position in rolled:  # a key of another grouping set: NULL in this one's rows
+                return rolled[position]
             if own is not None and own.kind == "unsupported":
                 raise Unsupported(f"column type {own.lit}")
             cells = [s.cols[position][2] for s in scopes]
@@ -1277,14 +1360,6 @@ class Compiler:
             except Unsupported:
                 pass
         return self.expr(node, scope)
-
-    def _group_row(self, items, names, scope: Scope, having, order, outer, exists) -> Row:
-        present = exists
-        if having is not None:
-            present = z3.And(present, truth(self.expr(having.this, scope)))
-        cells = [self.expr(i.this if isinstance(i, exp.Alias) else i, scope) for i in items]
-        keys = self._sort_keys(order, names, [isinstance(i, (exp.Alias, exp.Column)) for i in items], cells, scope, outer) if order is not None else None
-        return Row(present, cells, keys)
 
     # -- ORDER BY / LIMIT ----------------------------------------------------------------------
 
@@ -1802,7 +1877,7 @@ class Compiler:
                 total = []
                 for j in range(len(context.rows)):
                     first = z3.Not(z3.Or(*[
-                        z3.And(peers[k], before[k], *[same(x, y) for (x, _), (y, _) in zip(keyed[k][1], keyed[j][1])])
+                        z3.And(peers[k], before[k], *[same(x, y) for (x, *_), (y, *_) in zip(keyed[k][1], keyed[j][1])])
                         for k in range(j)
                     ])) if j else _true()
                     total.append(z3.If(z3.And(peers[j], before[j], first), 1, 0))
@@ -2012,6 +2087,16 @@ class Compiler:
             best = z3.If(take, v.val, best)
             have = z3.Or(have, p)
         return V(kind, best, z3.Not(have))
+
+
+def _window_call(node: exp.Expression) -> bool:
+    """Is ``node`` the function of a window (``SUM(x) OVER (..)``), not an aggregate of the query? An aggregate inside a
+    window's argument, partition or order (``SUM(SUM(x)) OVER (PARTITION BY MAX(y))``) is an aggregate of the query."""
+
+    parent = node.parent
+    if isinstance(parent, exp.Filter) and parent.this is node:
+        node, parent = parent, parent.parent
+    return isinstance(parent, exp.Window) and parent.this is node
 
 
 def _single_value(node: exp.Expression) -> bool:

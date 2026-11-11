@@ -237,3 +237,70 @@ def test_the_two_frames_that_do_not_depend_on_ties():
 ])
 def test_filter_fetch_and_frames_match_the_replay(sql):
     assert agrees_with_replay(sql)
+
+
+# --- ROLLUP, CUBE, GROUPING SETS, GROUPING() ---------------------------------------------------------
+
+
+def test_rollup_is_the_union_of_its_groupings():
+    same("select a, sum(b) from t group by rollup (a)", "select a, sum(b) from t group by a union all select null, sum(b) from t")
+    same("select a, b, count(*) from t group by cube (a, b)", "select a, b, count(*) from t group by grouping sets ((a, b), (a), (b), ())")
+    same("select a, b, count(*) from t group by a, rollup (b)", "select a, b, count(*) from t group by grouping sets ((a, b), (a))")
+    same(
+        "select a, b, count(*), grouping(a, b) from t group by rollup (a, b)",
+        "select a, b, count(*), 0 from t group by a, b union all select a, null, count(*), 1 from t group by a union all select null, null, count(*), 3 from t",
+    )
+    # the grand total exists over an empty table; a plain GROUP BY returns nothing there
+    assert different("select a, sum(b) from t group by rollup (a)", "select a, sum(b) from t group by a", rows=1)["t"] == []
+    # a NULL key and a rolled-up key look alike; GROUPING tells them apart
+    different("select a, count(*) from t group by rollup (a)", "select a, count(*) from t group by a union all select a, count(*) from t group by a", rows=1)
+    different("select grouping(a) from t group by rollup (a)", "select 0 from t group by rollup (a)", rows=1)
+    # a duplicated grouping set repeats its rows
+    different("select a from t group by grouping sets (a, a)", "select a from t group by a", rows=1)
+    unsupported("select a, count(*) from t group by a with rollup", "select a, count(*) from t group by rollup (a)", "WITH ROLLUP")
+    unsupported("select grouping(b) from t group by rollup (a)", "select 0 from t group by rollup (a)", "GROUPING")
+
+
+@pytest.mark.parametrize("sql", [
+    "select a, b, count(*), sum(b), grouping(a), grouping(a, b), grouping(b, a) from t group by rollup (a, b)",
+    "select a, b, count(*), max(a) from t group by cube (a, b)",
+    "select a, b, min(b), grouping(b) from t group by grouping sets ((a, b), a, ())",
+    "select t.a, count(u.c), grouping(t.a) from t left join u on t.a = u.a group by grouping sets ((t.a), ())",
+    "select a + 1, count(*) from t group by rollup (a) having count(*) > 1 or grouping(a) = 1",
+    "select a, b, count(*) from t group by a, rollup (b)",
+    "select a, count(*) from t group by grouping sets (a, a, ())",
+    "select a, count(distinct b) filter (where b > 0), grouping(a) from t group by rollup (a)",
+])
+def test_grouping_sets_match_the_replay(sql):
+    assert agrees_with_replay(sql)
+
+
+# --- window functions over the rows of a grouped query -----------------------------------------------
+
+
+def test_a_window_function_runs_over_the_groups():
+    same("select a, sum(count(*)) over () from t group by a", "select a, (select count(*) from t) from t group by a")
+    same("select a, count(*) over () from t group by a", "select a, (select count(distinct a) + max(case when a is null then 1 else 0 end) from t) from t group by a")
+    same("select a, rank() over (order by count(*) desc, a) from t group by a having count(*) > 0", "select a, row_number() over (order by c desc, a) from (select a, count(*) as c from t group by a) x")
+    same("select sum(b), count(*) over () from t", "select sum(b), 1 from t")
+    # HAVING removes groups before the window sees them
+    different("select a, count(*) over () from t group by a having a > 0", "select a, n from (select a, count(*) over () as n from t group by a) x where a > 0")
+    different("select a, sum(sum(b)) over () from t group by a", "select a, sum(b) from t group by a")
+
+
+@pytest.mark.parametrize("sql", [
+    "select a, count(*), sum(count(*)) over (), count(*) over (), max(sum(b)) over (order by a) from t group by a",
+    "select a, b, row_number() over (partition by a order by b), dense_rank() over (order by a), lag(b) over (partition by a order by b) from t group by a, b",
+    "select a, sum(b), rank() over (order by sum(b), a) from t group by a having count(*) > 1 or a is null",
+    "select count(*), sum(a), count(*) over (), sum(sum(a)) over () from t",
+    "select a, count(*) over (partition by count(*)) from t group by a",
+])
+def test_windows_over_groups_match_the_replay(sql):
+    assert agrees_with_replay(sql)
+
+
+def test_dense_rank_counts_the_distinct_keys_before_a_row():
+    # DENSE_RANK used to fail on its own sort keys
+    same("select a, dense_rank() over (order by a) from t where a is not null", "select a, (select count(distinct x.a) from t x where x.a <= t.a) from t where a is not null")
+    different("select a, dense_rank() over (order by a) from t", "select a, rank() over (order by a) from t", rows=3)
+    assert agrees_with_replay("select a, b, dense_rank() over (partition by a order by b desc), dense_rank() over (order by a, b) from t")
