@@ -42,6 +42,13 @@ the test a top-level ``AND`` part of the ``WHERE`` of the select that reads the 
 
 The subquery added reads the same table under a fresh alias with the derived table's own ``WHERE``, because a
 window is computed over the rows that pass it.
+
+**Reading the table directly.** What is left of the derived table only filters one table and lists its columns.
+When it is the reading select's only source, the select holds no other query, star or window, and every column
+it reads is one the derived table passes through, the select is written over the table itself
+(``SELECT a.player_id FROM activity AS a WHERE a.event_date = (..)``), with the derived table's filter joined
+to its own. That is the spelling the same rows have when written with a subquery in the first place, which
+the rules that follow (``extreme_rows``) and the prover read.
 """
 
 from __future__ import annotations
@@ -196,6 +203,42 @@ def _rewrite(select: exp.Select, source: exp.Subquery, known: dict[str, list[str
     rest = [part.copy() for part in parts if part is not chosen]
     rest = [exp.Paren(this=part) if isinstance(part, exp.Or) else part for part in rest]
     select.set("where", exp.Where(this=_all(rest)) if rest else None)
+    _merge(select, source, outputs, alias, own_name)
+
+
+def _merge(select: exp.Select, source: exp.Subquery, outputs: dict[str, str | None], alias: str, own_name: str) -> None:
+    """Read the filtered table directly when the derived table is all the select reads (module docstring, last part)."""
+
+    inner = source.this
+    from_ = select.args.get(FROM_KEY)
+    if select.args.get("joins") or from_ is None or from_.this is not source or any(column is None for column in outputs.values()):
+        return
+    for walked in select.walk():
+        if walked is select or walked is source or _inside(walked, source):
+            continue
+        if isinstance(walked, (exp.Query, exp.Subquery, exp.Exists, exp.Lambda, exp.Star, exp.Window)):
+            return
+    columns = [c for c in select.find_all(exp.Column) if not _inside(c, source)]
+    for column in columns:
+        if column.args.get("db") or column.name.lower() not in outputs or (column.table and column.table.lower() != alias):
+            return
+    for item in select.expressions:
+        # a select alias that takes the name of a column the select also reads: ORDER BY may mean either
+        name = item.alias.lower() if isinstance(item, exp.Alias) else ""
+        if name in outputs and not (isinstance(item.this, exp.Column) and item.this.name.lower() == name):
+            return
+    for position, item in enumerate(list(select.expressions)):
+        if isinstance(item, exp.Column) and outputs[item.name.lower()] != item.name.lower():
+            select.expressions[position].replace(exp.alias_(item.copy(), item.name))
+    for column in [c for c in select.find_all(exp.Column) if not _inside(c, source)]:
+        column.replace(exp.column(outputs[column.name.lower()], table=own_name))
+    outer = select.args.get("where")
+    tests = [part.copy() for part in conjuncts(inner.args["where"].this)]
+    tests += [part.copy() for part in conjuncts(outer.this)] if outer is not None else []
+    tests = [exp.Paren(this=part) if isinstance(part, exp.Or) else part for part in tests]
+    select.set("where", exp.Where(this=_all(tests)))
+    table = select_sources(inner)[0].copy()
+    select.set(FROM_KEY, exp.From(this=table))
 
 
 def _all(tests: list[exp.Expression]) -> exp.Expression:

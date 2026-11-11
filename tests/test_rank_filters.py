@@ -42,7 +42,7 @@ def run(tables, *queries):
     return [sorted(map(repr, result)) for result in run_unoptimized(db, *[sqlglot.transpile(sql, read="mysql", write="duckdb")[0] for sql in queries])]
 
 
-FIRST = "SELECT a, c FROM (SELECT a, c FROM t WHERE t.b = (SELECT MIN(kqr0.b) FROM t AS kqr0 WHERE kqr0.a = t.a)) AS x"
+FIRST = "SELECT t.a, t.c FROM t WHERE t.b = (SELECT MIN(kqr0.b) FROM t AS kqr0 WHERE kqr0.a = t.a)"
 LAST = FIRST.replace("MIN", "MAX")
 
 
@@ -66,18 +66,37 @@ def test_the_rest_of_both_filters_is_kept():
     )
     # no partition: the whole table's first rows
     assert rewritten("SELECT a FROM (SELECT a, RANK() OVER (ORDER BY b) AS r FROM t) AS x WHERE r = 1") == (
-        "SELECT a FROM (SELECT a FROM t WHERE t.b = (SELECT MIN(kqr0.b) FROM t AS kqr0)) AS x"
+        "SELECT t.a FROM t WHERE t.b = (SELECT MIN(kqr0.b) FROM t AS kqr0)"
+    )
+
+
+def test_the_table_is_read_directly_only_when_nothing_else_reads_the_derived_table():
+    inside = "(SELECT a, c FROM t WHERE t.b = (SELECT MIN(kqr0.b) FROM t AS kqr0 WHERE kqr0.a = t.a)) AS x"
+    ranked = "(SELECT a, c, RANK() OVER (PARTITION BY a ORDER BY b) AS r FROM t) AS x"
+    # the rest of the select comes along: its own filter, grouping, DISTINCT and ordering
+    assert rewritten(f"SELECT DISTINCT x.a, c + 1 AS d FROM {ranked} WHERE r = 1 AND x.c > 0 ORDER BY x.a") == (
+        "SELECT DISTINCT t.a, t.c + 1 AS d FROM t WHERE t.b = (SELECT MIN(kqr0.b) FROM t AS kqr0 WHERE kqr0.a = t.a) AND t.c > 0 ORDER BY t.a"
+    )
+    assert rewritten(f"SELECT a, COUNT(c) FROM {ranked} WHERE r = 1 GROUP BY a HAVING MAX(c) > 1") == (
+        "SELECT t.a, COUNT(t.c) FROM t WHERE t.b = (SELECT MIN(kqr0.b) FROM t AS kqr0 WHERE kqr0.a = t.a) GROUP BY t.a HAVING MAX(t.c) > 1"
+    )
+    # kept as a derived table: a second source, a nested query, an alias that takes a column's name, a computed column
+    assert rewritten(f"SELECT x.a FROM {ranked} JOIN u ON u.a = x.a WHERE x.r = 1") == f"SELECT x.a FROM {inside} JOIN u ON u.a = x.a"
+    assert rewritten(f"SELECT a FROM {ranked} WHERE r = 1 AND c IN (SELECT e FROM u)") == f"SELECT a FROM {inside} WHERE c IN (SELECT e FROM u)"
+    assert rewritten(f"SELECT a + 1 AS a FROM {ranked} WHERE r = 1 ORDER BY a") == f"SELECT a + 1 AS a FROM {inside} ORDER BY a"
+    assert rewritten("SELECT a FROM (SELECT a, c + 1 AS c, RANK() OVER (PARTITION BY a ORDER BY b) AS r FROM t) AS x WHERE r = 1") == (
+        "SELECT a FROM (SELECT a, c + 1 AS c FROM t WHERE t.b = (SELECT MIN(kqr0.b) FROM t AS kqr0 WHERE kqr0.a = t.a)) AS x"
     )
 
 
 def test_a_value_equal_to_its_windowed_extreme():
-    by_c = "SELECT a, c FROM (SELECT a, c FROM t WHERE t.c = (SELECT MIN(kqr0.c) FROM t AS kqr0 WHERE kqr0.a = t.a)) AS x"
+    by_c = "SELECT t.a, t.c FROM t WHERE t.c = (SELECT MIN(kqr0.c) FROM t AS kqr0 WHERE kqr0.a = t.a)"
     assert rewritten("SELECT a, c FROM (SELECT a, c, MIN(c) OVER (PARTITION BY a) AS m FROM t) AS x WHERE c = m") == by_c
     assert rewritten("SELECT a, c FROM (SELECT a, c, MIN(c) OVER (PARTITION BY a ORDER BY c) AS m FROM t) AS x WHERE x.m = x.c") == by_c
     assert rewritten("SELECT a, c FROM (SELECT a, c, MAX(c) OVER (PARTITION BY a ORDER BY c DESC) AS m FROM t) AS x WHERE c = m") == by_c.replace("MIN", "MAX")
     # through a renamed column, and FIRST_VALUE of a NOT NULL column
     assert rewritten("SELECT a, w FROM (SELECT a, b AS w, FIRST_VALUE(b) OVER (PARTITION BY a ORDER BY b) AS m FROM t) AS x WHERE w = m") == (
-        "SELECT a, w FROM (SELECT a, b AS w FROM t WHERE t.b = (SELECT MIN(kqr0.b) FROM t AS kqr0 WHERE kqr0.a = t.a)) AS x"
+        "SELECT t.a, t.b AS w FROM t WHERE t.b = (SELECT MIN(kqr0.b) FROM t AS kqr0 WHERE kqr0.a = t.a)"
     )
 
 
@@ -183,6 +202,8 @@ def test_without_the_declared_facts_nothing_is_proved():
 QUERIES = [
     "SELECT a, c FROM (SELECT a, c, RANK() OVER (PARTITION BY a ORDER BY b) AS r FROM t) AS x WHERE r = 1",
     "SELECT a, c FROM (SELECT a, c, DENSE_RANK() OVER (PARTITION BY a ORDER BY b DESC) AS r FROM t) AS x WHERE r <= 1",
+    "SELECT DISTINCT x.a, c + 1 AS d FROM (SELECT *, RANK() OVER (PARTITION BY a ORDER BY b) AS r FROM t WHERE d > 0) AS x WHERE r = 1 AND x.c > 0",
+    "SELECT a, COUNT(c), MAX(w) FROM (SELECT a, c, d AS w, RANK() OVER (PARTITION BY a ORDER BY b) AS r FROM t) AS x WHERE r = 1 GROUP BY a HAVING COUNT(*) > 0",
     "SELECT a, c FROM (SELECT a, c, ROW_NUMBER() OVER (PARTITION BY a ORDER BY b DESC) AS r FROM t) AS x WHERE r < 2",
     "SELECT a FROM (SELECT a, RANK() OVER (ORDER BY b) AS r FROM t WHERE c > 0 OR d = 1) AS x WHERE r = 1",
     "SELECT x.c, u.e FROM (SELECT *, RANK() OVER (PARTITION BY a ORDER BY b DESC) AS r FROM t AS s WHERE c > 0) AS x JOIN u ON u.a = x.a WHERE u.e > 0 AND x.r = 1",

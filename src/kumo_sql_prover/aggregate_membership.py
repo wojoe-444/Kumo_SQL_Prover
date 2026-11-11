@@ -207,9 +207,10 @@ def _site(node: exp.In, known: dict[str, list[str]]):
                 return None
         elif isinstance(walked, exp.Star) and not isinstance(walked.parent, exp.Count):
             return None
+    grouped_names = {_named_column(key) for key in (inner.args["group"].expressions if inner.args.get("group") is not None else [])}
     for item in inner.expressions:
-        # an alias that takes the name of another column: GROUP BY and ORDER BY may then read either one
-        if isinstance(item, exp.Alias) and item.alias.lower() in columns and _named_column(item.this) != item.alias.lower():
+        # an alias that takes the name of another column, which GROUP BY then names: the column or the alias
+        if isinstance(item, exp.Alias) and item.alias.lower() in grouped_names and _named_column(item.this) != item.alias.lower():
             return None
     lefts = _lefts(node)
     if len(lefts) != len(outputs):

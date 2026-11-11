@@ -4886,6 +4886,11 @@ def normalize(
         from .rank_filters import read_rank_filters
 
         tree = read_rank_filters(tree, schema, not_null, keys)  # pre-pass: RANK() .. = 1 keeps the rows holding the partition's MIN or MAX
+        from .extreme_joins import read_extreme_joins
+        from .extreme_rows import read_extreme_rows
+
+        tree = read_extreme_joins(tree, schema, not_null)  # pre-pass: a join with the table's own grouped MIN or MAX is that comparison
+        tree = read_extreme_rows(tree, schema, keys)  # pre-pass: under a key the rows holding a group's MIN or MAX are one row per group
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
     tree = trim_redundant_row_clauses(tree)

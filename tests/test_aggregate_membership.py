@@ -61,6 +61,12 @@ def test_what_membership_cannot_see_is_read_through():
     assert rewritten("SELECT a, c FROM t WHERE (b, a) IN (SELECT m, g.a FROM (SELECT a, MIN(b) AS m FROM t GROUP BY a) AS g)") == plain
 
 
+def test_an_output_alias_that_grouping_does_not_read_is_fine():
+    assert rewritten("SELECT a, c FROM t WHERE (a, b) IN (SELECT a, MIN(b) AS b FROM t GROUP BY a)") == (
+        "SELECT a, c FROM t WHERE t.b = (SELECT MIN(kqm0.b) FROM t AS kqm0 WHERE kqm0.a = t.a)"
+    )
+
+
 def test_a_subquery_of_one_row_compares_each_value():
     assert rewritten("SELECT a FROM t WHERE b IN (SELECT MAX(b) FROM t)") == "SELECT a FROM t WHERE t.b = (SELECT MAX(kqm0.b) FROM t AS kqm0)"
     assert rewritten("SELECT a FROM t WHERE (b, c) IN (SELECT MIN(b), COUNT(*) + 1 FROM t WHERE a > 0)") == (
