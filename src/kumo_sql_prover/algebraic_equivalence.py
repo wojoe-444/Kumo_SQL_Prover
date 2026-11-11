@@ -4876,6 +4876,7 @@ def normalize(
 
     from .mysql_exists_casts import drop_mysql_exists_cast
     from .single_source_columns import qualify_single_source_columns
+    from .derived_anti_join import derived_anti_join
     from .keyed_self_membership import keyed_self_membership
     from .own_group_joins import inner_own_group_join, own_group_join
     from .own_group_keys import keyed_own_group_rows
@@ -4971,6 +4972,7 @@ def normalize(
         wrap_tailed_outer_join_aggregate,
         push_filter_into_wrapped_join,
         drop_one_row_tail,
+        derived_anti_join,
         lambda sel: keyed_self_membership(sel, schema, keys, not_null),
         lambda sel: inner_own_group_join(sel, schema, not_null),
         lambda sel: keyed_own_group_rows(sel, schema, keys, not_null),
