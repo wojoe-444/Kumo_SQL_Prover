@@ -85,8 +85,11 @@ def decide_sqlsolver(job: tuple[int, str, str]) -> Outcome:
         return Outcome("unknown", result.reason[:200], seconds=time.time() - start, **base)
     conditions = list(result.conditions)
     detail = [c.to_json() for c in conditions]
-    if any(c.kind == "foreign_key" for c in conditions):
-        # this harness's random databases do not repair foreign keys, so the proof cannot be re-run on a database that meets them
+    from kumo_sql_prover import statement_values
+
+    if any(c.kind == "foreign_key" or c.kind in statement_values.KINDS for c in conditions):
+        # this harness's random databases do not repair foreign keys, and it cannot hold the clock still between two runs,
+        # so the proof cannot be re-run on a database that meets them
         return Outcome("unchecked", result.reason, detail, 0, seconds=time.time() - start, **base)
     import duckdb  # noqa: F401  (the harness needs it; fail loudly when it is missing)
 

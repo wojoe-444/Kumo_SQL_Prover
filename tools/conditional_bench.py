@@ -210,6 +210,17 @@ def _conditions_of(result) -> list[Condition]:
     return list(result.conditions)
 
 
+def _reads_statement_values(conditions) -> bool:
+    """A proof that also rests on both queries reading the same clock or session (``kumo_sql_prover.statement_values``).
+
+    The executed check runs the two queries one after the other, so it cannot hold that condition: such a proof is
+    reported as unchecked and never scored as conditional."""
+
+    from kumo_sql_prover import statement_values
+
+    return any(c.kind in statement_values.KINDS for c in conditions)
+
+
 def _each_needed(pair: singh.Pair, conditions: list[Condition], options: dict) -> bool:
     """Dropping any one condition makes the prover fail (the set is minimal)."""
 
@@ -252,6 +263,8 @@ def decide_singh(pair: singh.Pair) -> Outcome:
     if result.status is not SmtStatus.PROVEN_CONDITIONALLY:
         return _refuted_or_unknown(pair, trees, texts, result, start, base)
     conditions = _conditions_of(result)
+    if _reads_statement_values(conditions):
+        return Outcome("unchecked", result.reason, [c.to_json() for c in conditions], 0, seconds=time.time() - start, **base)
     checked = singh.Pair(pair.index, texts[0], texts[1], pair.tables, pair.gold)
     witness, ran = _singh_search(checked, trees, conditions, VALIDATION_DATABASES, seed=202)
     if witness:
@@ -329,7 +342,7 @@ def decide_verieql(case: dict, declared: bool = True) -> Outcome:
     if result.status is not SmtStatus.PROVEN_CONDITIONALLY:
         return Outcome("unknown", result.reason[:200], seconds=time.time() - start, **base)
     conditions = _conditions_of(result)
-    if any(c.kind == "foreign_key" and len(c.columns) != 1 for c in conditions):
+    if _reads_statement_values(conditions) or any(c.kind == "foreign_key" and len(c.columns) != 1 for c in conditions):
         # the executed check has no composite foreign key to impose, so the proof cannot be re-checked: not scored as conditional
         return Outcome("unchecked", result.reason, [c.to_json() for c in conditions], 0, seconds=time.time() - start, **base)
     stricter = veri.build_spec(case)  # the spec again, with the conditions as extra constraints
