@@ -124,6 +124,7 @@ from .keyed_join_groups import pull_up_keyed_join
 from .one_row_sources import read_one_row_source
 from .substring_casts import drop_substring_casts
 from .cased_group_sums import unnest_cased_sums
+from .counted_outer_groups import count_outer_groups
 from .discrete_bounds import close_strict_bounds, fold_chained_dates
 from .tuple_membership import expand_row_membership
 from .closed_scalar_filters import fold_scalar_filter, lift_scalar_arithmetic
@@ -4923,6 +4924,7 @@ def normalize(
     if shapes:
         tree = separate_disjoint_unions(tree)
         tree = merge_exclusive_unions(tree)  # a UNION ALL of one query under exclusive filters is one select
+        tree = count_outer_groups(tree, schema, keys)  # before COALESCE(count, 0) is lifted out of its select
     if shapes:
         tree = group_by_named_outputs(tree, schema)  # pre-pass: before any rule reads a key as a column
     tree = expand_grouping_sets(tree)
