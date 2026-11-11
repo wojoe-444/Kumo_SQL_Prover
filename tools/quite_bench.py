@@ -374,11 +374,34 @@ def load_schema(text: str) -> dict[str, Table]:
     return tables
 
 
+# Columns the benchmark's DDL names differently from its queries. Every DSB query that reads the customer's
+# last review date, original or rewritten, writes c_last_review_date_sk (the TPC-DS name since version 2); the
+# DDL keeps the older c_last_review_date. The rewrites were run, so the authors' table had the newer name.
+COLUMN_RENAMES = {"dsb": {"customer": {"c_last_review_date": "c_last_review_date_sk"}}}
+
+
+def rename_columns(tables: dict[str, Table], renames: dict[str, dict[str, str]]) -> dict[str, Table]:
+    """``tables`` with the listed columns renamed in place (order, type and constraints kept)."""
+
+    for name, columns in renames.items():
+        table = tables.get(name)
+        if table is None:
+            continue
+        new = lambda column: columns.get(column, column)  # noqa: E731
+        if any(target in table.columns for target in columns.values()):
+            continue  # the DDL already has the newer name
+        table.columns = {new(column): kind for column, kind in table.columns.items()}
+        table.not_null = {new(column) for column in table.not_null}
+        table.keys = [tuple(new(column) for column in key) for key in table.keys]
+        table.foreign = [(tuple(new(c) for c in mine), parent, theirs) for mine, parent, theirs in table.foreign]
+    return tables
+
+
 def schema_for(benchmark: str, root: Path | None = None) -> dict[str, Table]:
     root = root or CACHE
     relative, digest = SCHEMAS[benchmark]
     path = root / relative if root != CACHE else _download(relative, digest)
-    return load_schema(path.read_text(encoding="utf-8"))
+    return rename_columns(load_schema(path.read_text(encoding="utf-8")), COLUMN_RENAMES.get(benchmark, {}))
 
 
 def _duck_type(pg_type: str) -> str:
