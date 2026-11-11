@@ -34,10 +34,21 @@ with
 * ``COUNT(x)`` as the same sum with ``x_i IS NOT NULL`` added to each ``c_i`` (``x_i``: ``x`` as branch ``i``
   computes it);
 * ``SUM(x)``, for an ``x`` every branch computes from integer literals alone (``1``, a ``CASE`` over them), as
-  ``SUM(CASE WHEN c_1 THEN x_1 ELSE 0 END + ..)``;
+  ``SUM(CASE WHEN c_1 THEN x_1 ELSE 0 END + ..)``, where a ``CASE WHEN y IS NULL THEN a ELSE b END`` inside
+  ``x_i`` is written as ``b`` when ``c_i`` being TRUE leaves ``y`` no way to be NULL (see below);
 * a uniform column, anywhere, as its expression; a varying column outside the aggregates and the linking parts
   as the expression a linking part ``u.v = e`` equates it with;
 * and ``HAVING SUM(ind_1 + .. + ind_n) > 0`` added.
+
+Three readings widen what counts as uniform or as needing no test. ``x_i IS NOT NULL`` is left out of ``c_i``
+when ``x_i`` is a literal, a column declared NOT NULL, or an operand of a comparison among the ``AND`` parts of
+``c_i`` (a comparison is TRUE only when neither operand is NULL). An output that every branch's own conditions
+equate with one and the same column (branch ``i`` returns ``g.first`` under ``ON p.id = g.first``, branch ``j``
+returns ``g.second`` under ``ON p.id = g.second``) is read as that column, which it equals on every row the
+branch returns. A bare column name that several sources have is read as any of them when the remaining
+equalities of the select equate them all. A ``HAVING`` part that says the same as the added one (``s > 0``,
+``s >= 1`` or ``s <> 0`` on the count, written out or by its output name) is dropped: the indicator sum is a
+non-negative integer, so the three tests are the added test.
 
 **Why it is sound.** Inner and cross joins make every ``ON`` part a filter of the product of the sources, and
 ``UNION ALL`` keeps every row of every branch, so the rows the original select groups are the triples (a row
@@ -455,7 +466,20 @@ class _Site:
                 return exp.Sum(this=_indicator_sum(tests, ones))
             if not all(_integer_value(value) for value in values):
                 return None
-            return exp.Sum(this=_indicator_sum(conditions, values))
+            return exp.Sum(this=_indicator_sum(conditions, [settled(value, i) for i, value in enumerate(values)]))
+
+        def settled(value: exp.Expression, branch: int) -> exp.Expression:
+            """``value`` with each ``CASE WHEN y IS NULL THEN a ELSE b END`` read as ``b`` where ``y`` is never NULL."""
+
+            value = exp.Paren(this=value.copy())
+            for case in list(value.find_all(exp.Case)):
+                ifs = case.args.get("ifs") or []
+                if case.this is not None or len(ifs) != 1 or case.args.get("default") is None:
+                    continue
+                test = ifs[0].this.unnest()
+                if isinstance(test, exp.Is) and isinstance(test.expression, exp.Null) and never_null(test.this, branch):
+                    case.replace(case.args["default"].copy())
+            return value.this
 
         def outside(node: exp.Expression, allowed: set[str] = frozenset()) -> exp.Expression | None:
             """A copy whose columns outside the aggregates are read from the rewritten select's sources."""

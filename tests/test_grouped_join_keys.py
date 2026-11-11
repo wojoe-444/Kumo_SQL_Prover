@@ -72,6 +72,7 @@ def test_the_keyed_table_joins_before_the_grouping():
     f"SELECT p.id, g.wins FROM {G} JOIN people AS p ON g.who = p.id OR g.who IS NULL",
     f"SELECT p.id, g.wins FROM {G} JOIN people AS p ON g.wins = p.id",  # tied to the aggregate, not to the key
     f"SELECT p.id, g.wins FROM {G}, people AS p",
+    "SELECT p.id, g.n FROM (SELECT n.id AS who, SUM(g.day) AS n FROM notes AS n LEFT JOIN games AS g ON g.w1 = n.id GROUP BY n.id) AS g JOIN people AS p ON p.id = g.who",  # an outer join inside
     f"SELECT p.id, g.n FROM people AS p JOIN (SELECT w1, w2, COUNT(*) AS n FROM games GROUP BY w1, w2) AS g ON g.w1 = p.id",  # w2 splits a person's rows
     "SELECT p.id, g.n FROM people AS p JOIN (SELECT w1, COUNT(*) AS n FROM games GROUP BY w1, w2) AS g ON g.w1 = p.id",  # a hidden key does too
     "SELECT p.id, g.n FROM people AS p JOIN (SELECT w1, w3, COUNT(*) AS n FROM games GROUP BY w1) AS g ON g.w1 = p.id",  # a loosely grouped output
@@ -157,7 +158,7 @@ QUERIES = [
     f"SELECT g.who, g.wins + 1 AS more FROM people AS p, (SELECT who, COUNT(*) AS wins, MAX(day) AS last FROM {W} WHERE day > 1 GROUP BY who) AS g"
     " WHERE p.id = g.who AND g.last > 3 AND (p.name <> 'x' OR p.name IS NULL)",
     "SELECT p.id, g.n, g.m FROM people AS p JOIN (SELECT w1, w2, COUNT(DISTINCT w3) AS n, AVG(day) AS m FROM games GROUP BY w1, w2) AS g ON g.w1 = p.id AND g.w2 = p.id",
-    "SELECT p.id, g.n FROM (SELECT n.id AS who, SUM(g.day) AS n FROM notes AS n LEFT JOIN games AS g ON g.w1 = n.id GROUP BY n.id) AS g JOIN people AS p ON p.id = g.who",
+    "SELECT p.id, g.n FROM (SELECT n.id AS who, SUM(g.day) AS n FROM notes AS n JOIN games AS g ON g.w1 = n.id GROUP BY n.id) AS g JOIN people AS p ON p.id = g.who",
 ]
 
 

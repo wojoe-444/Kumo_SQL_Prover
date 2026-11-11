@@ -119,6 +119,7 @@ from .one_row_tails import drop_one_row_tail
 from .counted_union_branches import ungroup_counted_branches
 from .grouped_join_keys import join_before_grouping
 from .indicator_sums import indicator_sum_rules
+from .keyed_union_branches import union_of_distinct_rows
 from .union_all_counts import count_over_union_all
 from .string_spelling_rules import string_spelling_rules
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
@@ -4964,6 +4965,7 @@ def normalize(
         wrap_tailed_outer_join_aggregate,
         push_filter_into_wrapped_join,
         drop_one_row_tail,
+        lambda sel: union_of_distinct_rows(sel, schema, keys, not_null),
         lambda sel: count_over_union_all(sel, schema, keys, not_null),
         lambda sel: indicator_sum_rules(sel, schema, keys, not_null),
         lambda sel: ungroup_counted_branches(sel, schema, keys, not_null),
