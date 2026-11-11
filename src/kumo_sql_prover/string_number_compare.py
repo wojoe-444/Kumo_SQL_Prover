@@ -39,7 +39,7 @@ from sqlglot import exp
 _INTEGER = ("TINYINT", "SMALLINT", "MEDIUMINT", "INT", "INTEGER", "BIGINT", "INT64", "BYTEINT", "HUGEINT", "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "INT2", "INT4", "INT8")
 _FLOAT = ("FLOAT", "FLOAT64", "DOUBLE", "REAL", "FLOAT4", "FLOAT8")
 _DECIMAL = ("NUMERIC", "DECIMAL", "BIGNUMERIC", "BIGDECIMAL", "DEC", "NUMBER")
-_STRING = ("STRING", "VARCHAR", "TEXT", "CHAR", "NVARCHAR", "NCHAR", "BPCHAR")
+_STRING = ("STRING", "VARCHAR", "TEXT", "CHAR", "NVARCHAR", "NCHAR", "BPCHAR", "ENUM")  # an ENUM is read as its string when compared with one
 _ARITHMETIC = (exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Mod, exp.IntDiv)
 _NUMBER_NODES = _ARITHMETIC + (exp.Count, exp.Sum, exp.Avg, exp.Abs, exp.Round, exp.Floor, exp.Ceil, exp.Length, exp.Sqrt, exp.Pow, exp.Stddev, exp.Variance)
 _STRING_NODES = tuple(getattr(exp, name) for name in ("Lower", "Upper", "Concat", "ConcatWs", "Substring", "Trim", "Initcap", "Replace", "Repeat", "Reverse"))

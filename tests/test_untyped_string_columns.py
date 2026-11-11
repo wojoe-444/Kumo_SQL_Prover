@@ -228,3 +228,12 @@ def test_a_proof_that_holds_for_both_readings_of_two_names_stays(prover):
     left = "SELECT a.k FROM t AS a JOIN t AS b ON a.k = b.k WHERE a.s = 'x' AND b.s = 'y'"
     right = "SELECT b.k FROM t AS b JOIN t AS a ON b.k = a.k WHERE b.s = 'y' AND a.s = 'x'"
     assert prover(left, right, dialect="mysql", schema={"t": ["k", "s"]}).status is SmtStatus.PROVEN_EQUIVALENT
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+def test_an_enum_column_is_read_as_its_string(prover):
+    # VeriEQL declares ``ACTIVITY_TYPE`` as an ENUM of strings: two names of the table compared with two different strings
+    # are two different values, not the number 0 twice (the pairs of LeetCode 1661 prove under a key on the join columns)
+    options = dict(dialect="mysql", schema={"t": ["k", "s"]}, constraints=_keyed())
+    assert prover(TWO_NAMES, NONE, types={"t": {"s": "ENUM", "k": "INT"}}, **options).status is SmtStatus.PROVEN_EQUIVALENT
+    assert not prover(TWO_NAMES, NONE, types={"t": {"s": "INT", "k": "INT"}}, **options).proven
