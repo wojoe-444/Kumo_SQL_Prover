@@ -18,7 +18,10 @@ Conditions, all checked:
   ``GROUPING SETS``, not part of a larger expression: only a whole key can name an output);
 * the select names exactly one output so (compared without case), written ``<expression> AS name``; the
   expression holds no aggregate, window function or subquery, is not a star, and reads no column whose name is
-  an output name of the select (so it means the same in the ``GROUP BY`` as in the select list);
+  an output name of the select (so it means the same in the ``GROUP BY`` as in the select list). It reads at
+  least one column: a constant is left alone, because an integer written as a key is an output position, and
+  because a name the schema does not list could still be a system column of a source (``ctid``, ``rowid``), which
+  a constant output can be grouped by but an expression over ungrouped columns cannot;
 * every source of the select is a table the schema lists the columns of (no derived table, ``UNNEST``, ``LATERAL``
   or table function, no alias column list), none of them has a column of that name, and the query has no ``WITH``
   (a ``WITH`` table could carry the name of a schema table and other columns);
@@ -101,7 +104,7 @@ def _resolved(select: exp.Select, schema: dict) -> list[tuple[int, exp.Expressio
         if not items or len(items) != 1 or not isinstance(items[0], exp.Alias):
             continue
         value = items[0].this
-        if isinstance(value, _NESTED) or value.find(*_NESTED):
+        if isinstance(value, _NESTED) or value.find(*_NESTED) or value.find(exp.Column) is None:
             continue
         if any(column.name.lower() in outputs for column in value.find_all(exp.Column)):
             continue

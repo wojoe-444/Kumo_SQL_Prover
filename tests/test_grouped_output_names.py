@@ -72,6 +72,8 @@ def test_a_key_that_names_an_output_is_its_expression(sql, expected):
     "SELECT a > 10 AS big, COUNT(*) AS n FROM t GROUP BY GROUPING SETS ((big), ())",
     "SELECT a > 10 AS big, b AS big, COUNT(*) AS n FROM t GROUP BY big, b",  # two outputs of that name
     "SELECT COUNT(*) AS n FROM t GROUP BY n",
+    "SELECT 2 AS two, COUNT(*) AS n FROM t GROUP BY two",  # GROUP BY 2 would be the second output
+    "SELECT 'x' AS rowid, 1 + 1 AS ctid, COUNT(*) AS n FROM t GROUP BY rowid, ctid",
     "SELECT SUM(a) OVER () AS w FROM t GROUP BY w",
     "SELECT (SELECT MAX(x) FROM v) AS m, COUNT(*) AS n FROM t GROUP BY m",
     "SELECT a + 1 AS s, s * 2 AS big FROM t GROUP BY big",  # reads another output name
