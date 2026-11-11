@@ -127,6 +127,8 @@ from .empty_union_operands import drop_empty_union_operand
 from .setop_operand_sources import merge_operand_sources
 from .spread_aggregates import rewrite_spread_aggregates
 from .star_source_columns import list_read_star_columns
+from .existence_joins import read_existence_joins, read_existence_joins_everywhere
+from .integer_expression_bounds import integer_expression_bounds
 from .extreme_group_sources import read_extreme_group_source
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
@@ -4964,6 +4966,8 @@ def normalize(
         tree = _checked_qualification(
             tree, lambda t: _qualify_correlated_columns(_qualify_outer_join_columns(t, schema), schema), schema, dialect, "algebraic_qualification"
         )
+    if shapes:
+        tree = read_existence_joins_everywhere(tree, schema)  # pre-pass: anti-, semi- and marker joins as EXISTS tests
     tree = merge_distinct_partitions(tree)
     if shapes:
         tree = read_counted_group_sources(tree)  # pre-pass: COUNT(*) pushed below a chain of joins, from the inside
@@ -4990,6 +4994,8 @@ def normalize(
         count_column_bounds,
         read_extreme_group_source,
         merge_operand_sources,
+        lambda sel: read_existence_joins(sel, schema),
+        lambda sel: integer_expression_bounds(sel, types_map, dialect),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
