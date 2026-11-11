@@ -42,11 +42,12 @@ from typing import Callable, Mapping, Sequence
 import sqlglot
 from sqlglot import exp
 
-from . import bounded_abstraction, bounded_keyed_joins
+from . import bounded_abstraction, bounded_count_division, bounded_keyed_joins
 from .ast_utils import MAX_EXPANDED_READS, UnmodeledConstruct, distinct_on, drop_case_conflicts, expand_group_by_all, expanded_reads, is_call, spell_for_duckdb, star_modified
 from .duckdb_load import small_database
 from .set_operations import positional_sql_pair
-from .solver_lock import Z3_MISSING, bounded_solver, serialized
+from .solver_lock import Z3_MISSING, bounded_solver, serialized, sweep
+from .solver_lock import bound as apply_limits
 from .type_names import invalid_type_name
 
 try:  # pragma: no cover - exercised through the tests
@@ -2254,6 +2255,20 @@ def _like_regex(pattern: str):
 # --- comparing two relations -------------------------------------------------------------------
 
 
+def prepared_solver(timeout_ms: int):
+    """A solver for one bounded question: Z3's own simplifications first, then its SMT core, under the usual limits.
+
+    A bounded question is one large formula asked once. Substituting solved equalities and constants and dropping
+    unconstrained terms before the search removes most of what the two encodings share (the same table cells joined
+    in another order), which the plain solver otherwise has to rediscover case by case. The steps are Z3's standard
+    equisatisfiable ones; a model is still only believed after the replay.
+    """
+
+    sweep()
+    tactic = z3.Then("simplify", "propagate-values", "solve-eqs", "elim-uncnstr", "simplify", "smt")
+    return apply_limits(tactic.solver(), timeout_ms)
+
+
 def bag_difference(left: Rel, right: Rel):
     """A formula that holds when the two relations are different bags of rows."""
 
@@ -2602,6 +2617,8 @@ def _check_bounded(
                 left = compiler.compile(left_sql)
                 right = compiler.compile(right_sql)
                 formulas = [*database.constraints, *compiler.side_conditions, bag_difference(left, right)]
+                # a division by a row count is a choice of divisions by constants: the same models, linear arithmetic
+                formulas, _ = bounded_count_division.split(formulas)
 
                 def left_ms() -> int:
                     return timeout_ms if budget_s is None else int(max(1, min(timeout_ms, (budget_s - (time.time() - began)) * 1000)))
@@ -2611,7 +2628,7 @@ def _check_bounded(
                     # at all, and a model is only a database to try (bounded_abstraction)
                     loose, replaced = bounded_abstraction.abstract(formulas)
                     if replaced:
-                        quick = bounded_solver(max(1, left_ms() // 4))
+                        quick = prepared_solver(max(1, left_ms() // 4))
                         quick.add(*loose)
                         answer = quick.check()
                         if answer == z3.unsat:
@@ -2621,7 +2638,7 @@ def _check_bounded(
                             data = database_from_model(database, quick.model())
                             if replay.differ(data) if hasattr(replay, "differ") else replay(data):
                                 return BoundedResult(BoundedStatus.DIFFERENT, f"counterexample with at most {bound} rows per table", bound, data, time.time() - began)
-                solver = bounded_solver(left_ms())
+                solver = prepared_solver(left_ms())
                 solver.add(*formulas)
                 verdict = solver.check()
                 if verdict == z3.unsat:

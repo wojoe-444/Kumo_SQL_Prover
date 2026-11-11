@@ -66,19 +66,18 @@ def _rewritten(term, kids: list, functions: _Functions):
     return None
 
 
-def abstract(formulas: list) -> tuple[list, int]:
-    """``formulas`` with every hard arithmetic operation uninterpreted, and how many operations that was.
+def rewrite(formulas: list, step) -> tuple[list, int]:
+    """``formulas`` rebuilt bottom-up, with ``step(term, rewritten operands)`` replacing a term when it is not ``None``.
 
-    One set of functions serves the whole list, so the same operation on the same operands is the same term wherever
-    it occurs. With a count of 0 the formulas are returned as they were.
+    Returns the new list and how many terms were replaced; with none replaced the formulas are returned as they
+    were. Shared subterms are rewritten once, and the walk does not recurse (an aggregate over many rows nests deeply).
     """
 
-    functions = _Functions()
     done: dict[int, object] = {}
     replaced = 0
     for formula in formulas:
         stack = [(formula, False)]
-        while stack:  # post-order without recursion: an aggregate over many rows nests deeply
+        while stack:
             term, expanded = stack.pop()
             key = term.get_id()
             if key in done:
@@ -92,10 +91,10 @@ def abstract(formulas: list) -> tuple[list, int]:
                 stack.extend((child, False) for child in children if child.get_id() not in done)
                 continue
             kids = [done[child.get_id()] for child in children]
-            loose = _rewritten(term, kids, functions)
-            if loose is not None:
+            new = step(term, kids)
+            if new is not None:
                 replaced += 1
-                done[key] = loose
+                done[key] = new
             elif all(kid is child or kid.eq(child) for kid, child in zip(kids, children)):
                 done[key] = term
             else:
@@ -103,3 +102,14 @@ def abstract(formulas: list) -> tuple[list, int]:
     if not replaced:
         return list(formulas), 0
     return [done[formula.get_id()] for formula in formulas], replaced
+
+
+def abstract(formulas: list) -> tuple[list, int]:
+    """``formulas`` with every hard arithmetic operation uninterpreted, and how many operations that was.
+
+    One set of functions serves the whole list, so the same operation on the same operands is the same term wherever
+    it occurs. With a count of 0 the formulas are returned as they were.
+    """
+
+    functions = _Functions()
+    return rewrite(formulas, lambda term, kids: _rewritten(term, kids, functions))

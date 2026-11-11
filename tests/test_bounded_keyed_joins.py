@@ -270,3 +270,40 @@ def test_a_chain_of_key_joins_no_longer_grows_with_every_table():
     compiler.reorder = True
     relation, remaining = kj.inner_chain(compiler, source, None)
     assert len(relation.rows) == 3 and remaining == []
+
+
+# --- one encoding for one join, however it is written -------------------------------------------------
+
+
+def _rows_of_one_database(*queries: str) -> list[be.Rel]:
+    compiler = be.Compiler(be.SymbolicDatabase(schema(), 2), "mysql")
+    return [compiler.compile(sql) for sql in queries]
+
+
+SAME_JOIN = [
+    # the tables in the other order
+    ("select n.body, i.qty from notes n join items i on n.cid < i.qty", "select n.body, i.qty from items i join notes n on n.cid < i.qty"),
+    # the condition under ON and under WHERE, and its conjuncts in another order
+    (
+        "select n.body, i.qty from notes n join items i on n.cid = i.oid and i.qty > 1",
+        "select n.body, i.qty from notes n, items i where i.qty > 1 and n.cid = i.oid",
+    ),
+    ("select n.body, i.qty from notes n join items i on n.cid = i.oid where i.qty > 1", "select n.body, i.qty from items i cross join notes n where n.cid = i.oid and i.qty > 1"),
+]
+
+
+@pytest.mark.parametrize(("left", "right"), SAME_JOIN)
+def test_the_same_join_written_two_ways_is_the_same_rows_in_the_same_order(left, right):
+    a, b = _rows_of_one_database(left, right)
+    assert len(a.rows) == len(b.rows) == 4
+    for x, y in zip(a.rows, b.rows):
+        assert x.present.eq(y.present)
+        assert all(u.val.eq(v.val) for u, v in zip(x.vals, y.vals))
+
+
+def test_where_the_order_of_rows_can_be_seen_the_tables_keep_their_written_order():
+    a, b = _rows_of_one_database(
+        "select n.body, i.qty from notes n join items i on n.cid < i.qty order by i.qty limit 1",
+        "select n.body, i.qty from items i join notes n on n.cid < i.qty order by i.qty limit 1",
+    )
+    assert not all(x.present.eq(y.present) for x, y in zip(a.rows, b.rows))

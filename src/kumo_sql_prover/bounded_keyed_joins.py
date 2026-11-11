@@ -271,6 +271,12 @@ def _binds(part: exp.Expression, factors) -> list[tuple[int, int, frozenset]]:
     return out
 
 
+def _made(rel) -> tuple[int, ...]:
+    """The solver's own numbering of the first row's cells: the same for one base table wherever it is read."""
+
+    return tuple(v.val.get_id() for v in rel.rows[0].vals) if rel.rows else ()
+
+
 def _plan(factors, parts_by_step) -> list[int]:
     """An order to join the FROM items in that keeps the joined relation small: keyed joins first, from the best start."""
 
@@ -281,11 +287,14 @@ def _plan(factors, parts_by_step) -> list[int]:
         have = {position for owner, position, reads in binds if owner == candidate and reads <= joined}
         return any(set(key) <= have for key in factors[candidate].keys)
 
+    # ties go to the table whose cells were made first, not to the one written first: ``a JOIN b`` and ``b JOIN a``
+    # over the same two tables are then joined in one order and give their rows in one order
+    ranked = sorted(range(len(factors)), key=lambda f: (_made(factors[f]), f))
     best = None
-    for start in range(len(factors)):
+    for start in ranked:
         order, joined, rows, total = [start], {start}, len(factors[start].rows), 0
         while len(order) < len(factors):
-            rest = [f for f in range(len(factors)) if f not in joined]
+            rest = [f for f in ranked if f not in joined]
             chosen = next((f for f in rest if keyed(f, joined)), None)
             if chosen is None:
                 chosen = next((f for f in rest if any(f in link and link & joined for link in linked)), rest[0])
