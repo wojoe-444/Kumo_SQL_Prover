@@ -19,6 +19,10 @@ alone:
   ``ROLLUP``, ``CUBE``, ``GROUPING SETS`` or ``()`` (the grand total of an empty input is a row too);
 * a sum with ``FILTER`` (the filter can leave a group no rows), a ``DISTINCT`` sum, and a sum used as a window
   function (its frame can be empty);
+* a sum that may be an enclosing query's aggregate: inside a subquery expression (scalar, ``EXISTS``, ``IN``,
+  ``LATERAL``) a sum whose columns all belong to an enclosing query is that query's aggregate, and that query may
+  have no ``GROUP BY``. There the summed expression must read a column qualified by one of the select's own sources
+  (``conditional_count_sums._own_aggregate``);
 * a ``COALESCE`` with more than two arguments or a second argument other than the integer 0
   (``COALESCE(SUM(x), 1)`` is 1 for a group of NULLs, and ``SUM(COALESCE(x, 1))`` counts them).
 
@@ -59,7 +63,13 @@ def pad_grouped_sums(select: exp.Select) -> exp.Select | None:
         return None
     if any(isinstance(node, (exp.Rollup, exp.Cube, exp.GroupingSets, exp.Tuple)) for node in group.walk()):
         return None  # sqlglot keeps these among the grouping expressions; ``GROUP BY ()`` is one row over no rows
-    found = [index for index, node in enumerate(select.find_all(exp.Coalesce)) if node.find_ancestor(exp.Select) is select and _summed(node) is not None]
+    from .conditional_count_sums import _own_aggregate
+
+    found = [
+        index
+        for index, node in enumerate(select.find_all(exp.Coalesce))
+        if node.find_ancestor(exp.Select) is select and _summed(node) is not None and _own_aggregate(_summed(node), select, select)
+    ]
     if not found:
         return None
     result = select.copy()

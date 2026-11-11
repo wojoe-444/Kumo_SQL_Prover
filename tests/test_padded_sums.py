@@ -120,3 +120,22 @@ def test_the_moved_coalesce_gives_the_same_rows(sql):
     assert out is not None and "COALESCE(SUM(" not in out
     for rows in random_databases(len(sql), count=20):
         assert not differ_on_duckdb(sql, out, rows)
+
+
+def test_a_sum_that_may_belong_to_an_enclosing_query_is_left_alone():
+    def inner(sql):
+        tree = sqlglot.parse_one(sql, read="postgres")
+        select = max((s for s in tree.find_all(sqlglot.exp.Select) if s.args.get("group")), key=lambda s: s.depth)
+        out = pad_grouped_sums(select)
+        return out.sql(dialect="postgres") if out is not None else None
+
+    # every column of the sum is the enclosing query's: over no rows of that query the first spelling is 0, the second NULL
+    assert inner("SELECT (SELECT COALESCE(SUM(p.score), 0) FROM comments AS c GROUP BY c.postid) FROM posts AS p") is None
+    assert inner("SELECT (SELECT COALESCE(SUM(score), 0) FROM comments AS c GROUP BY c.postid) FROM posts AS p") is None  # a bare name could be either
+    # a column of the select's own source: this select's aggregate
+    assert (
+        inner("SELECT (SELECT COALESCE(SUM(c.score + p.score), 0) FROM comments AS c GROUP BY c.postid) FROM posts AS p")
+        == "SELECT SUM(COALESCE(c.score + p.score, 0)) FROM comments AS c GROUP BY c.postid"
+    )
+    # a derived table sees no enclosing row
+    assert inner("SELECT d.s FROM (SELECT postid, COALESCE(SUM(score), 0) AS s FROM comments GROUP BY postid) AS d") is not None
