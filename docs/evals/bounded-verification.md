@@ -65,7 +65,7 @@ Each run first takes the eval's own baseline verdict (unbounded prover and execu
 
 ## Results
 
-Measured 2026-10-02 at 3 rows per table.
+Measured 2026-10-02 at 3 rows per table; the QED row on 2026-11-11, after its conversion grew from 375 to 407 pairs ([what was added](sqlsolver.md#tests-the-conversions-used-to-skip)). On 2026-10-02 it was 363 bounded, 3 timeouts and 9 unsupported of 375; 11 of the new pairs use grouping sets, which the encoder does not support.
 
 | Suite | Pairs | Bounded, 3 rows | Different (replayed) | Timeout | Unsupported | Unknown |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -73,7 +73,7 @@ Measured 2026-10-02 at 3 rows per table.
 | SQLSolver Spark SQL | 127 | 106 | 0 | 0 | 20 | 1 |
 | SQLSolver TPC-H | 22 | 7 | 0 | 4 | 11 | 0 |
 | SQLSolver TPC-C | 19 | 19 | 0 | 0 | 0 | 0 |
-| QED Calcite | 375 | 363 | 0 | 3 | 9 | 0 |
+| QED Calcite | 407 | 384 | 1 | 2 | 20 | 0 |
 | R-Bot Calcite | 45 | 23 | 0 | 0 | 22 | 0 |
 | Cosette examples | 60 | 52 | 6 | 0 | 2 | 0 |
 | SPES Calcite | 34 | 26 | 3 | 0 | 5 | 0 |
@@ -84,7 +84,7 @@ Measured 2026-10-02 at 3 rows per table.
 
 Every row has 0 wrong. A *timeout* is a pair whose 3-row check timed out, some after finishing a smaller bound (reported as e.g. "bounded, 2 rows"); *unknown* is a model the replay did not confirm or a parse failure. For pairs the unbounded prover already proves, the bounded verdict is a cross-check of the encoder. On pairs the proofs leave unknown, the bounded check refutes pairs the 150-database random search missed (LeetCode sample: 90 refutations on pairs the executed search called "agrees"; Literature: 6 of 25), each replayed on DuckDB. Singh & Bedathur's 1,794 pairs the prover already refutes are not rerun.
 
-Disputed labels: Cosette's `testDecorrelateTwoIn` and SPES's three semi-join cases (`testSemiJoinRule`, `testSemiJoinRuleExists`, `testSemiJoinTrim`) are labelled equivalent, but a replayed bounded counterexample exists; they are counted as label disputes, not as wrong.
+Disputed labels: Cosette's `testDecorrelateTwoIn` and SPES's three semi-join cases (`testSemiJoinRule`, `testSemiJoinRuleExists`, `testSemiJoinTrim`) are labelled equivalent, but a replayed bounded counterexample exists; they are counted as label disputes, not as wrong. QED's `testAggregateCaseToFilter` is one more: QED recorded the plans of an older Calcite, and both the bounded check and random data show a difference.
 
 Checks behind "0 wrong": the encoding agrees with DuckDB on 92 Literature, 511 Calcite and 1,504 LeetCode-sample queries (`differential`, 0 mismatches; queries with an ungrouped column are excluded because their answer is arbitrary). The first LeetCode run found the encoder assumed ORDER BY ties away, which hid real differences in 18 pairs; ties are now broken by row position and the same run is 0 wrong. A doubled primary key in one family of pairs is read as the shared harness reads it (the later one wins).
 

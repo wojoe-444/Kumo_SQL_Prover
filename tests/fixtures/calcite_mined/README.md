@@ -42,18 +42,28 @@ bare RelOptRulesTest name with SQLSolver's 232 Calcite pairs (names from SPES's
 
 ## Result
 
-1016 tests: **502 translated** (168 new: 142 from RelOptRulesTest, 26 from the other
-files), 182 unchanged, 332 skipped.
+1016 tests: **578 translated** (184 new: 158 from RelOptRulesTest, 26 from the other
+files), 182 unchanged, 256 skipped.
 
 | translated pairs already covered by | count |
 | --- | ---: |
-| SQLSolver | 168 |
-| QED | 332 |
-| R-Bot | 35 |
+| SQLSolver | 192 |
+| QED | 390 |
+| R-Bot | 38 |
 
-DuckDB (8 random databases per pair, NOT NULL and keys respected): 500 agree, 1
-differs, 1 cannot run in DuckDB (`testExpandJoinExists`: DuckDB cannot plan a
-subquery in an outer-join condition).
+(QED's count includes the tests its own conversion skips; 32 of those are now
+translated for QED from the plan text its files record, see `tests/fixtures/qed/`.)
+
+DuckDB (8 random databases per pair, NOT NULL and keys respected): 575 agree, 1
+differs, 2 cannot run in DuckDB (`testExpandJoinExists` and `testExpandJoinScalar`:
+DuckDB cannot plan a subquery in an outer-join condition). A database on which a CAST
+overflows or a scalar subquery meets several rows is an error in Calcite too and is
+skipped; a pair with a scalar subquery draws more databases until 8 run.
+
+76 of the 578 were added on 2026-11-11 by four converter features (502 before):
+grouping sets with `GROUPING()` and multi-column `COUNT(DISTINCT)` (41), empty
+relations typed from the test's Java (17), keyless `SINGLE_VALUE` (4) and window
+functions (14). Each is described under the conversion notes.
 
 * `testFullJoinToLeftAndRightJoin` (new) **differs**: Calcite rewrites
   `FULL JOIN ON e1.sal = e2.sal AND e1.mgr IS NULL` into
@@ -62,13 +72,14 @@ subquery in an outer-join condition).
   UNKNOWN). The translation is exact; this is a genuine non-equivalence in Calcite's
   expected plan, kept and flagged `differs_in_duckdb` with the counterexample saved.
 
-Most frequent skip reasons (full list in `summary.json`): grouping sets 33, window
-functions 23 + `LogicalWindow` 8, Calcite-internal operators (`HyperGraph` 13,
-`Combine` 13, `MultiJoin` 8, `Uncollect` 7, `Sample` 5, `Enumerable*` 14), empty
-`LogicalValues` under a join or correlate 18 (the digest omits its row type), aggregate
-`WITHIN DISTINCT` 11, LIMIT/OFFSET that is not a literal 10 or has no ORDER BY 10,
-statistical aggregates (`STDDEV_*`, `VAR_*`) 15, `SINGLE_VALUE`/`ANY_VALUE` 12, tables outside the modelled
-catalogs (GEO, STRUCT, nested, custom) 17, `CURRENT_TIMESTAMP`/`RAND`/`USER` 10.
+Most frequent skip reasons (full list in `summary.json`): Calcite-internal operators
+(`HyperGraph` 13, `Combine` 13, `MultiJoin` 8, `Uncollect` 7, `Sample` 5, `Enumerable*`
+14), aggregate `WITHIN DISTINCT` 11 (it raises an error when the values differ, which
+the SQL cannot state), LIMIT/OFFSET that is not a literal 10 or has no ORDER BY 10,
+statistical aggregates (`STDDEV_*`, `VAR_*`) 15, window functions whose result depends
+on the order of tied rows (`ROW_NUMBER`, `FIRST_VALUE`, `LAST_VALUE`, `ROWS` frames) 11,
+`ANY_VALUE` 6 and `SINGLE_VALUE` per group 2, tables outside the modelled catalogs (GEO,
+STRUCT, nested, custom) 17, `CURRENT_TIMESTAMP`/`RAND`/`USER` 10, mark joins 6, lambdas 6.
 
 ## Conversion notes
 
@@ -90,6 +101,12 @@ catalogs (GEO, STRUCT, nested, custom) 17, `CURRENT_TIMESTAMP`/`RAND`/`USER` 10.
   whose result depends on Calcite typing that the SQL cannot state is skipped: DECIMAL
   division and AVG, casts that round or truncate, CHAR values of different lengths
   combined in CASE/UNION/VALUES (Calcite pads them), padded literals.
+* `LogicalAggregate` with `groups=[[{0, 7}, {0}, {}]]` is `GROUP BY GROUPING SETS ((c0,
+  c7), (c0), ())`, and `GROUPING($0, $7)` is `GROUPING(c0, c7)` (0 when the aggregate
+  has no grouping sets). The sets must cover the group keys, none may repeat, and the
+  input must not be an empty `LogicalValues`. `COUNT(DISTINCT $1, $2)` is MySQL's
+  `COUNT(DISTINCT c1, c2)`, which counts the distinct rows with no NULL among the
+  arguments, as Calcite does.
 * `SEARCH(x, Sarg[...])` expands to comparisons, including `NULL AS TRUE/FALSE`.
   Aggregate `FILTER $f` becomes `agg(CASE WHEN f THEN x END)` (`COUNT()` -> `COUNT(CASE
   WHEN f THEN 1 END)`), `$SUM0` is `COALESCE(SUM(x), 0)`, `LITERAL_AGG(lit)` with group keys

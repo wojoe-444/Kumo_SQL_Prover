@@ -34,6 +34,20 @@ An optimizer can turn `SELECT SUM(sal) FROM emp JOIN dept ON ...` into a sum of 
 
 One mined pair, `testSortJoinTranspose1`, is deliberately left unproven: it moves a `LIMIT 10` below a join while ordering by a column with repeated values, so which tied rows survive can differ between the two forms (DuckDB shows it on small random data). Unknown is the honest answer there.
 
+## Tests the conversions used to skip
+
+Each corpus arrives in its own format and a converter turns it into SQL. A test the converter cannot write exactly is skipped, and a skipped test is in no score: the prover never sees it. In November 2026 the skip lists were read reason by reason, and the reasons that have an exact SQL form were translated. The scores' totals grew with them, because a newly translated test counts whether or not it proves.
+
+For example, Calcite's test builder can mark a table as empty, and the plan it prints then shows an empty relation with no column types. The converter now reads the test's own source to see which table was emptied and writes `SELECT ... WHERE 1 = 0` with that table's column types. It does this only when the source accounts for every empty relation in the plan; otherwise the test stays skipped. Grouping sets, a few window functions and one-value subqueries were added the same way, and QED's cases gained the same features from the plan text each QED file keeps beside its JSON.
+
+Some reasons stay skipped on purpose. `ROW_NUMBER` and its relatives number tied rows in an order two plans need not share, so such a pair is not an equivalence a row-for-row comparison can state. Some aggregates raise an error in Calcite where SQL has no way to say so.
+
+Three of the newly translated QED pairs are real differences: QED recorded the plans of an older Calcite whose rewrite was later corrected. Random data shows the difference, the prover does not prove them, and they are kept as pairs that must stay unproven.
+
+New prover rules were needed for the translated tests, for example that `LEFT JOIN (SELECT 1 AS x) ON TRUE` is a plain cross join because the right side is always exactly one row, and that a filter on a window function's `PARTITION BY` column can be applied before the window. Each rule declines every shape it does not recognise exactly, and each was compared with DuckDB on thousands of random queries. That is a check on the rule, not a proof for every shape.
+
+The limits of the evidence: the rules for grouping sets were written while looking at the development pairs they prove, so those results are "tuned on test". The reserved pairs' SQL was not read, but their pass count was watched while the window rules were added, so that count is not untouched either. SPES and Cosette gained nothing, because what they decline is either a Calcite test the mined corpus already covers or a source file that is not runnable SQL. See the [full reference](../../docs/evals/sqlsolver.md#tests-the-conversions-used-to-skip) for the counts and the list of rules.
+
 ## Read the caveats
 
 A recorded score is only as fresh as the last run that checked it. The TPC-H row said every pair was proved for five weeks in late 2026 while one pair had quietly stopped proving, because its check sat in a slow group of tests that the everyday runs skip. For example, the pair compared `SUM(price * (1 - discount))` with `SUM(price * (1.00 - discount))`. The pair is proved again and now has a fast test of its own; other slow checks may still hide a similar drift. The [full guide](../../docs/evals/sqlsolver.md) has the dates.

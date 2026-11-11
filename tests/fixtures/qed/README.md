@@ -24,30 +24,32 @@ inequivalent pairs.
 
 ## Result
 
-444 files: **375 converted**, 69 skipped.
+444 files: **407 converted** (32 of them from the plan text, see the conversion
+notes), 37 skipped.
 
 | skipped | reason |
 | ---: | --- |
-| 23 | aggregate FILTER clause (not represented in QED's IR) |
+| 8 | aggregate FILTER clause (not represented in QED's IR) |
 | 7 | unsupported operator ST_POINT |
-| 5 | multi-column COUNT(DISTINCT) |
-| 5 | unsupported aggregate LITERAL_AGG |
-| 5 | window function |
 | 4 | integer-typed STDDEV/VAR aggregate (Calcite integer arithmetic not modelled) |
-| 4 | unsupported aggregate SINGLE_VALUE |
 | 3 | projection with no columns |
 | 2 | table is empty only by test-harness convention (not expressible in the schema) |
 | 2 | nondeterministic aggregate ANY_VALUE |
 | 2 | aggregate WITHIN DISTINCT (not represented in QED's IR) |
 | 1 | unsupported operator CURRENT_TIMESTAMP |
 | 1 | unsupported aggregate GROUPING |
+| 1 | unsupported aggregate LITERAL_AGG |
 | 1 | implicit cross-type comparison |
+| 1 | window function |
 | 1 | column type ANY |
 | 1 | unsupported operator ROW |
 | 1 | unsupported operator USER |
 | 1 | LIMIT/OFFSET without ORDER BY (nondeterministic) |
 
-(The first matching reason is recorded, so a case that has several is counted once.)
+(The first matching reason is recorded, so a case that has several is counted once.
+The 8 FILTER cases left are `WITHIN DISTINCT` tests, whose plans raise an error when
+the values of a group differ; the plan-text route declines the GROUPING, LITERAL_AGG
+and window cases left as well.)
 
 ## Conversion notes
 
@@ -73,6 +75,25 @@ inequivalent pairs.
   `VARCHAR(255)` because the IR carries no precision or length.
 * Keys: the first key whose columns are all NOT NULL is `PRIMARY KEY`, the rest
   are `UNIQUE`.
+* **Plan-text route.** QED's JSON form drops grouping sets, `GROUPING()`, aggregate
+  `FILTER`, multi-column `COUNT(DISTINCT)`, `SINGLE_VALUE` and window functions, but
+  each file also records the two Calcite plans as text (its `help` field). When the
+  JSON conversion skips a case for one of those reasons (`PLAN_TEXT_REASONS` in the
+  converter), the plan text is translated with `tools/calcite_plan_to_sql.py`'s
+  converter, the one behind `tests/fixtures/calcite_mined/`, and its notes apply
+  (explicit null-ordering keys, Calcite's types). The result is accepted only when the
+  plans' tables match the tables the QED file declares (names, base types,
+  nullability) and the translated root column types equal the types of the JSON
+  form's root; otherwise the case stays skipped with its original reason. Such a pair
+  carries `"translated_from": "plan text"`, and `summary.json` counts them
+  (`converted_from_plan_text`, 32). The 375 pairs converted from the JSON keep their
+  SQL byte for byte.
+* Three of the 32 are real differences, found on random data: `testAggregateCaseToFilter`,
+  `testDistinctCountGroupingSets1` and `testDistinctCountGroupingSets2`. QED recorded
+  the plans of an older Calcite whose rewrite was later corrected (Calcite's current
+  plans for the same tests agree on DuckDB, see the mined fixture). They are kept as
+  pairs that must never prove, like `testRightEmptyFullJoin` and
+  `testStrengthenJoinType`.
 * Skipped, never guessed: aggregate FILTER / WITHIN DISTINCT (the IR drops them;
   detected from the `help` plan text), window functions, GROUPING, LITERAL_AGG,
   SINGLE_VALUE, ANY_VALUE, geospatial and dynamic functions, struct (`ANY`)
@@ -85,7 +106,11 @@ inequivalent pairs.
 `tools/validate_qed_pairs.py` creates each case's schema in DuckDB (sqlglot
 transpiles MySQL to DuckDB), fills it with random small databases that respect
 NOT NULL and keys (NULLs sort first), runs both sides and compares the result
-multisets. Latest run (8 databases per case): all converted cases run; both sides
-agree on every database for all but one case, which DuckDB cannot execute
-(`testExpandJoinExists`: "Cannot perform non-inner join on subquery"). This is
-a consistency check of the conversion, not a proof of equivalence.
+multisets. Latest run (8 databases per case, 407 cases): 403 agree on every database,
+2 differ (`testAggregateCaseToFilter` and `testDistinctCountGroupingSets2`, two of the
+real differences above; the benchmark's 60 databases per pair also separate the other
+three), and 2 DuckDB cannot execute (`testExpandJoinExists` and
+`testExpandJoinScalar`: "Cannot perform non-inner join on subquery"). A database on
+which a scalar subquery meets several rows is an error in Calcite too and is skipped;
+such a pair draws more databases until 8 run. This is a consistency check of the
+conversion, not a proof of equivalence.
