@@ -4944,7 +4944,7 @@ def normalize(
         from .counted_subqueries import count_subqueries_as_joins
 
         tree = count_subqueries_as_joins(tree)  # a COUNT subquery is the left join to counts that the next pass reads
-        tree = count_outer_groups(tree, schema, keys)  # before COALESCE(count, 0) is lifted out of its select
+        tree = count_outer_groups(tree, schema, keys, not_null)  # before COALESCE(count, 0) is lifted out of its select
     if shapes:
         tree = group_by_named_outputs(tree, schema)  # pre-pass: before any rule reads a key as a column
     tree = expand_grouping_sets(tree)
@@ -5025,7 +5025,7 @@ def normalize(
         lambda sel: join_nested_membership(sel, schema),
         lift_computed_outputs,
         lambda sel: filter_own_groups(sel, schema, keys, not_null, dialect),
-        lambda sel: pull_up_keyed_join(sel, schema, keys),
+        lambda sel: pull_up_keyed_join(sel, schema, keys, not_null),
         lambda sel: read_one_row_source(sel, schema),
         lambda sel: inline_closed_outputs(sel, schema),
         lambda sel: fold_scalar_filter(sel, schema),

@@ -32,7 +32,8 @@ Conditions, all checked:
 * the select has only a select list, sources, joins, ``WHERE``, ``ORDER BY``, ``LIMIT`` and ``OFFSET``: no
   grouping, ``DISTINCT``, aggregate, window or subquery of its own;
 * its joins are commas, ``CROSS JOIN`` or inner ``JOIN .. ON`` (no ``USING``, ``NATURAL`` or ``LATERAL``);
-* its sources are base tables the schema lists, each with a declared key, under distinct names, and exactly one
+* its sources are base tables the schema lists, each with a declared key whose columns are all declared NOT NULL
+  (a unique key with a NULL in it does not tell two rows apart), under distinct names, and exactly one
   derived table with an alias and no column list;
 * the derived table is a plain grouped select over base tables the schema lists, joined the same way, grouping
   by plain columns, with optional ``WHERE`` and ``HAVING`` and no subquery, window, ``DISTINCT`` or tail; its
@@ -87,13 +88,19 @@ def declared_columns(schema: dict) -> dict[str, set[str]]:
     return {str(t).lower(): {str(c).lower() for c in columns} for t, columns in schema.items()}
 
 
-def key_of(table: exp.Table, keys: dict, columns: set[str]) -> tuple[str, ...] | None:
-    """The first declared key of ``table`` whose columns the schema lists."""
+def key_of(table: exp.Table, keys: dict, columns: set[str], not_null: dict | None) -> tuple[str, ...] | None:
+    """The first declared key of ``table`` whose columns the schema lists and declares NOT NULL.
+
+    A unique key tells rows apart only where its columns have values: two rows ``(1, NULL)`` satisfy
+    ``UNIQUE (a, b)``, and a ``GROUP BY a, b`` makes one group of them. So a key with a column that may be NULL does
+    not identify a row, and is not used.
+    """
 
     full = ".".join(part.name for part in table.parts).lower()
+    never_null = {str(c).lower() for c in ((not_null or {}).get(full) or (not_null or {}).get(table.name.lower()) or ())}
     for key in keys.get(full) or keys.get(table.name.lower()) or []:
         key = tuple(str(c).lower() for c in key)
-        if key and set(key) <= columns:
+        if key and set(key) <= columns and set(key) <= never_null:
             return key
     return None
 
@@ -205,7 +212,7 @@ def _owner(column: exp.Column, names: list[str], owned: list[set[str]], visible:
     return owners[0] if len(owners) == 1 else None
 
 
-def pull_up_keyed_join(select: exp.Select, schema: dict | None, keys: dict | None) -> exp.Expression | None:
+def pull_up_keyed_join(select: exp.Select, schema: dict | None, keys: dict | None, not_null: dict | None = None) -> exp.Expression | None:
     """``select`` (keyed tables joined to one grouped derived table) as the aggregate over the flat join, or ``None``."""
 
     if not schema or not keys or not select.args.get("joins"):
@@ -234,7 +241,7 @@ def pull_up_keyed_join(select: exp.Select, schema: dict | None, keys: dict | Non
             owned.append(set())
             continue
         columns = _columns_of(item, declared)
-        key = key_of(item, keys, columns) if columns else None
+        key = key_of(item, keys, columns, not_null) if columns else None
         if key is None:
             return None
         owned.append(columns)
