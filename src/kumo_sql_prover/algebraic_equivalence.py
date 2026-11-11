@@ -108,6 +108,7 @@ from .boolean_identities import fold_boolean_identities
 from . import shape_fallback
 from . import union_source_names
 from .union_rollup import roll_up_grouped_union
+from .expansion_layers import collapse_layered_expansion
 from .closed_sources import closed_derived_source, inner_join_conditions, plain_inner_join
 from .listed_output_names import name_listed_outputs
 from .membership_dedup import relax_membership_dedup
@@ -4903,7 +4904,7 @@ def normalize(
         tree = separate_disjoint_unions(tree)
     tree = expand_grouping_sets(tree)
     for select in list(tree.find_all(exp.Select))[::-1]:
-        replacement = collapse_grouping_expansion(select) or collapse_counted_intersection(select)
+        replacement = collapse_grouping_expansion(select) or (collapse_layered_expansion(select) if shapes else None) or collapse_counted_intersection(select)
         if replacement is not None:
             if select is tree:
                 tree = replacement
