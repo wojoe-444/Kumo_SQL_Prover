@@ -82,6 +82,13 @@ def test_near_misses_stay_unproven():
     # the deviation of one group is not the deviation of all rows
     assert not proved("SELECT STDDEV_SAMP(x) FROM t", "SELECT STDDEV_SAMP(x) FROM t GROUP BY k")
     assert not proved("SELECT STDDEV_SAMP(x) FROM t", "SELECT 0 FROM t")
+    # nothing is known about when the function is NULL (it is, for a group of fewer than two values)
+    grouped = "SELECT k FROM t GROUP BY k"
+    assert not proved(f"{grouped} HAVING STDDEV_SAMP(x) IS NOT NULL", grouped)
+    assert not proved(f"{grouped} HAVING STDDEV_SAMP(x) IS NULL", "SELECT k FROM t WHERE 1 = 0 GROUP BY k")
+    assert not proved(f"{grouped} HAVING STDDEV_SAMP(x) >= 0", grouped)
+    assert not proved(f"{grouped} HAVING STDDEV_SAMP(x) = STDDEV_SAMP(x)", grouped)
+    assert not proved("SELECT k, COALESCE(STDDEV_SAMP(x), 0) FROM t GROUP BY k", "SELECT k, STDDEV_SAMP(x) FROM t GROUP BY k")
 
 
 def test_the_engine_value_is_that_function_of_the_sums():
