@@ -973,7 +973,18 @@ class Converter:
         raise Skip(f"unsupported subquery operator {op}")
 
     # ------------------------------------------------------------ aggregates
-    def agg(self, raw: str, cols: list, types: list, has_keys: bool) -> tuple[str, T]:
+    def agg(self, raw: str, cols: list, types: list, has_keys: bool, keys: list | None = None,
+            sets: list | None = None) -> tuple[str, T]:
+        gm = re.fullmatch(r"(GROUPING|GROUPING_ID)\(((?:\$\d+(?:, )?)+)\)", raw.strip())
+        if gm:
+            # GROUPING(k1, .., kn): one bit per argument, leftmost the most significant, set when the
+            # argument is not a key of the row's grouping set (always 0 without grouping sets).
+            args = [int(x) for x in re.findall(r"\$(\d+)", gm.group(2))]
+            if any(i not in (keys or []) for i in args):
+                raise Skip("GROUPING of a column that is not a group key")
+            if not sets:
+                return "0", BIGINT
+            return f"GROUPING({', '.join(cols[i] for i in args)})", BIGINT
         lm = re.fullmatch(r"LITERAL_AGG\((.*)\)", raw.strip())
         if lm:
             if not has_keys:
@@ -1014,7 +1025,8 @@ class Converter:
                 return ("COUNT(*)" if fcond is None else f"COUNT({guard('1')})"), BIGINT
             if len(a) > 1:
                 if distinct:
-                    raise Skip("multi-column COUNT(DISTINCT)")
+                    # MySQL's COUNT(DISTINCT a, b) is Calcite's: distinct rows with no NULL among the arguments
+                    return f"COUNT(DISTINCT {', '.join(guard(x) for x in a)})", BIGINT
                 nn = " AND ".join(f"{x} IS NOT NULL" for x in a)
                 cond = nn if fcond is None else f"{fcond} AND {nn}"
                 return f"COUNT(CASE WHEN {cond} THEN 1 END)", BIGINT
@@ -1218,12 +1230,13 @@ class Converter:
         a = self.alias()
         cols, ctypes = self.input_ctx(src, a)
         keys_txt = None
+        sets_txt = None
         aggs = []
         for k, v in node.attrs:
             if k == "group":
                 keys_txt = v
             elif k == "groups":
-                raise Skip("grouping sets")
+                sets_txt = v
             else:
                 aggs.append((k, v))
         if keys_txt is None or not (keys_txt.startswith("{") and keys_txt.endswith("}")):
@@ -1231,17 +1244,33 @@ class Converter:
         keys = [int(x) for x in re.findall(r"\d+", keys_txt)]
         if any(not 0 <= i < len(cols) for i in keys):
             raise Skip("group key out of range")
+        sets = None
+        if sets_txt is not None:
+            # groups=[[{0, 7}, {0}, {}]]: one output row per group of every grouping set; a key the
+            # set leaves out is NULL in that row (standard GROUPING SETS, which the SQL states as is)
+            if not re.fullmatch(r"\[\{[\d, ]*\}(?:, \{[\d, ]*\})*\]", sets_txt):
+                raise Skip("grouping sets shape")
+            sets = [[int(x) for x in re.findall(r"\d+", part)] for part in re.findall(r"\{([\d, ]*)\}", sets_txt)]
+            if any(i not in keys for one in sets for i in one) or {i for one in sets for i in one} != set(keys):
+                raise Skip("grouping sets do not cover the group keys")
+            if len({tuple(sorted(one)) for one in sets}) != len(sets):
+                raise Skip("duplicate grouping sets")
+            if src.empty:
+                raise Skip("grouping sets over an empty LogicalValues")
         exprs = [cols[i] for i in keys]
         types = [ctypes[i] for i in keys]
         names = [src.names[i] if src.names else None for i in keys]
         for name, raw in aggs:
-            x, t = self.agg(raw, cols, ctypes, bool(keys))
+            x, t = self.agg(raw, cols, ctypes, bool(keys), keys, sets)
             exprs.append(x)
             types.append(t)
             names.append(name)
         if not exprs:
             raise Skip("aggregate with no keys and no calls (zero-column relation)")
-        gb = f" GROUP BY {', '.join(cols[i] for i in keys)}" if keys else ""
+        if sets is not None:
+            gb = " GROUP BY GROUPING SETS (" + ", ".join("(" + ", ".join(cols[i] for i in one) + ")" for one in sets) + ")"
+        else:
+            gb = f" GROUP BY {', '.join(cols[i] for i in keys)}" if keys else ""
         sel = self.select_list(exprs)
         return Rel(f"SELECT {sel} FROM ({self.input_sql(src, a, sel + gb)}) AS {a}{gb}", types, names)
 

@@ -106,6 +106,8 @@ from .constant_regroup_rules import collapse_constant_regroup
 from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
 from . import shape_fallback
+from . import union_source_names
+from .union_rollup import roll_up_grouped_union
 from .closed_sources import closed_derived_source, inner_join_conditions, plain_inner_join
 from .listed_output_names import name_listed_outputs
 from .membership_dedup import relax_membership_dedup
@@ -2356,8 +2358,11 @@ def _canonicalize_union_source(node: exp.Subquery) -> exp.Expression | None:
             targets.append(column)
         elif column.name.lower() in renames:
             return None  # ambiguous unqualified use: leave it alone
+    clashing = union_source_names.select_aliases(outer) if shape_fallback.enabled() else set()
     for column in targets:
-        column.set("this", exp.to_identifier(renames[column.name.lower()]))
+        old_name = column.name
+        column.set("this", exp.to_identifier(renames[old_name.lower()]))
+        union_source_names.qualify(column, old_name, node.alias, clashing)  # a new name that is also a select alias
     canonical.sort(key=lambda b: b.sql(dialect="bigquery"))
     union: exp.Expression = canonical[0]
     for branch in canonical[1:]:
@@ -4949,6 +4954,7 @@ def normalize(
         wrap_tailed_outer_join_aggregate,
         push_filter_into_wrapped_join,
         drop_one_row_tail,
+        roll_up_grouped_union,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:

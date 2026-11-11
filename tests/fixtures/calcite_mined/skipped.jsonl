@@ -1,12 +1,5 @@
 {"name":"testAggregateConstantKeyRuleInVolcano","source":"RelOptRulesTest","reason":"unsupported relational operator EnumerableProject","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testAggregateDynamicFunction","source":"RelOptRulesTest","reason":"non-deterministic function CURRENT_TIMESTAMP","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testAggregateExtractProjectRuleWithGroupingSets","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testAggregateExtractProjectRuleWithGroupingSets2","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testAggregateGroupingSetsProjectMerge","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testAggregateGroupingSetsToUnionRule","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testAggregateGroupingSetsToUnionRuleGroupingGrouId","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testAggregateJoinRemove10","source":"RelOptRulesTest","reason":"multi-column COUNT(DISTINCT)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testAggregateMerge2","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testAggregateRemove1","source":"RelOptRulesTest","reason":"unsupported aggregate BIT_AND","in_sqlsolver":false,"in_qed":true,"in_rbot":true,"new":false}
 {"name":"testAggregateRemoveLiteralAggRuleWithAnySubQuery","source":"RelOptRulesTest","reason":"CAST from VARCHAR to INTEGER","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testAggregateRemoveLiteralAggRuleWithOnlyLiteralAgg","source":"RelOptRulesTest","reason":"LITERAL_AGG without group keys","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
@@ -19,7 +12,6 @@
 {"name":"testBitAndReuseDistinctAttrWithMixedOptionality","source":"RelOptRulesTest","reason":"unsupported aggregate BIT_AND","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testBitOrReuseDistinctAttrWithMixedOptionality","source":"RelOptRulesTest","reason":"unsupported aggregate BIT_OR","in_sqlsolver":false,"in_qed":true,"in_rbot":true,"new":false}
 {"name":"testCartesianProductForDphyp","source":"RelOptRulesTest","reason":"unsupported relational operator HyperGraph","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testCastInAggregateExpandDistinctAggregatesRule","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testCastInAggregateReduceFunctions","source":"RelOptRulesTest","reason":"unsupported aggregate STDDEV_POP","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testCeilDayToRangeAfterNoon","source":"RelOptRulesTest","reason":"flag argument to CEIL","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testChainJoinDphypJoinReorder","source":"RelOptRulesTest","reason":"unsupported relational operator HyperGraph","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
@@ -44,26 +36,7 @@
 {"name":"testDecorrelateProjectWithMultiKeyAndFetchOne","source":"RelOptRulesTest","reason":"window function","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testDecorrelateProjectWithMultiKeyAndFetchOne1","source":"RelOptRulesTest","reason":"window function","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testDigestOfApproximateDistinctAggregateCall","source":"RelOptRulesTest","reason":"aggregate call shape 'COUNT(APPROXIMATE DISTINCT $1)'","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctCount2","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctCount3","source":"RelOptRulesTest","reason":"unsupported aggregate GROUPING","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctCountGroupingSets1","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctCountGroupingSets2","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctCountMixed","source":"RelOptRulesTest","reason":"multi-column COUNT(DISTINCT)","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctCountMixed2","source":"RelOptRulesTest","reason":"multi-column COUNT(DISTINCT)","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctCountMixedJoin","source":"RelOptRulesTest","reason":"multi-column COUNT(DISTINCT)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctCountMultiple","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctCountMultipleNoGroup","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctCountMultipleViaJoin","source":"RelOptRulesTest","reason":"multi-column COUNT(DISTINCT)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testDistinctCountWithExpandSumType","source":"RelOptRulesTest","reason":"custom type system","in_sqlsolver":false,"in_qed":true,"in_rbot":true,"new":false}
-{"name":"testDistinctCountWithoutGroupBy","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctNonDistinctAggregatesWithGroupingSets","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testDistinctNonDistinctAggregatesWithGroupingSets2","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testDistinctNonDistinctAggregatesWithGroupingSets3","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testDistinctWithDiffFiltersAndSameGroupSet","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctWithFilterAndGroupBy","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctWithFilterWithoutGroupBy","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctWithMultipleInputs","source":"RelOptRulesTest","reason":"multi-column COUNT(DISTINCT)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testDistinctWithMultipleInputsAndGroupby","source":"RelOptRulesTest","reason":"multi-column COUNT(DISTINCT)","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testDoubleReduction2","source":"RelOptRulesTest","reason":"non-finite floating-point literal","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testDynamicStarWithUnion","source":"RelOptRulesTest","reason":"dynamic-star table (schema unknown)","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testEmptyAggregateEmptyKeyWithAggregateValuesRule","source":"RelOptRulesTest","reason":"VALUES column of untyped NULLs","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
@@ -164,7 +137,6 @@
 {"name":"testNotUniqueWithNoRowSubQuery","source":"RelOptRulesTest","reason":"unsupported subquery operator UNIQUE","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testNullSelect","source":"RelOptRulesTest","reason":"VALUES column of untyped NULLs","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testOuterJoinForDphyp","source":"RelOptRulesTest","reason":"unsupported relational operator HyperGraph","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testPredicatePull","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testProjectCorrelateTranspose","source":"RelOptRulesTest","reason":"unsupported relational operator Uncollect","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testProjectCorrelateTransposeRuleAntiCorrelate","source":"RelOptRulesTest","reason":"projection with no columns","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testProjectCorrelateTransposeRuleSemiCorrelate","source":"RelOptRulesTest","reason":"projection with no columns","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
@@ -185,29 +157,17 @@
 {"name":"testPruneEmptyRuleForLeftMarkJoin","source":"RelOptRulesTest","reason":"empty LogicalValues under a join (row width not in the digest)","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testPullConstantThroughAggregatePermutedInVolcano","source":"RelOptRulesTest","reason":"unsupported relational operator EnumerableProject","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testPullConstantThroughUnionInVolcano","source":"RelOptRulesTest","reason":"unsupported relational operator EnumerableProject","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testPullFilterThroughAggregateGroupingSets","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testPushAggregateThroughJoin7","source":"RelOptRulesTest","reason":"unsupported aggregate ANY_VALUE","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testPushAggregateThroughJoin8","source":"RelOptRulesTest","reason":"unsupported aggregate SINGLE_VALUE","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testPushAvgGroupingSetsThroughUnion","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testPushBoolAndBoolOrThroughUnion","source":"RelOptRulesTest","reason":"unsupported aggregate BOOL_AND","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testPushCountNullableGroupingSetsThroughUnion","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testPushCountStarGroupingSetsThroughUnion","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testPushFilterPastAggFour","source":"RelOptRulesTest","reason":"CAST from CHAR to INTEGER","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testPushFilterPastAggWithGroupingSets2","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":true,"new":false}
-{"name":"testPushFilterPastAggWithGroupingSetsNonLeadingKeys","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testPushFilterPastWindowWithDoubleWindows","source":"RelOptRulesTest","reason":"unsupported relational operator LogicalWindow","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testPushFilterPastWindowWithOnePartitionColumn","source":"RelOptRulesTest","reason":"unsupported relational operator LogicalWindow","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testPushFilterPastWindowWithTwoPartitionColumns","source":"RelOptRulesTest","reason":"unsupported relational operator LogicalWindow","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testPushFilterThroughJoinWithNonDeterministic","source":"RelOptRulesTest","reason":"non-deterministic function RAND","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testPushMaxNullableGroupingSetsThroughUnion","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testPushMinGroupingSetsThroughUnion","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testPushProjectWithOverPastJoin1","source":"RelOptRulesTest","reason":"window function","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testPushProjectWithOverPastJoin2","source":"RelOptRulesTest","reason":"window function","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testPushProjectWithOverPastJoin3","source":"RelOptRulesTest","reason":"window function","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testPushSumConstantGroupingSetsThroughUnion","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testPushSumCountStarGroupingSetsThroughUnion","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testPushSumNullConstantGroupingSetsThroughUnion","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
-{"name":"testPushSumNullableGroupingSetsThroughUnion","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":true,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testRand","source":"RelOptRulesTest","reason":"non-deterministic function RAND","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testReduceAggregateFunctionsByGroup","source":"RelOptRulesTest","reason":"unsupported aggregate ANY_VALUE","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
 {"name":"testReduceAllAggregateFunctions","source":"RelOptRulesTest","reason":"unsupported aggregate STDDEV_POP","in_sqlsolver":false,"in_qed":true,"in_rbot":false,"new":false}
@@ -276,7 +236,6 @@
 {"name":"testTopDownGeneralDecorrelateForMeasure","source":"RelOptRulesTest","reason":"DECIMAL division (Calcite result scale not modelled)","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testTopDownGeneralDecorrelateForProjectExists","source":"RelOptRulesTest","reason":"join type left_mark","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testTopDownGeneralDecorrelateForProjectIn","source":"RelOptRulesTest","reason":"join type left_mark","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
-{"name":"testTopDownGeneralDecorrelateForSubqueryWithCube","source":"RelOptRulesTest","reason":"grouping sets","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testTopDownGeneralDecorrelateForSubqueryWithOffsetExpression","source":"RelOptRulesTest","reason":"non-literal LIMIT/OFFSET","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testTopDownGeneralDecorrelateForSubqueryWithSort","source":"RelOptRulesTest","reason":"window function","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}
 {"name":"testTwoLevelDecorrelate","source":"RelOptRulesTest","reason":"unsupported aggregate SINGLE_VALUE","in_sqlsolver":false,"in_qed":false,"in_rbot":false,"new":true}

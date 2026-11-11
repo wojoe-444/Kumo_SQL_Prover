@@ -10,15 +10,15 @@
   "core/src/test/resources/org/apache/calcite/test/OuterJoinToAntiJoinRuleTest.xml"
  ],
  "tests": 1016,
- "translated": 502,
+ "translated": 543,
  "unchanged": 182,
  "unchanged_identical_sql": 3,
- "skipped": 332,
+ "skipped": 291,
  "translated_coverage": {
-  "new": 168,
-  "in_sqlsolver": 168,
-  "in_qed": 332,
-  "in_rbot": 35
+  "new": 176,
+  "in_sqlsolver": 189,
+  "in_qed": 365,
+  "in_rbot": 36
  },
  "unchanged_coverage": {
   "new": 154,
@@ -27,13 +27,12 @@
   "in_rbot": 0
  },
  "skipped_coverage": {
-  "new": 218,
-  "in_sqlsolver": 31,
-  "in_qed": 110,
-  "in_rbot": 10
+  "new": 210,
+  "in_sqlsolver": 10,
+  "in_qed": 77,
+  "in_rbot": 9
  },
  "skip_reasons": {
-  "grouping sets": 33,
   "window function": 23,
   "unsupported relational operator HyperGraph": 13,
   "unsupported relational operator Combine": 13,
@@ -45,7 +44,6 @@
   "unsupported relational operator MultiJoin": 8,
   "unsupported relational operator LogicalWindow": 8,
   "non-deterministic function CURRENT_TIMESTAMP": 7,
-  "multi-column COUNT(DISTINCT)": 7,
   "empty LogicalValues under a join (row width not in the digest)": 7,
   "unsupported relational operator Uncollect": 7,
   "table CATALOG.GEO.RESTAURANTS outside the modelled catalogs": 7,
@@ -91,7 +89,6 @@
   "flag argument to CEIL": 1,
   "unsupported relational operator EnumerableValues": 1,
   "aggregate call shape 'COUNT(APPROXIMATE DISTINCT $1)'": 1,
-  "unsupported aggregate GROUPING": 1,
   "non-finite floating-point literal": 1,
   "both plans are empty relations of unknown row type": 1,
   "unsupported relational operator LogicalSortExchange": 1,
@@ -119,7 +116,7 @@
  "duckdb_validation": {
   "databases_per_pair": 8,
   "seed": 1,
-  "agree": 500,
+  "agree": 541,
   "differs": 1,
   "duckdb_unsupported": 1,
   "errors": 0,
