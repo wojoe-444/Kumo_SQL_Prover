@@ -56,8 +56,6 @@ def concrete(rng):
 
 def norm(rows):
     def cell(value):
-        if hasattr(value, "hour") and hasattr(value, "date") and not (value.hour or value.minute or value.second):
-            return value.date()  # DuckDB gives a TIMESTAMP for DATE + INTERVAL
         if isinstance(value, bool):
             return int(value)
         if hasattr(value, "is_finite") or isinstance(value, float):
@@ -386,3 +384,18 @@ def test_bool_and_and_bool_or_skip_nulls_and_are_null_over_nothing():
         "select a, bool_and(b > 1) over (partition by a), bool_or(b > 0) filter (where a > 1) over () from t",
     ):
         assert agrees_with_replay(sql)
+
+
+def test_the_replay_keeps_a_moved_date_a_date():
+    # DuckDB types DATE + INTERVAL as TIMESTAMP; MySQL (and the encoding) keep a DATE, so the replay casts it back and a
+    # date column and the same day computed with an interval compare equal in the replayed results
+    s = schema()
+    sql = "select d + interval 1 day, date_sub(d, interval 1 week), subdate(d, 2), date_add('2020-01-31', interval 1 month) from e"
+    replay = be.DuckDBReplay(s, sql, "select d from e", "mysql")
+    data = {"t": [], "u": [], "e": [(1, "2020-02-29"), (2, None)]}
+    moved, plain = replay._run(data)
+    assert all(type(value) is type(plain[0][0]) for value in moved[0]), moved
+    assert sorted(moved, key=repr) == sorted(be.evaluate(sql, s, data, "mysql"), key=repr)
+    same("select id, date_add(d, interval 0 day) from e", "select id, d from e")
+    same("select id from e where date_add(d, interval 1 day) in (select d from e)", "select x.id from e x where exists (select 1 from e y where y.d = x.d + interval 1 day)")
+    different("select date_add(d, interval 1 day) from e", "select d from e", rows=1)

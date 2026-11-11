@@ -2356,7 +2356,7 @@ class DuckDBReplay:
     def _translate(self, sql: str, dialect: str) -> str:
         tree = sqlglot.parse_one(sql, read=dialect)
         if dialect == "mysql":
-            tree = self.cx.relax_grouping(self.cx._date_functions(tree))
+            tree = _dates_stay_dates(self.cx.relax_grouping(self.cx._date_functions(tree)))
         for table in tree.find_all(exp.Table):
             found = self.schema.lookup(table)
             if found is not None:
@@ -2448,6 +2448,23 @@ class SQLiteReplay:
             return True
         except self.sqlite3.Error:
             return None
+
+
+def _dates_stay_dates(tree: exp.Expression) -> exp.Expression:
+    """MySQL's ``d + INTERVAL 1 DAY`` and ``DATE_ADD(d, INTERVAL 1 MONTH)`` on a DATE are a DATE; DuckDB gives a TIMESTAMP
+    at midnight, which is a different value to a result comparison. The encoding compiles interval arithmetic only on
+    dates and only in days or longer units, so in every query that reaches the replay the result is cast back to DATE."""
+
+    moved = [
+        node
+        for node in tree.find_all(exp.Add, exp.Sub, exp.DateAdd, exp.DateSub)
+        if isinstance(node, (exp.DateAdd, exp.DateSub)) or isinstance(node.expression, exp.Interval) or isinstance(node.this, exp.Interval)
+    ]
+    for node in reversed(moved):  # innermost first; the node itself stays in the tree, under its cast
+        cast = exp.Cast(this=exp.Null(), to=exp.DataType.build("date"))
+        node.replace(cast)
+        cast.set("this", node)
+    return tree
 
 
 def _reorders(data: dict[str, list[tuple]], rng: random.Random, shuffles: int):
