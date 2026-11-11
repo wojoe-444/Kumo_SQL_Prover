@@ -54,6 +54,7 @@ import argparse
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+import datetime
 import functools
 import hashlib
 import json
@@ -116,6 +117,11 @@ EPOCH_YEARS = range(1971, 2038)
 # Population in MySQL and MariaDB, sample in PostgreSQL, DuckDB and MonetDB; sqlglot reads them as one function
 AMBIGUOUS_SPREAD = {"std", "stddev", "variance"}
 MYSQL_FAMILY = {"mysql", "mariadb"}
+# One name, different functions: what two engines of different families compute for the same call (each seen natively)
+SET_RETURNING = {"generate_series", "unnest", "range", "generate_subscripts", "arrayjoin", "numbers", "json_each", "regexp_split_to_table"}
+NAN_IN_CLICKHOUSE = {"acos", "asin", "ln", "log10", "log1p", "log2", "pow", "power", "sqrt"}  # NULL in MySQL outside the domain
+SUBSTRINGS = {"mid", "substr", "substring"}
+BITWISE = (exp.BitwiseAnd, exp.BitwiseOr, exp.BitwiseXor, exp.BitwiseNot, exp.BitwiseLeftShift, exp.BitwiseRightShift)
 DATE_BUILDERS = {"from_days", "make_date", "make_timestamp", "makedate", "makedate32", "makedatetime", "makedatetime64"}
 CONTRADICTIONS = FIXTURES / "native_contradictions.json"
 PROVER_TIMEOUT_MS = 3000
@@ -484,6 +490,10 @@ def dialect_gap(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
         return "PostgreSQL time zone"  # TO_TIMESTAMP gives a timestamp with a time zone, whose text ends in +00
     if (source in MYSQL_FAMILY) != (target in MYSQL_FAMILY) and words & AMBIGUOUS_SPREAD:
         return "population variance"
+    if {source, target} == MYSQL_FAMILY and words & (AMBIGUOUS_SPREAD | {"stddev_pop", "stddev_samp", "var_pop", "var_samp"}):
+        return "deviation precision"  # of whole numbers: a double in MySQL, a decimal with four more digits in MariaDB
+    if _family(source) != _family(target) and (name := _engine_specific(pair, trees, words, types)) is not None:
+        return name
     if (source in CASELESS_LIKE) != (target in CASELESS_LIKE) and any(t.find(exp.Like) for t in trees):
         return "LIKE and case"
     if (source in MYSQL_FAMILY) != (target in MYSQL_FAMILY) and any(
@@ -530,7 +540,124 @@ def dialect_gap(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
     return None
 
 
+def _family(dbms: str) -> str:
+    return "mysql" if dbms in MYSQL_FAMILY else dbms
+
+
+def _calls(tokens: list[tuple[str, str]], names: set[str]):
+    """``(name, arguments)`` for every call of one of ``names``: the arguments as token lists, split at top-level commas."""
+
+    for index, (kind, text) in enumerate(tokens):
+        if "STRING" in kind or text not in names or tokens[index + 1:index + 2] != [("L_PAREN", "(")]:
+            continue
+        depth, arguments = 0, [[]]
+        for token in tokens[index + 1:]:
+            depth += (token[0] == "L_PAREN") - (token[0] == "R_PAREN")
+            if depth == 0:
+                break
+            if depth == 1 and token[0] == "COMMA":
+                arguments.append([])
+            elif not (depth == 1 and token[0] == "L_PAREN"):
+                arguments[-1].append(token)
+        yield text, arguments
+
+
+_MONTHS = re.compile(r"\s*[+-]?\s*\d+\s+(month|year)s?\s*", re.I)
+
+
+def _whole(node) -> int | None:
+    """The value of a whole-number literal (``2``, ``-2``), or ``None``."""
+
+    literal = node.this if isinstance(node, exp.Neg) else node
+    if not (isinstance(literal, exp.Literal) and not literal.is_string and literal.name.isdigit()):
+        return None
+    return -int(literal.name) if isinstance(node, exp.Neg) else int(literal.name)
+
+
+def _substring_differs(node, families: set[str]) -> bool:
+    """Whether the two engines can answer this ``SUBSTR`` differently.
+
+    From running ``SUBSTR(s, i)`` and ``SUBSTR(s, i, n)`` on every engine for short strings and every
+    small ``i`` and ``n``: all agree for a position of 1 or more and a length of 0 or more; SQLite and
+    DuckDB agree everywhere; from a negative position ClickHouse agrees with them and MySQL and
+    PostgreSQL do not; from position 0 PostgreSQL agrees with them and MySQL and ClickHouse do not; a
+    negative length is each engine's own. A position or length that is not a literal can be any of these.
+    """
+
+    if families == {"sqlite", "duckdb"}:
+        return False
+    start = _whole(node.args["start"]) if node.args.get("start") is not None else None
+    length = node.args.get("length")
+    if start is None or (length is not None and (_whole(length) is None or _whole(length) < 0)):
+        return True
+    if start >= 1:
+        return False
+    return not families <= ({"sqlite", "duckdb", "clickhouse"} if start < 0 else {"sqlite", "duckdb", "postgresql"})
+
+
+def _engine_specific(pair: Pair, trees: list, words: set[str], types: "_Types") -> str | None:
+    """A call that the pair's two engines compute differently although sqlglot reads it as one function (named).
+
+    Each rule is a difference seen by running one statement on the engines themselves
+    (docs/evals/dlbench.md has a made-up statement for each):
+
+    * ``ROUND``: a half goes away from zero in SQLite and DuckDB and to the even neighbour in MySQL,
+      PostgreSQL and ClickHouse for a double; ``ROUND(2.675, 2)`` is 2.67 in SQLite and 2.68 elsewhere.
+    * ``LOG(x)``: the natural logarithm in MySQL and ClickHouse, base 10 in PostgreSQL and DuckDB.
+    * A logarithm, root or power outside its domain is NULL in MySQL and NaN in ClickHouse.
+    * ``SUBSTR`` from position 0 or a negative position, or with a negative length (``_substring_differs``).
+    * ``CAST(x AS CHAR)`` without a length is one character in PostgreSQL.
+    * Bitwise operators work on unsigned 64-bit numbers in MySQL (``~3`` is 18446744073709551612).
+    * ``DIV``: sqlglot does not write MySQL's integer division back as it read it.
+    * ``HEX`` of a number: its digits in MySQL and DuckDB, padded to whole bytes in ClickHouse, the hex
+      of its decimal text in SQLite. Of a string literal or a column every table declares as text, it
+      is the same everywhere.
+    * SQLite's ``date(x, '+1 month')`` runs past the end of a shorter month (January 31 gives March 2);
+      the others stop at its last day.
+    * ``generate_series`` and other calls that return rows in one engine and a list in another.
+    """
+
+    engines = {pair.source_dbms, pair.target_dbms}
+    tokens = [token for query, dbms in ((pair.source_query, pair.source_dbms), (pair.target_query, pair.target_dbms)) for token in _tokens(query, dbms) or ()]
+    if words & SET_RETURNING:
+        return "set-returning function"
+    if "round" in words:
+        return "rounding"
+    if "log" in words:
+        return "logarithm base"
+    hexes = [node for tree in trees for node in tree.find_all(exp.Hex, exp.LowerHex)]
+    if len(hexes) != len(list(_calls(tokens, {"hex"}))) or any(
+        not ((isinstance(node.this, exp.Literal) and node.this.is_string) or (isinstance(node.this, exp.Column) and node.this.name.lower() in types.text))
+        for node in hexes
+    ):
+        return "HEX of a number"
+    if pair.source_dbms == "sqlite" and any(
+        _MONTHS.fullmatch(text) if "STRING" in kind else text == "interval" for kind, text in _tokens(pair.source_query, "sqlite") or ()
+    ):
+        return "SQLite month arithmetic"
+    if "clickhouse" in engines:
+        for _, arguments in _calls(tokens, NAN_IN_CLICKHOUSE):
+            if not all(kind in ("NUMBER", "DASH") for argument in arguments for kind, _ in argument):
+                return "ClickHouse NaN"
+    families = {_family(pair.source_dbms), _family(pair.target_dbms)}
+    substrings = [node for tree in trees for node in tree.find_all(exp.Substring)]
+    if len(substrings) != len(list(_calls(tokens, SUBSTRINGS))) and families != {"sqlite", "duckdb"}:
+        return "substring position"  # a spelling sqlglot did not read as SUBSTR
+    if any(_substring_differs(node, families) for node in substrings):
+        return "substring position"
+    for tree in trees:
+        for node in tree.walk():
+            if isinstance(node, BITWISE):
+                return "bitwise operators"
+            if isinstance(node, exp.IntDiv):
+                return "integer division"
+            if isinstance(node, exp.Cast) and node.to.this in (exp.DataType.Type.CHAR, exp.DataType.Type.NCHAR) and not node.to.expressions:
+                return "CHAR without a length"
+    return None
+
+
 _NUMERIC_TYPE = re.compile(r"\s*((tiny|small|medium|big)?int(eger)?[248]?|real|float[48]?|double|dec(imal)?|numeric|number|bit|bool(ean)?|year|serial)\b")
+_TEXT_TYPE = re.compile(r"\s*((var)?char|(tiny|medium|long)?text|string|character)\b")
 _BOOLEAN = (
     exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE, exp.NullSafeEQ, exp.NullSafeNEQ, exp.In, exp.Between, exp.Is, exp.And, exp.Or,
     exp.Not, exp.Exists, exp.Like, exp.ILike, exp.Boolean,
@@ -552,6 +679,7 @@ class _Types:
             for column, kind in columns.items():
                 declared[column.lower()].append(kind)
         self.declared = set(declared)
+        self.text = {c for c, kinds in declared.items() if all(_TEXT_TYPE.match(k.lower()) for k in kinds)}
         self.numeric = {c for c, kinds in declared.items() if all(_NUMERIC_TYPE.match(k.lower()) for k in kinds)}
 
 
@@ -792,7 +920,12 @@ def _texty(declared: str) -> bool:
 
 
 def _ordered(sql: str, dialect: str) -> bool:
-    tree = parse(sql, dialect)
+    """Whether the query ends in ORDER BY; ``dialect`` is sqlglot's name (``postgres``), not the database's."""
+
+    try:
+        tree = sqlglot.parse_one(sql, read=dialect)
+    except Exception:
+        return False
     while isinstance(tree, exp.Subquery):
         tree = tree.this
     return tree is not None and tree.args.get("order") is not None
@@ -945,6 +1078,10 @@ def _bag(rows) -> Counter:
     def norm(v):
         if isinstance(v, float):
             return round(v, 6) + 0.0
+        if isinstance(v, datetime.datetime):
+            return v.isoformat(sep=" ")
+        if isinstance(v, datetime.date):  # DuckDB's DATE against the ISO text SQLite's date() returns
+            return v.isoformat()
         return v
 
     return Counter(tuple(norm(v) for v in row) for row in rows)

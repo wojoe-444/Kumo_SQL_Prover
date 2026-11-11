@@ -329,6 +329,94 @@ def test_narrowed_gaps_let_numbers_through(source, target, left, right):
     assert (result["outcome"], result["wrong"]) == ("proven", False)
 
 
+@pytest.mark.parametrize("source, target, left, right, gap", [
+    # one name, two functions: each difference was seen on the engines themselves
+    ("mysql", "postgresql", "SELECT ROUND(a) FROM t", "SELECT ROUND(a) FROM t", "rounding"),
+    ("sqlite", "postgresql", "SELECT ROUND(a, 2) FROM t", "SELECT ROUND(a, 2) FROM t", "rounding"),
+    ("sqlite", "duckdb", "SELECT ROUND(a, 2) FROM t", "SELECT ROUND(a, 2) FROM t", "rounding"),
+    ("mysql", "postgresql", "SELECT LOG(a) FROM t", "SELECT LOG(a) FROM t", "logarithm base"),
+    ("mysql", "clickhouse", "SELECT SQRT(a) FROM t", "SELECT sqrt(a) FROM t", "ClickHouse NaN"),
+    ("mysql", "clickhouse", "SELECT LN(a + 1) FROM t", "SELECT ln(a + 1) FROM t", "ClickHouse NaN"),
+    ("mysql", "postgresql", "SELECT SUBSTRING(b, -1) FROM t", "SELECT SUBSTRING(b, -1) FROM t", "substring position"),
+    ("sqlite", "postgresql", "SELECT SUBSTR(b, -2) FROM t", "SELECT SUBSTR(b, -2) FROM t", "substring position"),
+    ("sqlite", "clickhouse", "SELECT SUBSTR(b, 0, 2) FROM t", "SELECT SUBSTR(b, 0, 2) FROM t", "substring position"),
+    ("sqlite", "postgresql", "SELECT SUBSTR(b, a) FROM t", "SELECT SUBSTR(b, a) FROM t", "substring position"),
+    ("sqlite", "postgresql", "SELECT SUBSTR(b, 1, a) FROM t", "SELECT SUBSTR(b, 1, a) FROM t", "substring position"),
+    ("sqlite", "monetdb", "SELECT SUBSTR(b, -2) FROM t", "SELECT SUBSTRING(b FROM -2) FROM t", "substring position"),
+    ("mysql", "postgresql", "SELECT CAST(a AS CHAR) FROM t", "SELECT CAST(a AS CHAR) FROM t", "CHAR without a length"),
+    ("mysql", "postgresql", "SELECT a | 1 FROM t", "SELECT a | 1 FROM t", "bitwise operators"),
+    ("mysql", "duckdb", "SELECT ~a FROM t", "SELECT ~a FROM t", "bitwise operators"),
+    ("mysql", "duckdb", "SELECT a DIV 2 FROM t", "SELECT a // 2 FROM t", "integer division"),
+    ("mysql", "clickhouse", "SELECT HEX(a) FROM t", "SELECT hex(a) FROM t", "HEX of a number"),
+    ("sqlite", "duckdb", "SELECT HEX(a) FROM t", "SELECT HEX(a) FROM t", "HEX of a number"),
+    ("postgresql", "duckdb", "SELECT generate_series(1, 2) AS id", "SELECT generate_series(1, 2) AS id", "set-returning function"),
+    ("sqlite", "postgresql", "SELECT date(b, '+1 month') FROM t", "SELECT date(b, '+1 month') FROM t", "SQLite month arithmetic"),
+    ("mysql", "mariadb", "SELECT STD(a) FROM t", "SELECT STD(a) FROM t", "deviation precision"),
+])
+def test_calls_two_engines_compute_differently_are_gaps(source, target, left, right, gap):
+    schema = ["Table: `t`\nColumns:\n(`a`, integer)\n(`b`, text)\n"]
+    result = bench.decide(_pair(source, target, left, right, schema))
+    assert (result["outcome"], result["detail"]) == ("unknown", f"dialect gap: {gap}")
+
+
+@pytest.mark.parametrize("source, target, left, right", [
+    ("sqlite", "duckdb", "SELECT SUBSTR(b, -2), SUBSTR(b, a), SUBSTR(b, 0, a) FROM t", "SELECT SUBSTR(b, -2), SUBSTR(b, a), SUBSTR(b, 0, a) FROM t"),
+    ("sqlite", "postgresql", "SELECT SUBSTR(b, 1, 4), SUBSTR(b, 0, 2) FROM t", "SELECT SUBSTR(b, 1, 4), SUBSTR(b, 0, 2) FROM t"),
+    ("sqlite", "clickhouse", "SELECT SUBSTR(b, -2), SUBSTR(b, 3) FROM t", "SELECT SUBSTR(b, -2), SUBSTR(b, 3) FROM t"),
+    ("sqlite", "monetdb", "SELECT SUBSTR(b, 6, 2) FROM t", "SELECT SUBSTRING(b FROM 6 FOR 2) FROM t"),
+    ("mysql", "postgresql", "SELECT SUBSTRING(b, 2, 1) FROM t", "SELECT SUBSTRING(b, 2, 1) FROM t"),
+    ("mysql", "duckdb", "SELECT HEX(b), HEX('abc') FROM t", "SELECT HEX(b), HEX('abc') FROM t"),
+    ("mysql", "clickhouse", "SELECT SQRT(4), LN(1)", "SELECT sqrt(4), ln(1)"),
+    ("mysql", "mariadb", "SELECT ROUND(a), LOG(a), a DIV 2, a | 1, SUBSTRING(b, -1), HEX(a) FROM t", "SELECT ROUND(a), LOG(a), a DIV 2, a | 1, SUBSTRING(b, -1), HEX(a) FROM t"),
+])
+def test_calls_the_engines_compute_alike_are_no_gap(source, target, left, right):
+    schema = ["Table: `t`\nColumns:\n(`a`, integer)\n(`b`, text)\n"]
+    pair = _pair(source, target, left, right, schema)
+    assert bench.dialect_gap(pair, *bench.as_source(pair), bench.schema_of(pair)) is None
+
+
+@pytest.mark.parametrize("sql, families, differs", [
+    ("SUBSTR(b, 1)", {"mysql", "postgresql"}, False),
+    ("SUBSTR(b, 3, 0)", {"mysql", "clickhouse"}, False),
+    ("SUBSTR(b, 3, -1)", {"sqlite", "postgresql"}, True),  # a negative length is each engine's own
+    ("SUBSTR(b, 3, -1)", {"sqlite", "duckdb"}, False),  # SQLite and DuckDB agree everywhere
+    ("SUBSTR(b, -2)", {"sqlite", "clickhouse"}, False),
+    ("SUBSTR(b, -2)", {"sqlite", "mysql"}, True),  # SUBSTR('a', -2) is 'a' in SQLite and '' in MySQL
+    ("SUBSTR(b, -2)", {"sqlite", "postgresql"}, True),  # the whole string in PostgreSQL
+    ("SUBSTR(b, 0, 2)", {"sqlite", "postgresql"}, False),
+    ("SUBSTR(b, 0, 2)", {"sqlite", "clickhouse"}, True),
+    ("SUBSTR(b, 0, 2)", {"mysql", "postgresql"}, True),
+    ("SUBSTR(b, a)", {"mysql", "postgresql"}, True),  # any of the above
+    ("SUBSTR(b, 1, a)", {"sqlite", "clickhouse"}, True),
+    ("SUBSTR(b, 2)", {"sqlite", "monetdb"}, False),
+    ("SUBSTR(b, -2)", {"sqlite", "monetdb"}, True),  # never run on MonetDB
+])
+def test_where_substr_can_differ(sql, families, differs):
+    node = bench.parse(f"SELECT {sql} FROM t", "sqlite").find(bench.exp.Substring)
+    assert bench._substring_differs(node, families) is differs
+
+
+@pytest.mark.parametrize("target, target_sql, proved", [
+    ("duckdb", "SELECT a FROM t ORDER BY a", True),
+    ("duckdb", "SELECT a FROM t ORDER BY a DESC", False),  # the other order
+    ("duckdb", "SELECT a FROM t", False),  # a list against an unordered result
+    ("mysql", "SELECT a FROM t ORDER BY a", False),  # NULL sorts first in MySQL and last in PostgreSQL
+])
+def test_an_ordered_postgresql_source_is_compared_as_a_list(target, target_sql, proved):
+    schema = ["Table: `t`\nColumns:\n(`a`, integer)\n(`b`, text)\n"]
+    result = bench.decide(_pair("postgresql", target, "SELECT a FROM t ORDER BY a", target_sql, schema))
+    assert (result["outcome"] == "proven") is proved
+    assert bench._ordered("SELECT a FROM t ORDER BY a", "postgres") and not bench._ordered("SELECT a FROM t", "postgres")
+
+
+def test_a_date_value_and_its_iso_text_are_one_answer():
+    import datetime
+
+    assert bench._bag([(datetime.date(2020, 1, 31), 1.0)]) == bench._bag([("2020-01-31", 1)])
+    assert bench._bag([(datetime.datetime(2020, 1, 31, 3, 4, 5),)]) == bench._bag([("2020-01-31 03:04:05",)])
+    assert bench._bag([("2020-01-31",)]) != bench._bag([("2020-01-30",)])
+
+
 @pytest.mark.parametrize("sql, site", [
     ("SELECT a FROM t WHERE c = 1", True),  # a column no table declares is a string
     ("SELECT a FROM t WHERE b = 'x'", True),
