@@ -65,14 +65,16 @@ A pair scores proved when the prover shows it equivalent; it leaves the denomina
 
 | Benchmark | Pairs | Proved | Refuted | Unknown | Timeout or error | Score |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| TPC-H | 543 | 403 | 3 | 137 | 0 | 403/540 |
-| DSB | 1,319 | 809 | 1 | 503 | 6 | 809/1,318 |
-| Calcite | 477 | 349 | 29 | 99 | 0 | 349/448 |
-| SQLStorm | 335 | 98 | 32 | 205 | 0 | 98/303 |
-| **All** | **2,674** | **1,659** | **65** | **944** | **6** | **1,659/2,609, 0 wrong** |
+| TPC-H | 543 | 417 | 8 | 118 | 0 | 417/535 |
+| DSB | 1,319 | 961 | 109 | 244 | 5 | 961/1,210 |
+| Calcite | 477 | 349 | 40 | 88 | 0 | 349/437 |
+| SQLStorm | 335 | 100 | 37 | 198 | 0 | 100/298 |
+| **All** | **2,674** | **1,827** | **194** | **648** | **5** | **1,827/2,480, 0 wrong** |
 
-* **Held out** (one query in five, 564 pairs, 70 queries): 346/555 proved, 0 wrong, 9 refuted. The development pairs score 1,313/2,054, 0 wrong, 56 refuted. The rules of 2026-11-10 were written on the development pairs, which went from 1,075 to 1,313 proved (+22%); the held-out fifth, never read, went from 279 to 346 (+24%), so the rules carry over to queries they were not written for. Two more pairs, flagged equal by one system and unequal by another, are not scored.
-* **Original and adapted apart.** 271 of the pairs needed a quoted name folded to lower case (the Calcite queries): 172 proved, 19 refuted, 80 unknown. The other 2,403 are scored as published: 1,487 proved, 46 refuted, 864 unknown, 6 timeouts (DSB pairs of 8,000 to 38,000 characters that pass the harness's 60-second limit).
+**Which pairs leave the denominator, and why.** On 2026-11-10 the total was 2,609: 2,674 pairs are flagged equal and 65 were refuted. It is 2,480 now because 129 more pairs are refuted. Of the 194 refuted pairs, 129 are found by the directed search and 65 by the earlier sources of databases; the earlier sources alone give the 65 of 2026-11-10 (64 on a rerun on main with the same harness, one SQLStorm pair that the 8-second search does not find every time). A pair leaves the total for one reason only: a legal database on which the two queries return different rows, replayed with DuckDB's optimizer off. The authors' single PostgreSQL instance did not separate them, so their equal flag is a label disagreement. No pair is dropped for being hard. Read against the old total the score is 1,827/2,609 (70.0%), against all flagged pairs 1,827/2,674 (68.3%), against the new total 1,827/2,480 (73.7%). The pairs that left, by benchmark: DSB 108 (1 to 109), SQLStorm 5, Calcite 11, TPC-H 5. Their causes, read for the development pairs, are a grouping key dropped, `COALESCE` dropped, `x / y BETWEEN a AND b` rewritten as `x BETWEEN a * y AND b * y` (wrong for a negative divisor), an `IN` list member or a `BETWEEN` condition dropped, a `ROLLUP` with swapped columns, a filter moved into a CTE that also feeds an average, and a cast to `DECIMAL(19,0)` that loses a half. None of the 131 is proved by any version of the prover.
+
+* **Held out** (one query in five, 564 pairs, 70 queries): 376/528 proved, 0 wrong, 36 refuted (346/555 with 9 refuted on 2026-11-10; 376/564 over all flagged pairs). The development pairs score 1,451/1,952, 0 wrong, 158 refuted (1,313/2,054 with 56 refuted). The rules of 2026-11-10 were written on the development pairs, which went from 1,075 to 1,313 proved (+22%); the held-out fifth, never read, went from 279 to 346 (+24%), so the rules carry over to queries they were not written for. The rules of 2026-11-11 were written on the DSB development pairs: those went from 663 proved (of 1,075) to 785 proved (of 986, after 89 more refutations), and the held-out DSB pairs, never read, from 146 to 176 proved (+21%, of 224). Two more pairs, flagged equal by one system and unequal by another, are not scored.
+* **Original and adapted apart.** 271 of the pairs needed a quoted name folded to lower case (the Calcite queries): 172 proved, 28 refuted, 71 unknown. The other 2,403 are scored as published: 1,655 proved, 166 refuted, 577 unknown, 5 timeouts (DSB pairs of 8,000 to 38,000 characters that pass the harness's 60-second limit).
 * **Errors.** None. The three TPC-H pairs that made the prover raise a z3 exception in October no longer do, on main as well.
 * **Why unknown.** Across all 1,241 unknown pairs (both flags) the commonest reasons are that no row-preserving mapping between the queries was found (876), a derived table that is not joined on all of its columns (43), a subquery expression the prover does not support (36), a column the harness's DSB schema does not list (`c_last_review_date_sk`, 30), a `UNION` whose branches differ in shape (26) and a `LIMIT` on one side only (23). The reasons of October (an aggregate over an outer join, 148; a query that could not be printed back faithfully, 111) are gone. The unknowns were not classified further.
 
@@ -80,17 +82,17 @@ A pair scores proved when the prover shows it equivalent; it leaves the denomina
 
 | Why it was flagged | Pairs | Refuted | Proved | Unknown | Unsupported or timeout |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| rows differed | 214 | 107 | 14 | 93 | 0 |
-| rewrite failed to run | 197 | 5 | 1 | 154 | 37 |
-| a query timed out | 85 | 20 | 10 | 49 | 6 |
+| rows differed | 214 | 153 | 14 | 47 | 0 |
+| rewrite failed to run | 197 | 14 | 1 | 145 | 37 |
+| a query timed out | 85 | 35 | 10 | 34 | 6 |
 | documented TPC-H Q2 | 2 | 2 | 0 | 0 | 0 |
-| **All** | **498** | **134** | **25** | **296** | **43** |
+| **All** | **498** | **204** | **25** | **226** | **43** |
 
-134 of 498 are refuted by a replayed database; held out, 31 of 106 (8 proved, 0 wrong). **No pair is proved on grounds that a replayed database contradicts.** The 25 proofs are not errors, and each is accounted for:
+204 of 498 are refuted by a replayed database (134 on 2026-11-10; 70 are found by the directed search); held out, 43 of 106 (8 proved, 0 wrong). **No pair is proved on grounds that a replayed database contradicts.** The 25 proofs are not errors, and each is accounted for:
 
 * 14 pairs flagged for different rows are `ORDER BY ... LIMIT` queries whose sort key has ties (Calcite's `ORDER BY SAL`), so the authors' PostgreSQL happened to cut the tied rows differently for the two queries. The prover proves them equal on the stated assumption that tied rows are cut alike ([ORDER BY, LIMIT and OFFSET](sqlsolver.md#order-by-limit-and-offset)); no replayed database separates them.
 * 11 pairs were flagged only because a query timed out (10) or the rewrite failed to run (1): a rewrite that fails on PostgreSQL (one has an output alias spelled `0`) can still be equivalent as written. Five of the ten are development pairs the rules of 2026-11-10 newly prove (rewrites of two DSB queries). Each was read by hand and is equivalent as written: a correlated `AVG` turned into a join with the grouped average, comma joins written as `JOIN`, `75 * 0.01` written as `0.75` (exact decimals in PostgreSQL), and a date plus 90 days written as the date it is.
-* The database search has a budget of 8 seconds per pair and does not find the same refutations in every run. One SQLStorm pair flagged unequal is refuted in the whole-corpus run on main (135) and not in this one (134), and one flagged equal is refuted on main (66) and not in this one (65, which is why the denominator is 2,609 here and 2,608 there). Run alone, neither tree refutes either pair: whether the search finds them seems to depend on what the worker process ran before (not tracked down; main behaves the same).
+* The database search has a budget of 8 seconds per pair and does not find the same refutations in every run: a rerun of main with the same harness refutes one flagged-equal SQLStorm pair fewer than the recorded run (64, not 65), and the two SQLStorm pairs this branch's run does not refute are ones main refutes. Run alone, neither tree refutes them: whether the search finds them seems to depend on what the worker process ran before (not tracked down). Flagged unequal, main refutes 134 in the recorded run and 114 in a rerun in this container (cause not tracked down: other machine, z3 5.4.1 instead of 5.4.0, or the time budgets); this branch refutes 204 here, so against the same container it is +90 and no pair that main refutes is lost except the SQLStorm pair named above.
 
 The two documented TPC-H Q2 rewrites are refuted on the database the authors describe for the case (a supplier outside EUROPE that ties the EUROPE minimum cost). The same rewrite from a third system (DeepSeek R1), flagged equal, is refuted there too: one of the 65 refuted flagged-equal pairs.
 

@@ -1266,9 +1266,9 @@ def results_rows(report: Report, date: str) -> dict[str, dict]:
             "plan finishes in 30 s and agrees). Data downloaded at a pinned commit. The rules written on 2026-11-10 for the "
             "flagged-equal development pairs also prove 5 development pairs flagged only for a timeout (20 to 25 proofs); each "
             "was read by hand and is equivalent as written (a correlated average decorrelated into a grouped join, comma joins "
-            "written as JOIN). The database search has an 8 s budget per pair, so a refutation near that limit is not found in "
-            "every run (one SQLStorm pair: 135 refuted on main, 134 here; neither tree refutes it when run alone). The held-out "
-            "pairs were never read one by one."
+            "written as JOIN). On 2026-11-11 the directed search of tools/witness_search.py added refutations (134 refuted on 2026-11-10, 204 now; "
+            "a rerun of main in the same container as this run refutes 114). The database search has an 8 s budget "
+            "per pair, so a refutation near that limit is not found in every run. The held-out pairs were never read one by one."
         ),
         **common,
     }
