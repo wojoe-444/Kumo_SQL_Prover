@@ -121,6 +121,7 @@ from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .scalar_having_groups import read_scalar_having_groups
 from .count_column_bounds import count_column_bounds
 from .spread_aggregates import rewrite_spread_aggregates
+from .extreme_group_sources import read_extreme_group_source
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
 from .wrapped_join_filters import push_filter_into_wrapped_join
@@ -4955,6 +4956,7 @@ def normalize(
         push_filter_into_wrapped_join,
         drop_one_row_tail,
         count_column_bounds,
+        read_extreme_group_source,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
