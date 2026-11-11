@@ -13,8 +13,9 @@ python tools/dlbench_bench.py --write-results
 ## How a pair is decided
 
 1. **parsed**: sqlglot reads the source in its dialect and the translation in the target's. sqlglot has no MariaDB or MonetDB dialect, so they are read as MySQL and PostgreSQL.
-2. **proven**: the translation's renamed columns are mapped back to the source's names (BIRDTrans renames some, such as `Type` to `_Type`), identifiers are lower-cased, sqlglot writes the translation in the source's dialect, and `prove_equivalent_algebraic` proves it equal to the source (no keys, output names ignored). A source that ends in `ORDER BY` is compared as a list, so the translation must keep the order.
-3. **unknown** otherwise, including every **dialect gap**: the two databases read the same text differently and sqlglot does not translate the difference, so no proof is taken.
+2. **proven**: the translation's respelled columns and tables are mapped back to the source's names (see below), identifiers are lower-cased, sqlglot writes the translation in the source's dialect, and `prove_equivalent_algebraic` proves it equal to the source (no keys, output names ignored). A source that ends in `ORDER BY` is compared as a list, so the translation must keep the order.
+3. **proven, same statement**: a MariaDB translation that is its MySQL source token for token (see below).
+4. **unknown** otherwise, including every **dialect gap**: the two databases read the same text differently and sqlglot does not translate the difference, so no proof is taken.
 
 | Dialect gap | Rule |
 | --- | --- |
@@ -27,26 +28,32 @@ python tools/dlbench_bench.py --write-results
 | ClickHouse defaults | ClickHouse returns 0 for `SUM` of no rows and fills outer-join gaps with default values, not NULL |
 | SQLite type conversion | a text column compared with a number (see [LLM-SQL-Solver](llm-sql-solver.md)) |
 
-A proof therefore says the two queries mean the same under sqlglot's reading of each dialect, outside these gaps. MariaDB-specific and MonetDB-specific behaviour is not modelled, and PostgreSQL is assumed to sort text bytewise (the C collation). Every proof of a BIRDTrans pair is re-run: source and translation on 300 random SQLite databases (lists when ordered, with a reverse-order reload so ties never count), and a DuckDB translation also natively in DuckDB on the same data (a difference confirmed with the optimizer off). A difference makes the proof **wrong**.
+**Names read back.** BIRDTrans's translated schemas respell names the target would not take as written: `Type` becomes `_Type`, `Date received` becomes `Date_received`, the table `Sales Orders` becomes `Sales_Orders`. The fixture lists the column renames it could derive (`renames.json`, keys as the translated schema quoted them). A name the list misses is read back by its spelling: lower-cased, with every character that is not a letter or digit written as an underscore, and optionally one more underscore in front, it must match exactly one column (or table) of the source's schema, and must not be a source name itself. An unqualified name that is also an output name of the translation (`SELECT x AS _year ... ORDER BY _year`) and a table name the translation defines itself (a CTE, an alias) are left alone.
+
+**The same statement.** MySQL and MariaDB are read as one dialect and no gap rule tells them apart, and many BUTTERTrans translations between them change only letter case and spacing. Where the provers have nothing to read (an `INSERT`, a `CREATE TABLE ... AS`, a column of a table whose definition was not published), such a pair is decided by comparing the two statements' tokens: comments and the closing semicolon dropped, everything but a literal lower-cased. Nothing rests on how sqlglot parses the statement. Refused: anything that is not a query or a data change (`EXPLAIN` prints the engine's own plan); a statement whose answer can change between two runs (the clock, random values, the session, variables, locks, `GROUP_CONCAT`, window functions, `LIMIT` without `ORDER BY`); and a string literal that ends in a space, because MySQL 8's default collation compares trailing spaces and MariaDB's ignores them. The rule never applies between two other databases: the same text is not the same statement there (`generate_series(1, 2)` as a column is two rows in PostgreSQL and one list in DuckDB).
+
+A proof therefore says the two queries mean the same under sqlglot's reading of each dialect, outside these gaps. MariaDB-specific and MonetDB-specific behaviour is not modelled, and PostgreSQL is assumed to sort text bytewise (the C collation). Every proof of a BIRDTrans pair is re-run: source and translation on 300 random SQLite databases (lists when ordered, with a reverse-order reload so ties never count), and a DuckDB translation also natively in DuckDB on the same data (a difference confirmed with the optimizer off). A difference makes the proof **wrong**. The random data follows the declared types: an `INTEGER` column holds whole numbers only (SQLite would keep a stored `0.1` there, DuckDB rounds it, and the translation's table could not hold it).
 
 ## Scores
 
-Pinned subset, 2026-10-03: **109/604 exact pairs proved, 0 wrong; 799/807 parsed**. Held out (103 exact pairs): 19 proved. Approximate pairs proved: 1/203 (BIRDTrans PostgreSQL 108: `STRFTIME('%Y', date)` against `TO_CHAR(date, 'YYYY')` on a column that is text in SQLite and a date in PostgreSQL; sqlglot reads both as the same date formatting).
+Pinned subset, 2026-11-11, on 054d9e9: **156/604 exact pairs proved, 0 wrong; 799/807 parsed**. Held out (103 exact pairs): 27 proved. 22 of the 156 are same-statement decisions (MySQL to MariaDB). Approximate pairs proved: 1/203 (BIRDTrans PostgreSQL 108: `STRFTIME('%Y', date)` against `TO_CHAR(date, 'YYYY')` on a column that is text in SQLite and a date in PostgreSQL; sqlglot reads both as the same date formatting).
 
 | Dataset | Target | Pairs | Parsed | Proved | Dialect gap |
 | --- | --- | ---: | ---: | ---: | ---: |
 | BIRDTrans | ClickHouse | 57 | 57 | 18 | 32 |
-| BIRDTrans | DuckDB | 77 | 77 | 15 | 41 |
+| BIRDTrans | DuckDB | 77 | 77 | 26 | 41 |
 | BIRDTrans | MariaDB | 91 | 91 | 0 | 91 |
-| BIRDTrans | MonetDB | 83 | 83 | 7 | 38 |
+| BIRDTrans | MonetDB | 83 | 83 | 10 | 38 |
 | BIRDTrans | MySQL | 117 | 117 | 0 | 117 |
-| BIRDTrans | PostgreSQL | 68 | 66 | 16 | 18 |
+| BIRDTrans | PostgreSQL | 68 | 66 | 26 | 18 |
 | BUTTERTrans | ClickHouse | 60 | 59 | 4 | 52 |
 | BUTTERTrans | DuckDB | 62 | 59 | 7 | 44 |
-| BUTTERTrans | MariaDB | 67 | 67 | 35 | 2 |
+| BUTTERTrans | MariaDB | 67 | 67 | 58 | 2 |
 | BUTTERTrans | MonetDB | 56 | 55 | 0 | 47 |
 | BUTTERTrans | MySQL | 3 | 3 | 0 | 3 |
 | BUTTERTrans | PostgreSQL | 66 | 65 | 8 | 54 |
+
+**History.** 2026-10-03: 109/604 (held out 19). The same harness on f1d36cc (2026-11-11, after the prover's shape rules) measured 110/604. The 46 more come from two harness changes made on the development split (501 exact pairs: 91 to 129 proved; the 103 held-out pairs were scored once, at the end): 24 from reading translated spellings back and 22 same-statement decisions. No proof was lost.
 
 Unparsed: 2 BIRDTrans PostgreSQL translations and 6 BUTTERTrans queries (one MySQL source, five translations).
 
@@ -56,4 +63,6 @@ Unparsed: 2 BIRDTrans PostgreSQL translations and 6 BUTTERTrans queries (one MyS
 
 * Most BUTTERTrans queries test one function on constants (`SELECT hex(concat(regexp_instr('a', 'a')))` against `SELECT HEX(CONCAT(POSITION('a' IN 'a')))`); the prover treats such functions as opaque, so they stay unknown unless the two sides are the same function.
 * The MySQL rule is deliberately coarse: it blocks every BIRDTrans translation into MySQL and MariaDB.
+* A same-statement decision says MySQL and MariaDB were given one statement; it rests on the reading of MariaDB as MySQL, like every other proof for that target. Where the two engines answer one statement differently (collations beyond the trailing-space case, functions only one of them has), the harness does not know.
+* A spelling is matched against the tables the source's schema text describes. A translation that reads a renamed column the fixture's schema does not list stays unknown.
 * Labels are not proofs: "exact" pairs can still differ on edge cases (time zones in `UNIX_TIMESTAMP`, the `SUBSTR('Last Updated', -4)` string literal in BIRD's own gold query). Only a proof contradicted by running both queries counts as wrong.
