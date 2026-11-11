@@ -4879,6 +4879,9 @@ def normalize(
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
+        from .having_alias import read_having_aliases
+
+        tree = read_having_aliases(tree, schema)  # pre-pass: HAVING n > 1 after COUNT(x) AS n tests the count
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
         from .aggregate_membership import read_aggregate_membership
 
@@ -4891,6 +4894,12 @@ def normalize(
 
         tree = read_extreme_joins(tree, schema, not_null)  # pre-pass: a join with the table's own grouped MIN or MAX is that comparison
         tree = read_extreme_rows(tree, schema, keys)  # pre-pass: under a key the rows holding a group's MIN or MAX are one row per group
+        from .repeated_groups import read_repeated_groups
+
+        tree = read_repeated_groups(tree, schema, not_null, keys, types)  # pre-pass: two different rows that agree on columns are a group of more than one row
+        from .count_membership import read_count_membership
+
+        tree = read_count_membership(tree, schema)  # pre-pass: a correlated COUNT(..) > n is membership in the groups that pass
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
     tree = trim_redundant_row_clauses(tree)
