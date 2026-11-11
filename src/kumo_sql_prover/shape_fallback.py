@@ -38,8 +38,10 @@ the QUITE eval: ``renamed_join_heads``, ``spread_aggregates``, ``scalar_having_g
 ``star_source_columns``, ``count_column_bounds``, ``extreme_group_sources``, ``setop_operand_sources``,
 ``empty_union_operands``, ``counted_group_lists``, ``counted_group_sources``, ``existence_joins``,
 ``integer_expression_bounds``, ``grouped_conditional_counts``, ``pinned_source_columns``, ``refuted_case_arms``,
-``single_value_joins`` and the pairing order of ``opaque_pairing`` in the solver. Not in the list, because each
-only reads a query that was declined before it: ``listed_output_names`` and ``printed_spelling``.
+``single_value_joins`` and the pairing order of ``opaque_pairing`` in the solver. Also added 2026-11-11:
+``inline_rows``, ``closed_queries``, ``counted_joins``, ``count_exists_rules``, ``subquery_absorption``,
+``typed_comparisons`` and ``sqlite_date_text``. Not in the list, because each only reads a query that was declined
+before it: ``listed_output_names`` and ``printed_spelling``.
 
 A new rule that rewrites queries the prover already read belongs in the list: guard its entry in ``normalize``
 with ``shape_fallback.enabled()``.

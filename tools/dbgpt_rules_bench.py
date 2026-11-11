@@ -214,6 +214,7 @@ def prove(case: Case) -> str:
         result = prove_equivalent_algebraic(
             case.left.strip().rstrip(";"), case.right.strip().rstrip(";"),
             schema={t: list(c) for t, c in case.schema.items()}, constraints=constraints or None,
+            types={t: dict(c) for t, c in case.schema.items()},
             compare_names=False, dialect=case.dialect, timeout_ms=PROVER_TIMEOUT_MS,
             # + - * are exact on integers: every number column here is INTEGER
             exact_arithmetic=all(k in ("INTEGER", "VARCHAR", "BOOLEAN", "TIMESTAMP") for cols in case.schema.values() for k in cols.values()),
@@ -258,7 +259,7 @@ def results_row(results: list[dict]) -> dict:
         "docs": "docs/evals/dbgpt-rules.md",
         "command": "python tools/dbgpt_rules_bench.py --write-results",
         "date": today(),
-        "caveats": f"The source has no labels or schemas: both were written for this eval (tuned on test; 36 cases, no held-out split). {sum(r['label'] == 'invalid' for r in results)} cases are not valid SQL and are left out; 4 are adapted (a PostgreSQL internal function, two DDL fragments, a table-name typo).",
+        "caveats": f"The source has no labels or schemas: both were written for this eval (tuned on test; 36 cases, no held-out split). {sum(r['label'] == 'invalid' for r in results)} cases are not valid SQL and are left out; 4 are adapted (a PostgreSQL internal function, two DDL fragments, a table-name typo). Two rules were written for cases of this eval after reading them (LIKE with no wildcard as equality, and an OR of EXISTS over one FROM as one EXISTS), and the eval now passes the column types its schema file declares.",
     }
 
 

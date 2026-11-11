@@ -37,7 +37,9 @@ The dialect-knowledge fields and the translated schemas (most of the 35 MB) are 
 
 ## Original and adapted
 
-Queries are stored as published. The harness renames translated columns back (`renames.json`),
+Queries are stored as published. The harness renames translated columns back (`renames.json`, whose
+keys keep the quotes the translated schema was written with; a column or table the list misses is
+read back by its spelling when exactly one source name fits, see `docs/evals/dlbench.md`),
 lower-cases identifiers, reads MariaDB as MySQL and MonetDB as PostgreSQL (sqlglot has neither
 dialect) and writes the translation in the source's dialect with sqlglot before proving.
 
@@ -46,3 +48,5 @@ dialect) and writes the translation in the source's dialect with sqlglot before 
 Checked 2026-10-03 on whitespace- and case-normalised text over all 6,402 pairs: no source or
 translated query appears in SQL-IQ's Equivalence Judge pairs or SQL Judge candidates (SQL-IQ commit
 `fc290c9f4e72d501e05b665f9abbdd2d88d7b2b0`, which also draws on BIRD) or in LLM-SQL-Solver's Spider pairs.
+
+`native_contradictions.json` lists pairs whose proof a native replay contradicted (id, route and engine versions; never the pair's text). `tools/dlbench_bench.py --record-contradictions` writes it, and a listed pair is never counted as proved. It is empty while no replay has contradicted a proof that the gap rules do not already refuse.

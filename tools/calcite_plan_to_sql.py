@@ -515,9 +515,48 @@ class RexParser:
             elif self.i != close:
                 raise Skip(f"argument list shape after {op}: {s[self.i:self.i + 20]!r}")
         self.i = close + 1
-        if self.peek(" OVER") or self.peek(" FILTER") or self.peek(" WITHIN"):
+        if self.peek(" OVER ("):
+            return {"k": "over", "op": op, "args": args, **self.window()}
+        if self.peek(" OVER") or self.peek(" FILTER") or self.peek(" WITHIN") or self.peek(" IGNORE NULLS"):
             raise Skip("window function")
         return {"k": "call", "op": op, "args": args}
+
+    def window(self) -> dict:
+        """The window of ``op(args) OVER (...)`` as RexWindow prints it: partition keys, order keys (each with its
+        direction words) and the frame text left over, which is empty for the default frame."""
+        s = self.s
+        close = match_close(s, self.i + len(" OVER "), "(", ")")
+        self.i += len(" OVER (")
+        partition, order = [], []
+        if self.peek("PARTITION BY "):
+            self.i += len("PARTITION BY ")
+            while True:
+                partition.append(self.expr())
+                if not self.peek(", "):
+                    break
+                self.i += 2
+            if self.peek(" "):
+                self.i += 1
+        if self.peek("ORDER BY "):
+            self.i += len("ORDER BY ")
+            while True:
+                key = self.expr()
+                words = ""
+                for word in (" DESC", " NULLS FIRST", " NULLS LAST"):
+                    if self.peek(word):
+                        words += word
+                        self.i += len(word)
+                order.append((key, words))
+                if not self.peek(", "):
+                    break
+                self.i += 2
+            if self.peek(" "):
+                self.i += 1
+        if self.i > close:
+            raise Skip("window function")
+        frame = s[self.i:close]
+        self.i = close + 1
+        return {"partition": partition, "order": order, "frame": frame}
 
 
 def parse_rex(raw: str):
@@ -576,7 +615,9 @@ ALLOWED_ATTRS = {
 
 
 class Converter:
-    def __init__(self, root_types_hint: list | None = None):
+    def __init__(self, root_types_hint: list | None = None, empty_tables: list | None = None):
+        self.empty_tables = list(empty_tables or [])  # catalog paths of the plan's empty LogicalValues, in order
+        self.windows_allowed = False  # a windowed call is SQL only in a select list
         self.n = 0
         self.tables: dict = {}  # path -> catalog entry
         self.root_hint = root_types_hint
@@ -743,10 +784,133 @@ class Converter:
             raise Skip("flag outside call")
         if k == "plan":
             raise Skip("subquery outside call")
+        if k == "over":
+            return self.over(e, ctx, ctypes, env)
         op, args = e["op"], e["args"]
         suf = e.get("suffix")
         out = self.call(op, args, suf, ctx, ctypes, env)
         return out
+
+    WHOLE_FRAMES = ("ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING",
+                    "RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING")
+
+    def over(self, e, ctx, ctypes, env) -> tuple[str, T]:
+        """``op(args) OVER (window)`` in a projection, as RexOver prints it (see ``window_call``)."""
+        if not self.windows_allowed:
+            raise Skip("window function outside a projection")
+        if e.get("suffix"):
+            raise Skip("typed window function")
+        partition = [self.expr(key, ctx, ctypes, env)[0] for key in e["partition"]]
+        order = []
+        for key, words in e["order"]:
+            desc = " DESC" in words
+            nulls_last = " NULLS LAST" in words or (not desc and " NULLS FIRST" not in words)
+            order.append((self.expr(key, ctx, ctypes, env)[0], desc, nulls_last))
+        frame = e["frame"]
+        if frame and (frame not in self.WHOLE_FRAMES or not order):
+            # RexWindow prints no frame for the default one; with no ORDER BY it prints any ROWS frame
+            raise Skip("window frame (its result depends on the order of ties)")
+        args = [self.expr(a, ctx, ctypes, env) for a in e["args"]]
+        return self.window_call(e["op"], args, partition, order, whole=bool(frame) or not order)
+
+    def window_call(self, op: str, args: list, partition: list, order: list, whole: bool) -> tuple[str, T]:
+        """A windowed call whose value does not depend on how tied rows are ordered.
+
+        ``whole``: the frame is the whole partition (no ``ORDER BY``, or a frame unbounded on both sides);
+        otherwise it is the default frame of an ``ORDER BY``, every row up to the current row's last peer, which
+        MySQL and DuckDB share. Translated: SUM, $SUM0, COUNT, MIN, MAX and integer or approximate AVG over
+        either frame, and RANK / DENSE_RANK. Not translated: ROW_NUMBER, LAG, LEAD, FIRST_VALUE and the like and
+        every other ``ROWS`` or ``RANGE`` frame: their result changes with the order of tied rows, so two plans
+        need not agree row for row. ``order`` is ``(sql, descending, nulls_last)`` per key; the null position is
+        written as a key of its own because MySQL has no ``NULLS FIRST/LAST``.
+        """
+        keys = []
+        for x, desc, nulls_last in order:
+            keys.append(f"({x} IS NULL){'' if nulls_last else ' DESC'}")
+            keys.append(f"{x}{' DESC' if desc else ''}")
+        by = "PARTITION BY " + ", ".join(partition) if partition else ""
+        ordered = " ".join(part for part in (by, "ORDER BY " + ", ".join(keys) if keys else "") if part)
+        if op in ("RANK", "DENSE_RANK"):
+            if args or not order:
+                raise Skip(f"window function {op} shape")
+            return f"{op}() OVER ({ordered})", BIGINT
+        if op not in ("SUM", "$SUM0", "COUNT", "MIN", "MAX", "AVG"):
+            raise Skip(f"window function {op} (not modelled, or its result depends on the order of ties)")
+        # over the whole partition these aggregates do not read the order at all
+        w = f"OVER ({by if whole else ordered})"
+        if op == "COUNT":
+            if not args:
+                return f"COUNT(*) {w}", BIGINT
+            if len(args) > 1:
+                nn = " AND ".join(f"{x} IS NOT NULL" for x, _ in args)
+                return f"COUNT(CASE WHEN {nn} THEN 1 END) {w}", BIGINT
+            return f"COUNT({args[0][0]}) {w}", BIGINT
+        if len(args) != 1:
+            raise Skip(f"window function {op} with {len(args)} arguments")
+        x, t = args[0]
+        if op in ("MIN", "MAX"):
+            return f"{op}({x}) {w}", t
+        if op in ("SUM", "$SUM0"):
+            if t.fam not in NUMERIC and t.base != "NULL":
+                raise Skip("SUM of non-numeric")
+            rt = T("DECIMAL", 19, t.s) if t.base == "DECIMAL" else t
+            return (f"SUM({x}) {w}" if op == "SUM" else f"COALESCE(SUM({x}) {w}, 0)"), rt
+        if t.fam == "int":
+            return f"(SUM({x}) {w} DIV COUNT({x}) {w})", t
+        if t.fam == "approx":
+            return f"AVG({x}) {w}", DOUBLE
+        raise Skip("AVG of DECIMAL (Calcite result scale not modelled)")
+
+    WINDOW_GROUP_RE = re.compile(r"window\((?:partition \{([\d, ]*)\})? ?(?:order by \[([^\]]*)\])? ?"
+                                 r"(?:(rows|range) between (.+?) and (.+?))? ?(?:aggs \[(.*)\])?\)")
+
+    def rel_LogicalWindow(self, node, env):
+        """The input's columns followed by every windowed call of every ``window#i`` group, in order.
+
+        A group prints as ``window(partition {7} order by [0 DESC] aggs [COUNT($0), SUM($5)])`` (Window.Group):
+        no frame text is the whole partition without ``order by`` and the default frame with it.
+        """
+        src = self.nonempty(self.one_child(node, env), "a window")
+        a = self.alias()
+        cols, ctypes = self.cols(a, len(src.types)), list(src.types)
+        exprs, types, names = list(cols), list(ctypes), list(src.names) if src.names else [None] * len(cols)
+        for k, v in node.attrs:
+            if not re.fullmatch(r"window#\d+", k):
+                raise Skip(f"LogicalWindow attribute {k}")
+            m = self.WINDOW_GROUP_RE.fullmatch(v.strip())
+            if not m or not m.group(6):
+                raise Skip("LogicalWindow group shape")
+            part_txt, order_txt, unit, lower, upper, aggs_txt = m.groups()
+            partition = [int(x) for x in re.findall(r"\d+", part_txt or "")]
+            order = []
+            for item in [x.strip() for x in (order_txt or "").split(",") if x.strip()]:
+                om = re.fullmatch(r"(\d+)(?: (ASC|DESC))?(?: (FIRST|LAST))?", item)
+                if not om:
+                    raise Skip(f"window order key {item!r}")
+                desc = om.group(2) == "DESC"
+                nulls_last = om.group(3) == "LAST" if om.group(3) else not desc
+                order.append((int(om.group(1)), desc, nulls_last))
+            if any(not 0 <= i < len(cols) for i in partition + [i for i, _, _ in order]):
+                raise Skip("window key out of range")
+            whole = not order
+            if unit:
+                bounds = (lower, upper)
+                if bounds == ("UNBOUNDED PRECEDING", "UNBOUNDED FOLLOWING"):
+                    whole = True
+                elif not (unit == "range" and not order and bounds == ("UNBOUNDED PRECEDING", "CURRENT ROW")):
+                    # (RANGE up to the current row with no ORDER BY: every row is a peer, the whole partition)
+                    raise Skip("window frame (its result depends on the order of ties)")
+            for call in split_top(aggs_txt, ","):
+                e = parse_rex(call.strip())
+                if e.get("k") != "call" or e.get("suffix"):
+                    raise Skip("windowed call shape")
+                args = [self.expr(arg, cols, ctypes, env) for arg in e["args"]]
+                x, t = self.window_call(e["op"], args, [cols[i] for i in partition],
+                                        [(cols[i], desc, nulls_last) for i, desc, nulls_last in order], whole)
+                exprs.append(x)
+                types.append(t)
+                names.append(None)
+        return Rel(f"SELECT {self.select_list(exprs)} FROM ({src.sql}) AS {a}", types, names)
 
     def call(self, op, args, suf, ctx, ctypes, env) -> tuple[str, T]:
         if op in NONDET:
@@ -973,7 +1137,18 @@ class Converter:
         raise Skip(f"unsupported subquery operator {op}")
 
     # ------------------------------------------------------------ aggregates
-    def agg(self, raw: str, cols: list, types: list, has_keys: bool) -> tuple[str, T]:
+    def agg(self, raw: str, cols: list, types: list, has_keys: bool, keys: list | None = None,
+            sets: list | None = None) -> tuple[str, T]:
+        gm = re.fullmatch(r"(GROUPING|GROUPING_ID)\(((?:\$\d+(?:, )?)+)\)", raw.strip())
+        if gm:
+            # GROUPING(k1, .., kn): one bit per argument, leftmost the most significant, set when the
+            # argument is not a key of the row's grouping set (always 0 without grouping sets).
+            args = [int(x) for x in re.findall(r"\$(\d+)", gm.group(2))]
+            if any(i not in (keys or []) for i in args):
+                raise Skip("GROUPING of a column that is not a group key")
+            if not sets:
+                return "0", BIGINT
+            return f"GROUPING({', '.join(cols[i] for i in args)})", BIGINT
         lm = re.fullmatch(r"LITERAL_AGG\((.*)\)", raw.strip())
         if lm:
             if not has_keys:
@@ -1014,7 +1189,8 @@ class Converter:
                 return ("COUNT(*)" if fcond is None else f"COUNT({guard('1')})"), BIGINT
             if len(a) > 1:
                 if distinct:
-                    raise Skip("multi-column COUNT(DISTINCT)")
+                    # MySQL's COUNT(DISTINCT a, b) is Calcite's: distinct rows with no NULL among the arguments
+                    return f"COUNT(DISTINCT {', '.join(guard(x) for x in a)})", BIGINT
                 nn = " AND ".join(f"{x} IS NOT NULL" for x in a)
                 cond = nn if fcond is None else f"{fcond} AND {nn}"
                 return f"COUNT(CASE WHEN {cond} THEN 1 END)", BIGINT
@@ -1051,6 +1227,7 @@ class Converter:
 
     def rel(self, node: PNode, env: dict) -> Rel:
         self.depth += 1
+        windows, self.windows_allowed = self.windows_allowed, False  # a nested plan starts outside any select list
         try:
             if self.depth > 60:
                 raise Skip("plan too deep")
@@ -1065,6 +1242,7 @@ class Converter:
             return fn(node, env)
         finally:
             self.depth -= 1
+            self.windows_allowed = windows
 
     @staticmethod
     def attr(node: PNode, name: str, default=None):
@@ -1141,7 +1319,11 @@ class Converter:
         for k, v in node.attrs:
             if k == "variablesSet":
                 continue
-            x, t = self.expr(parse_rex(v), cols, ctypes, env2)
+            self.windows_allowed = True
+            try:
+                x, t = self.expr(parse_rex(v), cols, ctypes, env2)
+            finally:
+                self.windows_allowed = False
             exprs.append(x)
             types.append(t)
             names.append(k)
@@ -1218,12 +1400,13 @@ class Converter:
         a = self.alias()
         cols, ctypes = self.input_ctx(src, a)
         keys_txt = None
+        sets_txt = None
         aggs = []
         for k, v in node.attrs:
             if k == "group":
                 keys_txt = v
             elif k == "groups":
-                raise Skip("grouping sets")
+                sets_txt = v
             else:
                 aggs.append((k, v))
         if keys_txt is None or not (keys_txt.startswith("{") and keys_txt.endswith("}")):
@@ -1231,17 +1414,40 @@ class Converter:
         keys = [int(x) for x in re.findall(r"\d+", keys_txt)]
         if any(not 0 <= i < len(cols) for i in keys):
             raise Skip("group key out of range")
+        sets = None
+        if sets_txt is not None:
+            # groups=[[{0, 7}, {0}, {}]]: one output row per group of every grouping set; a key the
+            # set leaves out is NULL in that row (standard GROUPING SETS, which the SQL states as is)
+            if not re.fullmatch(r"\[\{[\d, ]*\}(?:, \{[\d, ]*\})*\]", sets_txt):
+                raise Skip("grouping sets shape")
+            sets = [[int(x) for x in re.findall(r"\d+", part)] for part in re.findall(r"\{([\d, ]*)\}", sets_txt)]
+            if any(i not in keys for one in sets for i in one) or {i for one in sets for i in one} != set(keys):
+                raise Skip("grouping sets do not cover the group keys")
+            if len({tuple(sorted(one)) for one in sets}) != len(sets):
+                raise Skip("duplicate grouping sets")
+            if src.empty:
+                raise Skip("grouping sets over an empty LogicalValues")
+        if not keys and sets is None and len(aggs) == 1 and not src.empty:
+            single = re.fullmatch(r"SINGLE_VALUE\(\$(\d+)\)", aggs[0][1].strip())
+            if single and int(single.group(1)) < len(cols):
+                # with no keys SINGLE_VALUE is NULL over no rows, the value over one row and an error over
+                # more: what a scalar subquery is, so the one-row relation is a select of that subquery
+                i = int(single.group(1))
+                return Rel(f"SELECT (SELECT {cols[i]} FROM ({src.sql}) AS {a}) AS c0", [ctypes[i]], [aggs[0][0]])
         exprs = [cols[i] for i in keys]
         types = [ctypes[i] for i in keys]
         names = [src.names[i] if src.names else None for i in keys]
         for name, raw in aggs:
-            x, t = self.agg(raw, cols, ctypes, bool(keys))
+            x, t = self.agg(raw, cols, ctypes, bool(keys), keys, sets)
             exprs.append(x)
             types.append(t)
             names.append(name)
         if not exprs:
             raise Skip("aggregate with no keys and no calls (zero-column relation)")
-        gb = f" GROUP BY {', '.join(cols[i] for i in keys)}" if keys else ""
+        if sets is not None:
+            gb = " GROUP BY GROUPING SETS (" + ", ".join("(" + ", ".join(cols[i] for i in one) + ")" for one in sets) + ")"
+        else:
+            gb = f" GROUP BY {', '.join(cols[i] for i in keys)}" if keys else ""
         sel = self.select_list(exprs)
         return Rel(f"SELECT {sel} FROM ({self.input_sql(src, a, sel + gb)}) AS {a}{gb}", types, names)
 
@@ -1330,6 +1536,11 @@ class Converter:
             raise Skip("values shape")
         inner = raw[1:-1].strip()
         if inner == "":
+            if self.empty_tables:
+                # the test's Java names the scan this empty relation was made from (java_empty_tables)
+                _, cols, _ = CATALOG[self.empty_tables.pop(0)]
+                exprs = [f"CAST(NULL AS {self.cast_name(t)})" for _, t, _ in cols]
+                return Rel(f"SELECT {self.select_list(exprs)} WHERE 1 = 0", [t for _, t, _ in cols], [n for n, _, _ in cols])
             return Rel(None, None, None, empty=True)
         rows = []
         for tup in split_top(inner, ", "):
@@ -1432,6 +1643,118 @@ def java_bodies(path: Path) -> dict:
     return out
 
 
+def _java_block_end(src: str, start: int) -> int:
+    """Index just past the ``}`` that closes the ``{`` at ``start`` (string and char literals and comments skipped)."""
+    depth, i, n = 0, start, len(src)
+    while i < n:
+        ch = src[i]
+        if ch in "\"'":
+            i += 1
+            while i < n and src[i] != ch:
+                i += 2 if src[i] == "\\" else 1
+        elif src.startswith("//", i):
+            i = src.find("\n", i)
+            if i < 0:
+                return n
+        elif src.startswith("/*", i):
+            i = src.find("*/", i) + 1
+            if i <= 0:
+                return n
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+JAVA_METHOD_RE = re.compile(r"\n  (?:@\w+(?:\([^)]*\))?\s+)*(?:(?:private|protected|public|static|final)\s+)*"
+                            r"[\w<>\[\], .?]+?\s+(\w+)\s*\(([^()]*)\)\s*(?:throws [\w, .]+)?\s*\{")
+
+
+def java_methods(path: Path) -> dict:
+    """Every method of the test class: name -> (parameter names, body text). Overloads are left out."""
+    if not path.exists():
+        return {}
+    src = path.read_text()
+    out, seen = {}, set()
+    for m in JAVA_METHOD_RE.finditer(src):
+        name = m.group(1)
+        if name in seen:
+            out.pop(name, None)
+            continue
+        seen.add(name)
+        params = [part.split()[-1] for part in m.group(2).split(",") if part.strip()]
+        out[name] = (params, src[m.end() - 1:_java_block_end(src, m.end() - 1)])
+    return out
+
+
+# RelBuilder calls that leave the relation on top of the stack with the row type it had
+JAVA_ROW_PRESERVING = {"filter", "variable", "field", "equals", "literal", "add", "get", "set", "and", "or", "not",
+                       "call", "isNull", "isNotNull", "as", "id"}
+JAVA_CALL_RE = re.compile(r"\.scan\(\"(\w+)\"\)|\.empty\(\)|\.(\w+)\(")
+
+
+def java_inline_helpers(body: str, methods: dict, self_name: str, depth: int = 3) -> str:
+    """The body with calls of the class's own helper methods replaced by the helper's body; a boolean literal
+    argument decides the helper's ``if (parameter) { .. }`` blocks."""
+    for _ in range(depth):
+        changed = False
+        for m in list(re.finditer(r"(?<![.\w])(\w+)\(", body))[::-1]:
+            name = m.group(1)
+            if name == self_name or name not in methods:
+                continue
+            end = match_close(body, m.end() - 1, "(", ")")
+            args = [a.strip() for a in split_top(body[m.end():end], ",")] if body[m.end():end].strip() else []
+            params, text = methods[name]
+            if len(args) != len(params):
+                continue
+            for param, arg in zip(params, args):
+                if arg not in ("true", "false"):
+                    continue
+                for cond in list(re.finditer(rf"if \((!?){re.escape(param)}\) \{{", text))[::-1]:
+                    stop = _java_block_end(text, cond.end() - 1)
+                    keep = (arg == "true") != bool(cond.group(1))
+                    if text[stop:].lstrip().startswith("else"):
+                        continue  # not modelled: left as written, which makes the scan below decline
+                    text = text[:cond.start()] + (text[cond.end():stop - 1] if keep else "") + text[stop:]
+            body = body[:m.start()] + " " + text + " " + body[end + 1:]
+            changed = True
+        if not changed:
+            break
+    return body
+
+
+def java_empty_tables(name: str, methods: dict) -> list | None:
+    """The scott tables a RelBuilder test empties with ``.empty()``, in the order it builds them, or ``None``.
+
+    ``b.scan("EMP").empty()`` is a ``LogicalValues`` with EMP's row type and no rows; the plan dump prints it as
+    ``LogicalValues(tuples=[[]])`` and drops the row type, so the Java is the only place that states it. RelBuilder
+    builds leaves left to right, which is the order the plan lists them. Anything this does not follow exactly (an
+    ``.empty()`` that is not on a scan, or on a scan with more than filters above it, a conditional it cannot
+    decide) gives ``None``.
+    """
+    if name not in methods:
+        return None
+    body = java_inline_helpers(methods[name][1], methods, name).replace("Holder.empty()", "")  # an empty variable holder
+    if "relFn" not in body or re.search(r"if \(\w+\) \{\s*\w+\.empty\(\)", body):
+        return None
+    out, last, clean = [], None, False
+    for m in JAVA_CALL_RE.finditer(body):
+        if m.group(1):
+            last, clean = m.group(1), True
+        elif m.group(0) == ".empty()":
+            if last is None or not clean or ("scott", last) not in CATALOG:
+                return None
+            out.append(("scott", last))
+            last, clean = None, False
+        elif m.group(2) not in JAVA_ROW_PRESERVING:
+            clean = False
+    return out
+
+
 JAVA_SKIPS = [
     (re.compile(r"withCatalogReaderFactory"), "custom catalog reader (tables not in MockCatalogReaderSimple)"),
     (re.compile(r"withDynamicTable"), "dynamic-star table (schema unknown)"),
@@ -1443,11 +1766,13 @@ def load_cases(calcite: Path):
     for stem, prefix in XML_FILES:
         xml = calcite / XML_DIR / f"{stem}.xml"
         bodies = java_bodies(calcite / JAVA_DIR / f"{stem}.java")
+        methods = java_methods(calcite / JAVA_DIR / f"{stem}.java")
         root = ET.parse(xml).getroot()
         for tc in root:
             res = {r.get("name"): (r.text or "") for r in tc}
             yield {"name": prefix + tc.get("name"), "test": tc.get("name"), "file": stem,
-                   "res": res, "java": bodies.get(tc.get("name"), "")}
+                   "res": res, "java": bodies.get(tc.get("name"), ""),
+                   "empty_tables": java_empty_tables(tc.get("name"), methods)}
 
 
 def convert_case(case: dict) -> dict:
@@ -1461,8 +1786,11 @@ def convert_case(case: dict) -> dict:
     if "hints=" in before_txt + after_txt:
         raise Skip("hints")
     pb, pa = parse_plan(before_txt), parse_plan(after_txt)
+    empties = case.get("empty_tables") or []
+    if len(empties) != before_txt.count("LogicalValues(tuples=[[]])"):
+        empties = []  # the Java does not account for every empty relation of the plan: none is typed from it
     try:
-        cb = Converter()
+        cb = Converter(empty_tables=empties)
         rb = cb.top(pb)
         ca = Converter(root_types_hint=rb.types)
         ra = ca.top(pa)
@@ -1472,7 +1800,7 @@ def convert_case(case: dict) -> dict:
             ra = ca.top(pa)
         except NeedHint:
             raise Skip("both plans are empty relations of unknown row type") from None
-        cb = Converter(root_types_hint=ra.types)
+        cb = Converter(root_types_hint=ra.types, empty_tables=empties)
         rb = cb.top(pb)
     if len(rb.types) != len(ra.types):
         raise Skip("plans differ in width")

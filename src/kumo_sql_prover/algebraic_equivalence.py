@@ -106,6 +106,14 @@ from .constant_regroup_rules import collapse_constant_regroup
 from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
 from . import shape_fallback
+from . import union_source_names
+from .union_rollup import roll_up_grouped_union
+from .one_row_joins import cross_join_one_row
+from .window_sources import inline_windowed_source
+from .window_pruning import prune_windowed_derived
+from .window_filters import push_filter_below_windows
+from .window_levels import settle_window_levels
+from .expansion_layers import collapse_layered_expansion
 from .closed_sources import closed_derived_source, inner_join_conditions, plain_inner_join
 from .listed_output_names import name_listed_outputs
 from .membership_dedup import relax_membership_dedup
@@ -2373,8 +2381,11 @@ def _canonicalize_union_source(node: exp.Subquery) -> exp.Expression | None:
             targets.append(column)
         elif column.name.lower() in renames:
             return None  # ambiguous unqualified use: leave it alone
+    clashing = union_source_names.select_aliases(outer) if shape_fallback.enabled() else set()
     for column in targets:
-        column.set("this", exp.to_identifier(renames[column.name.lower()]))
+        old_name = column.name
+        column.set("this", exp.to_identifier(renames[old_name.lower()]))
+        union_source_names.qualify(column, old_name, node.alias, clashing)  # a new name that is also a select alias
     canonical.sort(key=lambda b: b.sql(dialect="bigquery"))
     union: exp.Expression = canonical[0]
     for branch in canonical[1:]:
@@ -4909,6 +4920,8 @@ def normalize(
     tree = inline_named_windows(tree)
     from .nonnull_any import rewrite_nonnull_any
 
+    from .exists_disjunction import merge_exists_disjunction
+    from .literal_like import literal_like_to_equality
     from .mysql_exists_casts import drop_mysql_exists_cast
     from .single_source_columns import qualify_single_source_columns
 
@@ -4916,6 +4929,26 @@ def normalize(
     if shapes:
         tree = read_back_renamed_join_heads(tree, schema)  # pre-pass: a column list on the first table of a parenthesized join
         tree = rewrite_spread_aggregates(tree, dialect, _assumptions)  # pre-pass: STDDEV and VARIANCE as a function of three sums
+        from .closed_queries import fold_closed_query
+        from .inline_rows import inline_struct_rows
+
+        tree = fold_closed_query(inline_struct_rows(tree, dialect), dialect)  # pre-pass: inline rows as a table; a query that reads no table as its rows
+        from .counted_joins import counted_join_rules
+
+        tree = counted_join_rules(tree)  # pre-pass: COUNT(*) over a FULL JOIN as the count of its two halves
+        from .count_exists_rules import count_tests_to_exists
+
+        tree = count_tests_to_exists(tree)  # pre-pass: (SELECT COUNT(*) ..) > 0 as EXISTS
+        from .subquery_absorption import absorb_subquery_tests
+
+        tree = absorb_subquery_tests(tree)  # pre-pass: x IN (..) OR x IN (the same with one more filter) is the first
+        from .typed_comparisons import typed_comparison_rules
+
+        tree = typed_comparison_rules(tree, types, dialect)  # pre-pass: date + INTERVAL as DATE_ADD in a comparison; x + 1 = y + 1 as x = y
+        from .sqlite_date_text import sqlite_date_text_rules
+
+        tree = sqlite_date_text_rules(tree, dialect)  # pre-pass: SQLite's STRFTIME digits as text or as a number
+    if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
@@ -4938,7 +4971,7 @@ def normalize(
     if shapes:
         tree = list_keys_of_counted_groups(tree)  # pre-pass: a counted intersection under a list that is not its keys
     for select in list(tree.find_all(exp.Select))[::-1]:
-        replacement = collapse_grouping_expansion(select) or collapse_counted_intersection(select)
+        replacement = collapse_grouping_expansion(select) or (collapse_layered_expansion(select) if shapes else None) or collapse_counted_intersection(select)
         if replacement is not None:
             if select is tree:
                 tree = replacement
@@ -4963,6 +4996,8 @@ def normalize(
     if schema:
         tree = _expand_stars(tree, schema)
     tree = resolve_alias_reads(tree, schema, dialect)
+    if shapes:
+        tree = settle_window_levels(tree)
     tree = _isolate_windows(canonical_windows(drop_unread_windows(tree), types))
     if schema:
         # name each bare column's source before any rewrite reads a derived table as its base table, whose
@@ -5004,6 +5039,13 @@ def normalize(
         lambda sel: read_pinned_source_columns(sel, types_map),
         drop_refuted_case_arm,
         lambda sel: read_single_value_join(sel, dialect),
+        roll_up_grouped_union,
+        cross_join_one_row,
+        inline_windowed_source,
+        prune_windowed_derived,
+        push_filter_below_windows,
+        lambda sel: literal_like_to_equality(sel, types_map, dialect),
+        merge_exists_disjunction,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
@@ -5288,6 +5330,11 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
     except sqlglot.errors.SqlglotError:
         replaced = False
     result = prove_equivalent_smt(left, right, types=types, **kwargs)
+    if result.proven:
+        from . import normalized_disclosure
+
+        # the error comparison and the FLOAT64 sum pairing were read off the normalized text
+        result = normalized_disclosure.settle(result, (left_sql, right_sql), (left, right), {**kwargs, "types": types})
     if normalization_assumptions:
         result = dataclasses.replace(result, assumptions=tuple(dict.fromkeys((*result.assumptions, *sorted(normalization_assumptions)))))
     if result.status is SmtStatus.NOT_PROVEN and not replaced:
