@@ -121,6 +121,10 @@ from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .scalar_having_groups import read_scalar_having_groups
 from .count_column_bounds import count_column_bounds
 from .renamed_join_heads import read_back_renamed_join_heads
+from .counted_group_sources import read_counted_group_sources
+from .counted_group_lists import list_keys_of_counted_groups
+from .empty_union_operands import drop_empty_union_operand
+from .setop_operand_sources import merge_operand_sources
 from .spread_aggregates import rewrite_spread_aggregates
 from .star_source_columns import list_read_star_columns
 from .extreme_group_sources import read_extreme_group_source
@@ -923,18 +927,19 @@ _merge_counter = itertools.count()
 _OUTER = {"SEMI", "ANTI", "LEFT", "RIGHT", "FULL"}
 
 
-def _merge_spj_source(select: exp.Select) -> exp.Expression | None:
+def _merge_spj_source(select: exp.Select, *, plain: bool = False) -> exp.Expression | None:
     """Fold a filtering or joining derived table into the grouped select that reads it.
 
     ``SELECT SUM(x) FROM (SELECT k, x FROM t WHERE c) AS d GROUP BY k`` is
     ``SELECT SUM(x) FROM t WHERE c GROUP BY k``: the derived table keeps one row per row of its
     own sources, so the aggregate sees the same rows. Only selects that group or aggregate are
-    rewritten (the prover flattens the others itself), and only through inner joins.
+    rewritten (the prover flattens the others itself), and only through inner joins. ``plain``
+    also reads a select that neither groups nor aggregates (``setop_operand_sources``).
     """
 
     from .eager_aggregation import _own_aggregates
 
-    if not (select.args.get("group") or _own_aggregates(select)) or not _no_extras(select, allow_group=True):
+    if not (plain or select.args.get("group") or _own_aggregates(select)) or not _no_extras(select, allow_group=True):
         return None
     if any(isinstance(star, exp.Star) and not isinstance(star.parent, exp.Count) for star in select.find_all(exp.Star)):
         return None
@@ -4906,6 +4911,8 @@ def normalize(
     if shapes:
         tree = separate_disjoint_unions(tree)
     tree = expand_grouping_sets(tree)
+    if shapes:
+        tree = list_keys_of_counted_groups(tree)  # pre-pass: a counted intersection under a list that is not its keys
     for select in list(tree.find_all(exp.Select))[::-1]:
         replacement = collapse_grouping_expansion(select) or collapse_counted_intersection(select)
         if replacement is not None:
@@ -4940,6 +4947,8 @@ def normalize(
             tree, lambda t: _qualify_correlated_columns(_qualify_outer_join_columns(t, schema), schema), schema, dialect, "algebraic_qualification"
         )
     tree = merge_distinct_partitions(tree)
+    if shapes:
+        tree = read_counted_group_sources(tree)  # pre-pass: COUNT(*) pushed below a chain of joins, from the inside
 
     types_map = {k.lower(): {c.lower(): t for c, t in v.items()} for k, v in (types or {}).items()}
 
@@ -4962,13 +4971,14 @@ def normalize(
         drop_one_row_tail,
         count_column_bounds,
         read_extreme_group_source,
+        merge_operand_sources,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
         if isinstance(node, exp.Subquery):
             return _inline_projection(node, schema) or node
         if isinstance(node, exp.SetOperation):
-            return merge_same_source(node) or set_operation_to_exists(node) or node
+            return merge_same_source(node) or set_operation_to_exists(node) or (shapes and drop_empty_union_operand(node)) or node
         if isinstance(node, exp.Select):
             sweep()  # every rule below works on copies, which only a collection frees
             # a derived table's output names are how the query around it reads it, so a rule that renames
