@@ -15,6 +15,7 @@ from kumo_sql_prover.smt_equivalence import TableConstraints
 SCHEMA = {"c": ["ck", "name"], "o": ["k", "ck", "price"], "l": ["k", "n", "q"], "h": ["x", "y"]}
 TYPES = {name: {column: "INT" for column in columns} for name, columns in SCHEMA.items()}
 KEYS = {"c": [("ck",)], "o": [("k",)], "l": [("k", "n")]}
+NOT_NULL = {"c": frozenset({"ck"}), "o": frozenset({"k"}), "l": frozenset({"k", "n"})}
 CONSTRAINTS = {
     "c": TableConstraints(not_null=frozenset({"ck"}), keys=(("ck",),)),
     "o": TableConstraints(not_null=frozenset({"k"}), keys=(("k",),)),
@@ -22,8 +23,8 @@ CONSTRAINTS = {
 }
 
 
-def pulled(sql, dialect="postgres"):
-    out = pull_up_keyed_join(sqlglot.parse_one(sql, read=dialect), SCHEMA, KEYS)
+def pulled(sql, dialect="postgres", not_null=NOT_NULL):
+    out = pull_up_keyed_join(sqlglot.parse_one(sql, read=dialect), SCHEMA, KEYS, not_null)
     return out.sql(dialect=dialect) if out is not None else None
 
 
@@ -125,8 +126,8 @@ def test_inside_a_membership_test_the_join_stays():
         read="postgres",
     )
     inner = tree.find(exp.In).args["query"].this
-    assert pull_up_keyed_join(inner, SCHEMA, KEYS) is None
-    assert pull_up_keyed_join(inner.copy(), SCHEMA, KEYS) is not None  # the same select on its own is read
+    assert pull_up_keyed_join(inner, SCHEMA, KEYS, NOT_NULL) is None
+    assert pull_up_keyed_join(inner.copy(), SCHEMA, KEYS, NOT_NULL) is not None  # the same select on its own is read
 
 
 TARGETS = [
@@ -204,3 +205,20 @@ def test_the_rewrite_returns_the_same_rows(sql):
         }
         first, second = rows_on_duckdb([sql, after], rows)
         assert first == second, rows
+
+
+def test_a_key_with_a_nullable_column_does_not_identify_a_row():
+    """``UNIQUE (k, n)`` allows two rows ``(1, NULL)``: the keyed join returns both, a ``GROUP BY k, n`` one."""
+
+    joined = "SELECT l.k, l.q FROM l JOIN (SELECT o.ck FROM o GROUP BY o.ck HAVING MIN(o.price) > 0) AS g ON l.k = g.ck"
+    assert pulled(joined) is not None
+    assert pulled(joined, not_null={"l": frozenset({"k"})}) is None  # n may be NULL
+    assert pulled(joined, not_null=None) is None
+    # the false proof this guards against: under the key alone the flat grouped join is another query
+    flat = "SELECT l.k, MAX(l.q) FROM l JOIN o ON l.k = o.ck GROUP BY l.k, l.n HAVING MIN(o.price) > 0"
+    keyed = "SELECT l.k, l.q FROM l JOIN (SELECT o.ck FROM o GROUP BY o.ck HAVING MIN(o.price) > 0) AS g ON l.k = g.ck"
+    only_unique = {"l": TableConstraints(keys=(("k", "n"),)), "o": TableConstraints(not_null=frozenset({"k"}), keys=(("k",),))}
+    first, second = rows_on_duckdb([keyed, flat], {"l": [(1, None, 5), (1, None, 5)], "o": [(7, 1, 3)]})
+    assert first != second
+    for left, right in ((keyed, flat), (flat, keyed)):
+        assert not prove_equivalent_algebraic(left, right, schema=SCHEMA, types=TYPES, constraints=only_unique, dialect="postgres", compare_names=False).proven

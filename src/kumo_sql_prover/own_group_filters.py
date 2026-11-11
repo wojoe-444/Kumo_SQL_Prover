@@ -33,7 +33,8 @@ when ``HAVING h`` over the outer group is TRUE. The joined form returns each row
 ``G`` has one row per ``v``: the same.
 
 Conditions, all checked: the outer select is grouped (no ``ROLLUP`` and the like), with comma, cross or inner
-joins over base tables the schema lists (plus ``G`` in the joined form), each other table with a declared key;
+joins over base tables the schema lists (plus ``G`` in the joined form), each other table with a declared key
+whose columns are all declared NOT NULL;
 ``G`` is ``SELECT k FROM T GROUP BY k HAVING h`` (or the form the normalizer gives it inside ``IN``: a select of
 the key from that grouped derived table with the test in ``WHERE``), with no ``WHERE`` of its own, one grouping
 column, and ``h`` reading ``T`` only inside plain aggregates; exactly one outer source reads ``T``; in the joined
@@ -194,7 +195,7 @@ def filter_own_groups(select: exp.Select, schema: dict | None, keys: dict | None
         # no other subquery, window or outer reference to follow
         if any(isinstance(n, (exp.Subquery, exp.Exists, exp.Window)) and not _inside(n, link) and (position is None or not _inside(n, sources[position])) for n in select.walk()):
             continue
-        table_keys = {index: key_of(sources[index], keys, owned[index]) for index in others if index != mine}
+        table_keys = {index: key_of(sources[index], keys, owned[index], not_null) for index in others if index != mine}
         if any(value is None for value in table_keys.values()):
             continue
 

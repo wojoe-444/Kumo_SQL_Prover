@@ -14,16 +14,17 @@ from kumo_sql_prover.smt_equivalence import TableConstraints
 SCHEMA = {"c": ["k", "name", "fk"], "o": ["id", "ck", "note", "x"], "h": ["ck", "x"]}
 TYPES = {name: {column: "INT" for column in columns} for name, columns in SCHEMA.items()}
 KEYS = {"c": [("k",)], "o": [("id",)]}
+NOT_NULL = {"c": frozenset({"k"}), "o": frozenset({"id"})}
 CONSTRAINTS = {
     "c": TableConstraints(not_null=frozenset({"k"}), keys=(("k",),)),
     "o": TableConstraints(not_null=frozenset({"id"}), keys=(("id",),)),
 }
 
 
-def counted(sql, dialect="postgres"):
+def counted(sql, dialect="postgres", not_null=NOT_NULL):
     before = sqlglot.parse_one(sql, read=dialect)
     text = before.sql(dialect=dialect)
-    after = count_outer_groups(before, SCHEMA, KEYS).sql(dialect=dialect)
+    after = count_outer_groups(before, SCHEMA, KEYS, not_null).sql(dialect=dialect)
     return None if after == text else after
 
 
@@ -133,3 +134,20 @@ def test_the_rewrite_returns_the_same_rows(sql):
         }
         first, second = rows_on_duckdb([sql, after], rows)
         assert first == second, rows
+
+
+def test_a_key_that_may_be_null_is_not_used():
+    """Two rows of ``c`` with a NULL key satisfy ``UNIQUE (k)`` and would fall into one group; a NULL ``o.id`` would not be counted."""
+
+    before = f"SELECT c.k, COALESCE(g.n, 0) AS orders FROM c LEFT JOIN {COUNTS} ON c.k = g.ck"
+    assert counted(before) is not None
+    assert counted(before, not_null={"o": frozenset({"id"})}) is None  # c.k may be NULL
+    assert counted(before, not_null=None) is None
+    # the counted table's key may be NULL: the joined column is counted instead, which has a value on every match
+    assert counted(before, not_null={"c": frozenset({"k"})}) == "SELECT c.k, COUNT(g.ck) AS orders FROM c LEFT JOIN o AS g ON c.k = g.ck AND g.note <> 3 GROUP BY c.k"
+    grouped = "SELECT c.k, COUNT(o.ck) FROM c LEFT JOIN o ON c.k = o.ck AND o.note <> 3 GROUP BY c.k"
+    only_unique = {"c": TableConstraints(keys=(("k",),)), "o": TableConstraints(keys=(("id",),))}
+    first, second = rows_on_duckdb([before, grouped], {"c": [(None, 0, 0), (None, 0, 0)], "o": []})
+    assert first != second
+    for left, right in ((before, grouped), (grouped, before)):
+        assert not prove_equivalent_algebraic(left, right, schema=SCHEMA, types=TYPES, constraints=only_unique, dialect="postgres", compare_names=False).proven

@@ -12,8 +12,8 @@ is
 (TPC-H Q13 and the rewrites that count each customer's orders before the join). The prover reads the second form;
 the first kept its grouped table and the pair stayed unproved.
 
-Why this is exact. ``c`` has a declared key, which is unique and not NULL, so grouping the outer join by it gives one
-group per row of ``c``, as the first form gives one row per row of ``c`` (the counts table has at most one row per
+Why this is exact. ``c`` has a declared key whose columns are declared NOT NULL, so no two rows of ``c`` share it
+and grouping the outer join by it gives one group per row of ``c``, as the first form gives one row per row of ``c`` (the counts table has at most one row per
 value of its key, and ``WHERE`` reads ``c`` alone, so it keeps or drops a row of ``c`` with all its matches). For
 a row of ``c``, the counts table holds a row for its value exactly when some row of ``o`` passes the filter with
 that value, and its count is the number of them (of them with a value in ``x``, for ``COUNT(x)``); otherwise the
@@ -25,7 +25,8 @@ Conditions, all checked:
 
 * the select has only a select list, ``FROM``, one join and ``WHERE``: no ``DISTINCT``, grouping, tail, window,
   aggregate or nested query of its own;
-* ``FROM`` is a table the schema lists, with a declared key; the join is ``LEFT [OUTER] JOIN`` of a derived table
+* ``FROM`` is a table the schema lists, with a declared key whose columns are all declared NOT NULL (two rows with
+  a NULL key would be one group); the join is ``LEFT [OUTER] JOIN`` of a derived table
   with an alias and no column list, ``ON`` one equality between a column of the table and the derived table's key;
 * the derived table is ``SELECT key, COUNT(*)`` or ``SELECT key, COUNT(x)`` (in either order, ``x`` a column, no
   ``DISTINCT``) over one table the schema lists, with an optional ``WHERE`` without a nested query, grouped by that
@@ -116,7 +117,7 @@ def _counts(source: exp.Expression, declared: dict[str, set[str]]) -> dict | Non
     return {"table": table, "key": key, "key_name": key_name, "count_name": count_name, "counted": counted, "filter": parts}
 
 
-def _counted_outer_group(select: exp.Select, declared: dict[str, set[str]], keys: dict) -> exp.Select | None:
+def _counted_outer_group(select: exp.Select, declared: dict[str, set[str]], keys: dict, not_null: dict | None) -> exp.Select | None:
     from .counted_membership import _unstable
 
     if any(value for key, value in select.args.items() if key not in _OUTER_ARGS):
@@ -126,7 +127,7 @@ def _counted_outer_group(select: exp.Select, declared: dict[str, set[str]], keys
     if type(base) is not exp.Table or not _plain_table(base) or len(joins) != 1:
         return None
     base_columns = _columns_of(base, declared)
-    key = key_of(base, keys, base_columns) if base_columns else None
+    key = key_of(base, keys, base_columns, not_null) if base_columns else None
     if key is None:
         return None
     join = joins[0]
@@ -182,7 +183,7 @@ def _counted_outer_group(select: exp.Select, declared: dict[str, set[str]], keys
         return None
 
     alias = exp.to_identifier(source.alias)
-    inner_key = key_of(counts["table"], keys, _columns_of(counts["table"], declared))
+    inner_key = key_of(counts["table"], keys, _columns_of(counts["table"], declared), not_null)
     counted = counts["counted"] or (inner_key[0] if inner_key else counts["key"])
     copy = select.copy()
     new_join = copy.args["joins"][0]
@@ -210,7 +211,7 @@ def _counted_outer_group(select: exp.Select, declared: dict[str, set[str]], keys
     return copy
 
 
-def count_outer_groups(tree: exp.Expression, schema: dict | None, keys: dict | None) -> exp.Expression:
+def count_outer_groups(tree: exp.Expression, schema: dict | None, keys: dict | None, not_null: dict | None = None) -> exp.Expression:
     """``tree`` with every such outer join with a table of counts written as a count over the outer join."""
 
     if not schema or not keys:
@@ -222,7 +223,7 @@ def count_outer_groups(tree: exp.Expression, schema: dict | None, keys: dict | N
             root = root.parent
         if root is None:
             continue  # replaced along with an enclosing select
-        new = _counted_outer_group(select, declared, keys)
+        new = _counted_outer_group(select, declared, keys, not_null)
         if new is None:
             continue
         if select is tree:

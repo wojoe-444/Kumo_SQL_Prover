@@ -4927,7 +4927,7 @@ def normalize(
     if shapes:
         tree = separate_disjoint_unions(tree)
         tree = merge_exclusive_unions(tree)  # a UNION ALL of one query under exclusive filters is one select
-        tree = count_outer_groups(tree, schema, keys)  # before COALESCE(count, 0) is lifted out of its select
+        tree = count_outer_groups(tree, schema, keys, not_null)  # before COALESCE(count, 0) is lifted out of its select
     if shapes:
         tree = group_by_named_outputs(tree, schema)  # pre-pass: before any rule reads a key as a column
     tree = expand_grouping_sets(tree)
@@ -5001,7 +5001,7 @@ def normalize(
         lambda sel: join_nested_membership(sel, schema),
         lift_computed_outputs,
         lambda sel: filter_own_groups(sel, schema, keys, not_null, dialect),
-        lambda sel: pull_up_keyed_join(sel, schema, keys),
+        lambda sel: pull_up_keyed_join(sel, schema, keys, not_null),
         lambda sel: read_one_row_source(sel, schema),
         lambda sel: inline_closed_outputs(sel, schema),
         lambda sel: fold_scalar_filter(sel, schema),
