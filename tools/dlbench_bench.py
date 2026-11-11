@@ -1370,6 +1370,9 @@ def results_rows(results: list[dict]) -> dict[str, dict]:
     same = sum(r["outcome"] == "proven" and r["detail"] == "same statement" for r in exact)
     read_back = sum(r["outcome"] == "proven" and r["detail"] == "same statement, read back" for r in exact)
     inner = sum(r["outcome"] == "proven" and r["detail"] == "inner query proved" for r in exact)
+    queries = {p.id for p in load_pairs() if isinstance(parse(p.source_query, p.source_dbms), exp.Query)}
+    same_other = sum(r["outcome"] == "proven" and r["detail"] == "same statement" and r["id"] not in queries for r in exact)
+    monetdb = sum(r["outcome"] == "proven" and r["target"] == "monetdb" for r in results)
     volatile_calls = sum(r["detail"].startswith("volatile") for r in results)
     listed = sum(r["detail"].startswith("contradicted natively") for r in results)
     return {
@@ -1386,7 +1389,7 @@ def results_rows(results: list[dict]) -> dict[str, dict]:
             "docs": "docs/evals/dlbench.md",
             "command": "python tools/dlbench_bench.py --write-results",
             "date": today(),
-            "caveats": f"Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test). The 2026-11-11 harness changes (translated column and table spellings read back, the same-statement rule, the volatile-call refusal, and the gap rules that the native replay of every proof led to) were developed on the development split only; held-out pairs were replayed for their verdicts, never read.",
+            "caveats": f"Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test). The 2026-11-11 harness changes (translated column and table spellings read back, the same-statement rule, the volatile-call refusal, the gap rules that the native replay of every proof led to, DuckDB and MonetDB date formatting read back, and the two rules for statements that write rows) were developed on the development split only; held-out pairs were replayed for their verdicts, never read. Proofs that are not of a query: {same_other} MariaDB same-statement decisions of an INSERT or CREATE, {read_back} INSERT or CREATE TABLE AS statements that read back as their source and {inner} decided by their inner queries; none of these is replayed natively, and neither is any MonetDB proof ({monetdb}, no engine).",
         },
     }
 
