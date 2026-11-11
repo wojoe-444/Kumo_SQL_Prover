@@ -126,6 +126,7 @@ from .substring_casts import drop_substring_casts
 from .cased_group_sums import unnest_cased_sums
 from .counted_outer_groups import count_outer_groups
 from .discrete_bounds import close_strict_bounds, fold_chained_dates
+from .guarded_outer_counts import guard_outer_counts
 from .tuple_membership import expand_row_membership
 from .closed_scalar_filters import fold_scalar_filter, lift_scalar_arithmetic
 from .exclusive_union_filters import merge_exclusive_unions
@@ -5010,6 +5011,7 @@ def normalize(
     # shape rules that must read a select before ``_wrap_outer_join_aggregate`` wraps its outer joins
     early_shape_rules = (
         lambda sel: read_anti_join(sel, schema, not_null),
+        lambda sel: guard_outer_counts(sel, schema, not_null),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
