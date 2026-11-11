@@ -46,7 +46,16 @@ and the arithmetic over the literals must come to 0.
 The select has more rows per group afterwards, so everything outside the aggregates must be fixed by the group
 key: a key expression, or a column of a table whose declared key (all NOT NULL) is among the key columns.
 
-**What is refused.** Rule 1: ``DISTINCT`` aggregates, ``FILTER``, window aggregates, a ``SUM`` of a column or of
+**3. A count that is not zero is positive** (:func:`positive_tests`). A top-level ``AND`` part ``s <> 0`` or
+``s >= 1`` of ``HAVING`` is written ``s > 0`` when ``s`` is a ``SUM`` of an integer value that is never negative
+(built from the literals through ``CASE .. ELSE ..``, ``IF``, ``+`` and ``*`` only, no ``-``): ``s`` is then a
+whole number that is not negative, or NULL over no rows, and the three tests are TRUE on the same values (none
+is TRUE on NULL). ``s`` may be read by the name of the output that is such a sum, when every source is a base
+table and none has a column of that name. The prover then sees one spelling of "at least one". A ``COUNT`` is
+left to the rules that already read its tests.
+
+**What is refused.** Rule 3: any other comparison or number, a sum that could be negative or is not built from
+literals. Rule 1: ``DISTINCT`` aggregates, ``FILTER``, window aggregates, a ``SUM`` of a column or of
 anything that may be NULL (``SUM(a = b)`` is NULL for a group where every comparison is NULL, and the row
 arithmetic ``(a = b) + (c = d)`` is NULL where one comparison is), subtraction of sums. Rule 2: outer joins,
 ``USING``, derived tables, nested queries, windows, grouping sets, ``LIMIT``, any aggregate other than such a
@@ -69,11 +78,11 @@ def indicator_sum_rules(
     keys: dict[str, list[tuple[str, ...]]] | None,
     not_null: dict[str, frozenset[str]] | None,
 ) -> exp.Expression | None:
-    """One step of either rewrite of the module docstring, or ``None``."""
+    """One step of one of the rewrites of the module docstring, or ``None``."""
 
     if not isinstance(select, exp.Select):
         return None
-    return merge_indicator_sums(select) or disjunction_to_having(select, schema, keys, not_null)
+    return merge_indicator_sums(select) or disjunction_to_having(select, schema, keys, not_null) or positive_tests(select, schema)
 
 
 def _own(node: exp.Expression, select: exp.Select) -> bool:
@@ -332,3 +341,66 @@ def disjunction_to_having(
             term.set("this", value)
         return copy
     return None
+
+
+def _never_negative(node: exp.Expression) -> bool:
+    """An integer value (see rule 1) written without ``-``: never NULL and never below 0."""
+
+    while isinstance(node, exp.Paren):
+        node = node.this
+    if isinstance(node, exp.Literal):
+        return not node.is_string and node.this.isdigit()
+    if isinstance(node, (exp.Add, exp.Mul)):
+        return _never_negative(node.this) and _never_negative(node.expression)
+    if isinstance(node, exp.Case):
+        default = node.args.get("default")
+        return node.this is None and default is not None and _never_negative(default) and all(_never_negative(arm.args["true"]) for arm in node.args["ifs"])
+    if isinstance(node, exp.If):
+        return node.args.get("false") is not None and _never_negative(node.args["true"]) and _never_negative(node.args["false"])
+    return False
+
+
+def _counts(node: exp.Expression) -> bool:
+    """A ``SUM`` of a value that is a whole number and never negative."""
+
+    while isinstance(node, exp.Paren):
+        node = node.this
+    return _plain_sum(node) and _never_negative(node.this)
+
+
+def positive_tests(select: exp.Select, schema: dict[str, list[str]] | None) -> exp.Expression | None:
+    """Rule 3 of the module docstring."""
+
+    having = select.args.get("having")
+    if having is None:
+        return None
+    named: set[str] = set()
+    if schema:
+        known = {key.lower(): [c.lower() for c in columns] for key, columns in schema.items()}
+        listed = [_base_table(source, known) for source in select_sources(select)]
+        if listed and all(columns is not None for columns in listed):
+            taken = {column for columns in listed for column in columns}
+            names = [item.alias.lower() for item in select.expressions if isinstance(item, exp.Alias)]
+            named = {
+                item.alias.lower()
+                for item in select.expressions
+                if isinstance(item, exp.Alias) and _counts(item.this) and item.alias.lower() not in taken and names.count(item.alias.lower()) == 1
+            }
+    copy = select.copy()
+    changed = False
+    for part in conjuncts(copy.args["having"].this):
+        test = part.unnest()
+        if not ((isinstance(test, exp.NEQ) and _zero(test.expression, "0")) or (isinstance(test, exp.GTE) and _zero(test.expression, "1"))):
+            continue
+        left = test.this.unnest()
+        by_name = isinstance(left, exp.Column) and not left.table and left.name.lower() in named
+        if not by_name and not _counts(left):
+            continue
+        test.replace(exp.GT(this=test.this.copy(), expression=exp.Literal.number(0)))
+        changed = True
+    return copy if changed else None
+
+
+def _zero(node: exp.Expression, text: str) -> bool:
+    node = node.unnest()
+    return isinstance(node, exp.Literal) and not node.is_string and node.this == text

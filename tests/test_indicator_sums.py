@@ -8,7 +8,7 @@ import sqlglot
 pytest.importorskip("z3")
 
 from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
-from kumo_sql_prover.indicator_sums import disjunction_to_having, indicator_sum_rules, merge_indicator_sums
+from kumo_sql_prover.indicator_sums import disjunction_to_having, indicator_sum_rules, merge_indicator_sums, positive_tests
 from kumo_sql_prover.smt_equivalence import TableConstraints
 
 # people: id is the key; games: day is the key, w1..w3 name people and may be NULL; notes has no key
@@ -37,8 +37,12 @@ def lifted(sql, keys=KEYS, not_null=NOT_NULL):
     return sql_of(disjunction_to_having(sqlglot.parse_one(sql, read="mysql"), SCHEMA, keys, not_null))
 
 
+def positive(sql, schema=SCHEMA):
+    return sql_of(positive_tests(sqlglot.parse_one(sql, read="mysql"), schema))
+
+
 def rewritten(sql):
-    """Both rules, as often as they apply."""
+    """The rules, as often as they apply."""
 
     tree, changed = sqlglot.parse_one(sql, read="mysql"), False
     for _ in range(6):
@@ -170,7 +174,41 @@ def test_the_loosely_grouped_name_needs_the_declared_key():
     assert lifted(sql.replace("p.name, ", ""), keys=None, not_null=None) is not None
 
 
+def test_a_sum_of_indicators_that_is_not_zero_is_positive():
+    start = f"SELECT p.id, {SUM2} AS n FROM people AS p, games AS g GROUP BY p.id HAVING "
+    assert positive(start + f"{SUM2} <> 0") == start + f"{SUM2} > 0"
+    assert positive(start + f"({SUM2} >= 1) AND p.id > 2") == start + f"({SUM2} > 0) AND p.id > 2"
+    # by the name of the output, when no source has a column of that name
+    assert positive(start + "n != 0") == start + "n > 0"
+    assert positive(start + "n >= 1", schema=None) is None
+    assert positive(start.replace("AS n", "AS name") + "name <> 0") is None
+    assert positive(start.replace("games AS g", "(SELECT * FROM games) AS g") + "n <> 0") is None
+    assert positive(start.replace("AS n", "AS n, p.id + 1 AS n") + "n <> 0") is None
+
+
+@pytest.mark.parametrize("having", [
+    f"{SUM2} > 0",  # already
+    f"{SUM2} >= 0",
+    f"{SUM2} <> 1",
+    f"{SUM2} >= 2",
+    f"{SUM2} <> 0 OR p.id > 3",  # not an AND part
+    f"NOT {SUM2} <> 0",
+    "SUM(CASE WHEN p.id = g.w1 THEN 1 ELSE -1 END) <> 0",  # may be negative
+    "SUM(CASE WHEN p.id = g.w1 THEN 1 END) <> 0",  # may be NULL: not an integer value
+    "SUM(1 - CASE WHEN p.id = g.w1 THEN 1 ELSE 0 END) <> 0",
+    "SUM(g.w3) <> 0",
+    "SUM(p.id = g.w1) <> 0",
+    "SUM(DISTINCT CASE WHEN p.id = g.w1 THEN 1 ELSE 0 END) >= 1.0",
+    "COUNT(g.w1) <> 0",  # counts are left to the rules that read them
+    "MAX(CASE WHEN p.id = g.w1 THEN 1 ELSE 0 END) <> 0",
+])
+def test_other_tests_stay(having):
+    assert positive(f"SELECT p.id, {SUM2} AS total FROM people AS p, games AS g GROUP BY p.id HAVING {having}") is None
+
+
 PROOFS = [
+    (f"SELECT p.id, p.name, {SUM2} FROM people AS p, games AS g GROUP BY p.id HAVING {SUM2} <> 0", FLAT),
+    (f"SELECT p.id, p.name, SUM(IF(g.w1 = p.id, 1, 0)) + SUM(IF(g.w2 = p.id, 1, 0)) AS n FROM people AS p, games AS g GROUP BY p.id, p.name HAVING n >= 1", FLAT),
     (f"SELECT p.id, p.name, SUM({ONE}) + SUM({TWO}) FROM people AS p, games AS g GROUP BY p.id HAVING SUM({ONE}) + SUM({TWO}) > 0", FLAT),
     (f"SELECT p.id, p.name, {SUM2} FROM people AS p JOIN games AS g ON {EITHER} GROUP BY p.id", FLAT),
     (f"SELECT p.id, p.name, SUM(IF(g.w1 = p.id, 1, 0)) + SUM(IF(g.w2 = p.id, 1, 0)) FROM people AS p, games AS g WHERE p.id IN (g.w1, g.w2) GROUP BY p.id, p.name", FLAT),
@@ -199,6 +237,11 @@ NOT_PROVED = [
     (f"SELECT p.id, p.name, {SUM2} FROM people AS p JOIN games AS g ON {EITHER} OR p.id = g.w3 GROUP BY p.id", FLAT),
     # without the HAVING a person with no win has a row of 0
     (f"SELECT p.id, p.name, {SUM2} FROM people AS p JOIN games AS g ON {EITHER} GROUP BY p.id", FLAT.split(" HAVING ")[0]),
+    # a sum that may be negative is not zero more often than it is positive
+    (
+        "SELECT p.id, SUM(CASE WHEN p.id = g.w1 THEN 1 ELSE -1 END) FROM people AS p, games AS g GROUP BY p.id HAVING SUM(CASE WHEN p.id = g.w1 THEN 1 ELSE -1 END) <> 0",
+        "SELECT p.id, SUM(CASE WHEN p.id = g.w1 THEN 1 ELSE -1 END) FROM people AS p, games AS g GROUP BY p.id HAVING SUM(CASE WHEN p.id = g.w1 THEN 1 ELSE -1 END) > 0",
+    ),
     # a global sum is NULL over no rows, a global count 0
     ("SELECT SUM(IF(g.w1 = 1, 1, 0)) + SUM(IF(g.w2 = 1, 1, 0)) FROM games AS g", "SELECT COUNT(IF(g.w1 = 1, 1, NULL)) + COUNT(IF(g.w2 = 1, 1, NULL)) FROM games AS g"),
 ]
@@ -231,6 +274,7 @@ QUERIES = [
     "SELECT p.id, SUM(CASE WHEN p.id = g.w1 THEN CASE WHEN p.id = g.w2 THEN 2 ELSE 1 END ELSE CASE WHEN p.id = g.w2 AND g.day > 1 THEN 1 ELSE 0 END END)"
     f" FROM people AS p JOIN games AS g ON {EITHER} OR p.id = g.w3 GROUP BY p.id",
     "SELECT SUM(IF(g.w1 = 1, 1, 0)) + SUM(IF(g.w2 = 1, 2, 0)) + SUM(3) AS n FROM games AS g HAVING SUM(1) + SUM(IF(g.w3 IS NULL, 0, 1)) > 2",
+    f"SELECT p.id, {SUM2} AS n, SUM(g.w3) FROM people AS p, games AS g WHERE g.day > 1 GROUP BY p.id HAVING n <> 0 AND SUM(IF(p.id = g.w3, 2, 0) * 3) >= 1",
     "SELECT n.name, SUM(CASE WHEN n.id = g.w1 THEN 1 ELSE 0 END) + SUM(CASE WHEN n.id = g.w2 OR n.id = g.w3 THEN 1 ELSE 0 END) FROM notes AS n JOIN games AS g"
     " ON n.id = g.w1 OR n.id = g.w2 OR n.id = g.w3 GROUP BY n.name",
 ]
