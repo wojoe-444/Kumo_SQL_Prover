@@ -4886,6 +4886,9 @@ def normalize(
         from .counted_joins import counted_join_rules
 
         tree = counted_join_rules(tree)  # pre-pass: COUNT(*) over a FULL JOIN as the count of its two halves
+        from .count_exists_rules import count_tests_to_exists
+
+        tree = count_tests_to_exists(tree)  # pre-pass: (SELECT COUNT(*) ..) > 0 as EXISTS
     if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
     tree = rewrite_quantified(tree, schema, not_null, keys)
