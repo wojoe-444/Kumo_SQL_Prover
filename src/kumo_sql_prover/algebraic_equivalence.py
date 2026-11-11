@@ -3712,6 +3712,24 @@ def _drop_redundant_distinct_source(select: exp.Select) -> exp.Expression | None
     return copy
 
 
+def _unwrap_output_columns(tree: exp.Expression) -> exp.Expression:
+    """``SELECT (t.a)`` outputs the column ``a`` under its own name, so the parentheses are dropped.
+
+    The engines name a parenthesized column by the column. Left in place, the parentheses made the output look
+    unnamed: a derived table's ``(p.a)`` was given a generated name, and a read of ``a`` from the query around
+    it then found no such output and was taken for a column of an enclosing query (a false proof).
+    """
+
+    for select in tree.find_all(exp.Select):
+        for item in select.expressions:
+            inner = item
+            while isinstance(inner, exp.Paren):
+                inner = inner.this
+            if inner is not item and isinstance(inner, exp.Column):
+                item.replace(inner.copy())
+    return tree
+
+
 def _name_derived_columns(tree: exp.Expression) -> exp.Expression:
     """A derived table's unnamed column (``MIN(x)``) gets a generated name, so ``SELECT *`` can list it.
 
@@ -4879,7 +4897,7 @@ def normalize(
     if group_by_constants:
         tree = _drop_constant_groupings(tree)
     tree = _resolve_ordinals(tree, group_by=not group_by_constants)
-    tree = _lowercase_columns(tree)
+    tree = _unwrap_output_columns(_lowercase_columns(tree))
     tree = _inline_ctes(tree)
     tree = rewrite_bigquery_constructs(tree, schema, types, dialect)  # pre-pass: UNNEST of literals, STRUCT fields
     tree = inline_named_windows(tree)
