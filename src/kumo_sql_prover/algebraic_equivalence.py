@@ -120,6 +120,7 @@ from .keyed_join_groups import pull_up_keyed_join
 from .one_row_sources import read_one_row_source
 from .substring_casts import drop_substring_casts
 from .counted_cases import sum_counted_cases
+from .discrete_bounds import close_strict_bounds, fold_chained_dates
 from .closed_scalar_filters import fold_scalar_filter, lift_scalar_arithmetic
 from .exclusive_union_filters import merge_exclusive_unions
 from .own_group_filters import filter_own_groups
@@ -4920,6 +4921,8 @@ def normalize(
     tree = grouping_sets_to_union(isolate_tailed_grouping_sets(tree) if shapes else tree)  # pre-pass: a row tail moves one level up first
     tree = _drop_group_in_membership_tests(tree)
     tree = _fold_dates(extract_to_ranges(tree))
+    if shapes:
+        tree = fold_chained_dates(tree)
     tree = _fold_boolean_constants(_fold_constants(tree))
     tree = _fold_trivia(tree)
     tree = _fold_null_guards(tree, not_null)
@@ -4973,6 +4976,7 @@ def normalize(
         lift_scalar_arithmetic,
         lambda sel: drop_substring_casts(sel, types_map),
         sum_counted_cases,
+        lambda sel: close_strict_bounds(sel, types_map, dialect),
     ) if shapes else ()
 
     # shape rules that must read a select before ``_wrap_outer_join_aggregate`` wraps its outer joins
