@@ -63,7 +63,7 @@ The MySQL and MariaDB entries are arguments of `pymysql.connect`, the PostgreSQL
 
 A difference marks the proof **wrong**. What the replay does not cover: a statement that is not a query, a table with no published definition, a column of a type it does not load (binary, `ENUM`, `YEAR`, `TIME`, JSON), and `LIMIT` without `ORDER BY`. An ordered source is compared as a list, on data where its `ORDER BY` keys tell every row apart. Tables are built from the source's schema text, so a translation is run against the source's column types. All engines ran in UTC.
 
-`--record-contradictions` writes every pair whose proof the replay contradicted to `tests/fixtures/dlbench/native_contradictions.json` (id, route and engine versions only), and a listed pair is never counted as proved again. That is how a held-out contradiction is kept out without anyone reading the pair. The file does not exist yet: the replay of 2026-11-11 found none on the held-out pairs.
+`--record-contradictions` writes every pair whose proof the replay contradicted to `tests/fixtures/dlbench/native_contradictions.json` (id, route and engine versions only), and a listed pair is never counted as proved again. That is how a held-out contradiction is kept out without anyone reading the pair. The file is empty: the replay of 2026-11-11 found none on the held-out pairs.
 
 **What the first replay found** (2026-11-11; MySQL 8.0.46, MariaDB 10.11.14, PostgreSQL 16.15, ClickHouse 26.9.2.1 through chdb 4.4.0, DuckDB 1.5.6, SQLite 3.53.1). Of 130 development proofs, 106 could be replayed and six differed. None was a mistake in a prover's reasoning: each is a place where two engines answer one statement differently and the harness had assumed they agree. Made-up examples of each:
 
