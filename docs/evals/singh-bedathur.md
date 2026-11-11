@@ -41,7 +41,7 @@ DuckDB runs with MySQL's NULL ordering and case-insensitive string comparison. A
 
 ## Scores
 
-Measured 2026-11-10 over all 2,800 pairs (`python tools/singh_bedathur_bench.py`, about 17 minutes on 4 cores, commit e904d62):
+Measured 2026-11-10 over all 2,800 pairs (`python tools/singh_bedathur_bench.py`, about 17 minutes on 4 cores, commit a861879):
 
 **2763/2800, 0 wrong**: 889 proved equivalent, 1,874 proved different, 37 unknown.
 
@@ -77,7 +77,7 @@ What moved the score:
 | + `DISTINCT` queries split into unions (`set_split_rules.py`: `CASE` join keys, derived unions, `IN`/`EXISTS` over unions), `OR` splits in set containment, self-join symmetry; developed on dev pairs only (held-out fifth 557), master 696c6c8 | 2,728 |
 | + `ABS(x - y)` facts and `x <> y` split into `x < y` and `y < x` in set containment ([provers.md](../provers.md)), developed on dev pairs only; also includes prover PRs merged since 696c6c8 (held-out fifth 560), master 30eb0cb | 2,736 |
 | the same harness on main c384968 on 2026-11-10, before the next step (three pairs declined since as string-number comparisons, one proof not traced; held-out fifth 560) | 2,734 |
-| + six rule modules for the undecided development pairs ([below](#the-undecided-development-pairs)), developed on dev pairs only (held-out fifth 565), commit e904d62 | 2,763 |
+| + six rule modules for the undecided development pairs ([below](#the-undecided-development-pairs)), developed on dev pairs only (held-out fifth 565), commit a861879 | 2,763 |
 
 ### The undecided development pairs
 
@@ -119,7 +119,7 @@ python tools/singh_bedathur_bench.py --split dev --sample 200 # quick developmen
 python tools/singh_bedathur_bench.py --show-unknown --show-disagreements --json verdicts.json
 ```
 
-`tests/test_singh_bedathur_benchmark.py` runs a fixed sample of 120 pairs (floor 100 decided, 0 wrong) and, marked `slow`, all 2,800 (floor 2,420). Both skip when the data cannot be downloaded. A pair that ever comes out wrong is a soundness bug: fix the rule or prover and add the shape to `tests/test_canonical_rules.py` or the prover's tests as a regression case.
+`tests/test_singh_bedathur_benchmark.py` runs a fixed sample of 120 pairs (floor 116 decided, 0 wrong) and, marked `slow`, all 2,800 (floor 2,747). Both skip when the data cannot be downloaded. A pair that ever comes out wrong is a soundness bug: fix the rule or prover and add the shape to `tests/test_canonical_rules.py` or the prover's tests as a regression case.
 
 
 Bounded verification (3 rows per table, [bounded-verification.md](bounded-verification.md#results)) on the 1,006 pairs the prover does not already refute: 824 bounded-equivalent, 71 refuted with a replayed database, 0 wrong. Not a proof.

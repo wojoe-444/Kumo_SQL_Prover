@@ -610,7 +610,7 @@ def results_rows(records: list[dict], date: str, commit: str) -> dict[str, dict]
         f"{ac['proven']} proved, {ac['refuted']} refuted among them. TPC-H data is scale 0.1 (tpchgen-cli); TPC-DS data is scale 1 "
         "from DSB's dsdgen, whose distributions differ from the official kit's. The TPC-H schema declares no keys, so proofs hold "
         f"over every database with its NOT NULL columns. Prover routes time out after {PROOF_TIMEOUT_S} s of wall-clock time, so "
-        f"a loaded machine can turn a few proofs into timeouts. {BASELINE} Measured on master {commit}; no prover change was made for this eval."
+        f"a loaded machine can turn a few proofs into timeouts. {BASELINE} Measured on {commit}."
     )
     return {
         "logos-core-proof": {

@@ -23,8 +23,8 @@ sys.modules["quite_bench"] = bench
 _spec.loader.exec_module(bench)
 
 SAMPLE = 48
-# measured 26 proved and 2 refuted on this sample (no generated instance); the margin absorbs a slow machine
-FLOORS = {"proved": 24, "refuted": 2}
+# measured 32 proved and 2 refuted on this sample (no generated instance); the margin absorbs a slow machine
+FLOORS = {"proved": 30, "refuted": 2}
 
 
 def _pairs():

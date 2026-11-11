@@ -23,7 +23,7 @@ sys.modules["singh_bedathur_bench"] = bench
 _spec.loader.exec_module(bench)
 
 SAMPLE = 120
-FLOORS = {"sample": 104, "all": 2610}  # measured 106 and 2,626; a little room for solver timeouts under load
+FLOORS = {"sample": 116, "all": 2747}  # measured 118 and 2,763; a little room for solver timeouts under load
 
 
 def _pairs():

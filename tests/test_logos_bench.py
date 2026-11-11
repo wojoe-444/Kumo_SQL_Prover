@@ -20,7 +20,7 @@ bench = importlib.util.module_from_spec(_spec)
 sys.modules["logos_bench"] = bench
 _spec.loader.exec_module(bench)
 
-FLOOR = {"rbot-tpch": 15}  # proved R-Bot TPC-H pairs; measured 16 of 21 (the 22nd is a label failure)
+FLOOR = {"rbot-tpch": 18}  # proved R-Bot TPC-H pairs; measured 19 of 21 (the 22nd is a label failure)
 
 
 def test_manifest_is_pinned():

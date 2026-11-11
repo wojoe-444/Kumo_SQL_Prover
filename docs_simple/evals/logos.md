@@ -24,7 +24,8 @@ The query text comes from the TPC benchmark kits, so it is downloaded at run tim
 ## Limits of the evidence
 
 - A Calcite rule's output is a golden rewrite, not a proven answer. The few pairs a database shows different are reported as problems with the pair, not as KumoSQL failures.
-- Most of the unproved pairs use syntax KumoSQL cannot yet print faithfully, such as `ROLLUP` or `NULLS FIRST`. They are counted as unsupported, not as wrong.
+- Most of the unproved pairs are ones KumoSQL can read but finds no proof for, and they are counted as unknown. A few use syntax it cannot yet carry between dialects, such as `NULLS FIRST`; those are counted as unsupported. Neither is counted as wrong.
+- The score depends on the machine: the same code proved a few pairs fewer on a second machine with newer library versions, so compare two versions of KumoSQL only when both were measured on the same machine.
 - The generated data differs from the official benchmark data, and a few proofs can time out on a busy machine.
 - Some of the held-out pairs were seen in a baseline listing, which the full guide records as "tuned on test".
 

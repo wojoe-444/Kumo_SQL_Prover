@@ -56,7 +56,7 @@ Two harness-side readings, no KumoSQL change: identifiers are folded to lower ca
 
 ## Scores
 
-Measured on 2026-11-10 over the whole corpus (3,174 distinct pairs from 4,160 rewrites) on commit e904d62, with `tpchgen-cli` installed so the TPC-H pairs also run on the generated instance. **0 wrong** in both parts. One run with four worker processes took 42 minutes on 4 cores.
+Measured on 2026-11-10 over the whole corpus (3,174 distinct pairs from 4,160 rewrites) on commit a861879, with `tpchgen-cli` installed so the TPC-H pairs also run on the generated instance. **0 wrong** in both parts. One run with four worker processes took 43 minutes on 4 cores.
 
 ### Flagged equal (`quite-rewrites`)
 
@@ -65,13 +65,13 @@ A pair scores proved when the prover shows it equivalent; it leaves the denomina
 | Benchmark | Pairs | Proved | Refuted | Unknown | Timeout or error | Score |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | TPC-H | 543 | 403 | 3 | 137 | 0 | 403/540 |
-| DSB | 1,319 | 809 | 1 | 506 | 3 | 809/1,318 |
+| DSB | 1,319 | 809 | 1 | 503 | 6 | 809/1,318 |
 | Calcite | 477 | 349 | 29 | 99 | 0 | 349/448 |
-| SQLStorm | 335 | 98 | 33 | 204 | 0 | 98/302 |
-| **All** | **2,674** | **1,659** | **66** | **946** | **3** | **1,659/2,608, 0 wrong** |
+| SQLStorm | 335 | 98 | 32 | 205 | 0 | 98/303 |
+| **All** | **2,674** | **1,659** | **65** | **944** | **6** | **1,659/2,609, 0 wrong** |
 
-* **Held out** (one query in five, 564 pairs, 70 queries): 346/555 proved, 0 wrong, 9 refuted. The development pairs score 1,313/2,053, 0 wrong, 57 refuted. The rules of 2026-11-10 were written on the development pairs, which went from 1,075 to 1,313 proved (+22%); the held-out fifth, never read, went from 279 to 346 (+24%), so the rules carry over to queries they were not written for. Two more pairs, flagged equal by one system and unequal by another, are not scored.
-* **Original and adapted apart.** 271 of the pairs needed a quoted name folded to lower case (the Calcite queries): 172 proved, 19 refuted, 80 unknown. The other 2,403 are scored as published: 1,487 proved, 47 refuted, 866 unknown, 3 timeouts.
+* **Held out** (one query in five, 564 pairs, 70 queries): 346/555 proved, 0 wrong, 9 refuted. The development pairs score 1,313/2,054, 0 wrong, 56 refuted. The rules of 2026-11-10 were written on the development pairs, which went from 1,075 to 1,313 proved (+22%); the held-out fifth, never read, went from 279 to 346 (+24%), so the rules carry over to queries they were not written for. Two more pairs, flagged equal by one system and unequal by another, are not scored.
+* **Original and adapted apart.** 271 of the pairs needed a quoted name folded to lower case (the Calcite queries): 172 proved, 19 refuted, 80 unknown. The other 2,403 are scored as published: 1,487 proved, 46 refuted, 864 unknown, 6 timeouts (DSB pairs of 8,000 to 38,000 characters that pass the harness's 60-second limit).
 * **Errors.** None. The three TPC-H pairs that made the prover raise a z3 exception in October no longer do, on main as well.
 * **Why unknown.** Across all 1,241 unknown pairs (both flags) the commonest reasons are that no row-preserving mapping between the queries was found (876), a derived table that is not joined on all of its columns (43), a subquery expression the prover does not support (36), a column the harness's DSB schema does not list (`c_last_review_date_sk`, 30), a `UNION` whose branches differ in shape (26) and a `LIMIT` on one side only (23). The reasons of October (an aggregate over an outer join, 148; a query that could not be printed back faithfully, 111) are gone. The unknowns were not classified further.
 
@@ -79,17 +79,17 @@ A pair scores proved when the prover shows it equivalent; it leaves the denomina
 
 | Why it was flagged | Pairs | Refuted | Proved | Unknown | Unsupported or timeout |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| rows differed | 214 | 107 | 14 | 91 | 2 |
+| rows differed | 214 | 107 | 14 | 93 | 0 |
 | rewrite failed to run | 197 | 5 | 1 | 154 | 37 |
 | a query timed out | 85 | 20 | 10 | 49 | 6 |
 | documented TPC-H Q2 | 2 | 2 | 0 | 0 | 0 |
-| **All** | **498** | **134** | **25** | **294** | **45** |
+| **All** | **498** | **134** | **25** | **296** | **43** |
 
 134 of 498 are refuted by a replayed database; held out, 31 of 106 (8 proved, 0 wrong). **No pair is proved on grounds that a replayed database contradicts.** The 25 proofs are not errors, and each is accounted for:
 
 * 14 pairs flagged for different rows are `ORDER BY ... LIMIT` queries whose sort key has ties (Calcite's `ORDER BY SAL`), so the authors' PostgreSQL happened to cut the tied rows differently for the two queries. The prover proves them equal on the stated assumption that tied rows are cut alike ([ORDER BY, LIMIT and OFFSET](sqlsolver.md#order-by-limit-and-offset)); no replayed database separates them.
 * 11 pairs were flagged only because a query timed out (10) or the rewrite failed to run (1): a rewrite that fails on PostgreSQL (one has an output alias spelled `0`) can still be equivalent as written. Five of the ten are development pairs the rules of 2026-11-10 newly prove (rewrites of two DSB queries). Each was read by hand and is equivalent as written: a correlated `AVG` turned into a join with the grouped average, comma joins written as `JOIN`, `75 * 0.01` written as `0.75` (exact decimals in PostgreSQL), and a date plus 90 days written as the date it is.
-* The database search has a budget of 8 seconds per pair, so a refutation near that limit is not found in every run. One SQLStorm pair is refuted in the whole-corpus run on main (135) and not in this one (134); run alone, neither tree refutes it.
+* The database search has a budget of 8 seconds per pair and does not find the same refutations in every run. One SQLStorm pair flagged unequal is refuted in the whole-corpus run on main (135) and not in this one (134), and one flagged equal is refuted on main (66) and not in this one (65, which is why the denominator is 2,609 here and 2,608 there). Run alone, neither tree refutes either pair: whether the search finds them seems to depend on what the worker process ran before (not tracked down; main behaves the same).
 
 The two documented TPC-H Q2 rewrites are refuted on the database the authors describe for the case (a supplier outside EUROPE that ties the EUROPE minimum cost). The same rewrite from a third system (DeepSeek R1), flagged equal, is refuted there too: one of the 65 refuted flagged-equal pairs.
 
@@ -110,11 +110,11 @@ The first run of this harness was the baseline; nothing was tuned on it. One har
 | `one_row_tails.py` | a one-row report with a pointless `ORDER BY` / `LIMIT` (TPC-DS style) against the same without | drops the tail of a global aggregate |
 | `string_spelling_rules.py` | `CAST(c AS CHAR(n))` of a column declared `CHAR(n)`, `LEFT(x, n)` against `SUBSTRING(x, 1, n)` | reads both as the value itself |
 
-`string_number_compare.py` also stopped reading a date plus an interval as a number. Together: 1,354 to 1,659 proved of 2,608 (+305), by benchmark TPC-H 378 to 403, DSB 592 to 809, Calcite 345 to 349, SQLStorm 39 to 98. No pair proved on main is lost, development or held out.
+`string_number_compare.py` also stopped reading a date plus an interval as a number. Together: 1,354 of 2,608 to 1,659 of 2,609 proved (+305), by benchmark TPC-H 378 to 403, DSB 592 to 809, Calcite 345 to 349, SQLStorm 39 to 98. No pair proved on main is lost, development or held out. Other evals did lose four proofs to these rules firing on one query of a pair only, so a pair of up to 4,000 characters that they leave unproven is tried again without them ([a second attempt without the shape rules](../provers.md#a-second-attempt-without-the-shape-rules)); the numbers here are measured with that in place.
 
 **Exposure.** The development pairs are tuned on: the rules were written while reading them. The held-out queries were run for scoring only and never read one by one; their share of the gain is given above. The two harness changes of October came from development pairs.
 
-Results files: `benchmarks/results/quite-rewrites.json` and `benchmarks/results/quite-negatives.json`. The pinned-sample test (`tests/test_quite_bench.py`) runs 51 stratified development pairs without the generated instance: SAMPLE_PROVED proved, SAMPLE_REFUTED refuted, 0 wrong, with floors of SAMPLE_FLOOR and 2.
+Results files: `benchmarks/results/quite-rewrites.json` and `benchmarks/results/quite-negatives.json`. The pinned-sample test (`tests/test_quite_bench.py`) runs 51 stratified development pairs without the generated instance: 32 proved, 2 refuted, 0 wrong, with floors of 30 and 2.
 
 ## Overlap with other evals
 
