@@ -8,6 +8,8 @@ At a bound of 3, each table can have zero, one, two, or three rows. Z3 reasons a
 
 Columns keep to the values they can really hold: a `DATE` stays between year 1 and year 9999 and a `NUMERIC(10, 2)` keeps two decimals, so a counterexample never needs a date or number the database could not store. See the [full reference](../../docs/evals/bounded-verification.md) for the details.
 
+Joins used to be the expensive part: with three rows per table, joining three tables meant reasoning about 27 possible combined rows, and eight tables did not fit. Most joins follow a key, for example each order has at most one customer. The checker now notices that (from the keys the schema declares) and keeps one combined row per order instead of one per pair, so the same three-table join is three rows. The answers are the same; they arrive much sooner, and some checks that used to time out now finish.
+
 ## Read the result
 
 - **Bounded, 3 rows** means no difference exists within that model and row limit. It says nothing about larger databases.

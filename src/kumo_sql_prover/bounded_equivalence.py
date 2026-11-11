@@ -42,6 +42,7 @@ from typing import Callable, Mapping, Sequence
 import sqlglot
 from sqlglot import exp
 
+from . import bounded_keyed_joins
 from .ast_utils import MAX_EXPANDED_READS, UnmodeledConstruct, distinct_on, drop_case_conflicts, expand_group_by_all, expanded_reads, extended_grouping, is_call, spell_for_duckdb, star_modified
 from .duckdb_load import small_database
 from .set_operations import positional_sql_pair
@@ -526,6 +527,7 @@ class Rel:
     rows: list[Row]
     hidden: frozenset = frozenset()  # column positions merged away by USING / NATURAL (still reachable by qualifier)
     first: tuple = ()  # positions a star lists first (the USING columns)
+    keys: tuple = ()  # sets of positions whose non-NULL combinations are unique among the rows present (bounded_keyed_joins)
 
 
 class Scope:
@@ -691,14 +693,16 @@ MAX_ROWS = 600  # relation size cap: joins multiply
 class Compiler:
     """Compile SELECT statements into symbolic relations over a :class:`SymbolicDatabase`."""
 
-    def __init__(self, database: SymbolicDatabase, dialect: str = "bigquery", *, nulls_first: bool | None = None, group_constants: bool = False):
+    def __init__(self, database: SymbolicDatabase, dialect: str = "bigquery", *, nulls_first: bool | None = None, group_constants: bool = False, keyed_joins: bool = True):
         self.db = database
+        self.keyed_joins = keyed_joins  # one joined row per row of the unkeyed side (bounded_keyed_joins); off for comparison
         self.group_constants = group_constants  # Calcite reads a number in GROUP BY as a constant, not an ordinal
         self.dialect = dialect
         # where NULL sorts under ASC: MySQL and BigQuery put it first, DuckDB and PostgreSQL last
         self.nulls_first = nulls_first if nulls_first is not None else dialect in ("mysql", "bigquery", "spark", "hive")
         self.side_conditions: list = []
         self._picks = 0
+        self.reorder = False  # joins may change the order of joined rows: set per query (bounded_keyed_joins.position_free)
         self._ctes: list[dict] = [{}]
 
     # -- entry points --------------------------------------------------------------------------
@@ -711,6 +715,7 @@ class Compiler:
             raise Unsupported(str(error)) from None
         if expanded_reads(tree) > MAX_EXPANDED_READS:
             raise Unsupported(f"the query reads more than {MAX_EXPANDED_READS} tables once its CTEs are expanded")
+        self.reorder = bounded_keyed_joins.position_free(tree)
         return self.query(tree, None)
 
     def query(self, node: exp.Expression, outer: Scope | None) -> Rel:
@@ -785,7 +790,7 @@ class Compiler:
         for i, row in enumerate(rel.rows):
             clash = [z3.And(rel.rows[k].present, *[same(a, b) for a, b in zip(row.vals, rel.rows[k].vals)]) for k in range(i)]
             out.append(Row(z3.And(row.present, z3.Not(z3.Or(*clash))) if clash else row.present, row.vals, row.keys))
-        return Rel(rel.cols, rel.kinds, out)
+        return Rel(rel.cols, rel.kinds, out, keys=(tuple(range(len(rel.cols))), *rel.keys))
 
     # -- SELECT --------------------------------------------------------------------------------
 
@@ -794,16 +799,20 @@ class Compiler:
             raise Unsupported("window clause")
         if distinct_on(node):
             raise Unsupported("DISTINCT ON")
-        source = self.from_clause(node, outer)
-        where = node.args.get("where")
+        chain = bounded_keyed_joins.inner_chain(self, node, outer)  # comma joins on a key: fewer joined rows
+        if chain is None:
+            where = node.args.get("where")
+            source, filters = self.from_clause(node, outer), [where.this] if where is not None else []
+        else:
+            source, filters = chain
         rows = source.rows
-        if where is not None:
+        if filters:
             filtered = []
             for row in rows:
                 scope = self._scope(source, row, outer)
-                filtered.append(Row(z3.And(row.present, truth(self.expr(where.this, scope))), row.vals))
+                filtered.append(Row(z3.And(row.present, *[truth(self.expr(part, scope)) for part in filters]), row.vals))
             rows = filtered
-        source = Rel(source.cols, source.kinds, rows, source.hidden, source.first)
+        source = Rel(source.cols, source.kinds, rows, source.hidden, source.first, source.keys)
         items = list(node.expressions)
         aggregated = self._aggregated(node)
         if self._windowed(node) and (aggregated or node.args.get("group") is not None):
@@ -812,6 +821,7 @@ class Compiler:
             out = self.grouped(node, source, items, outer)
         else:
             out = self.projected(node, source, items, outer)
+            out.keys = bounded_keyed_joins.carried(source, out)
         if node.args.get("distinct") is not None:
             out = self.dedupe(out)
         return self.limited(node, out)
@@ -864,7 +874,7 @@ class Compiler:
             table, slots = self.db.table_for(node)
             cols = [(alias, c.name.lower()) for c in table.columns]
             kinds = [kind_of(c.type) or "unsupported" for c in table.columns]
-            return Rel(cols, kinds, [Row(r.present, list(r.vals)) for r in slots])
+            return Rel(cols, kinds, [Row(r.present, list(r.vals)) for r in slots], keys=bounded_keyed_joins.table_keys(table))
         if isinstance(node, exp.Subquery):
             inner = self.query(node.this, outer)
             alias = node.alias.lower() if node.alias else None
@@ -896,7 +906,7 @@ class Compiler:
         if node.args.get("pivots") or node.args.get("sample"):
             raise Unsupported("pivot or sample")
         names = columns or [n for _, n in inner.cols]
-        return Rel([(alias, n) for n in names], list(inner.kinds), [Row(r.present, r.vals) for r in inner.rows])
+        return Rel([(alias, n) for n in names], list(inner.kinds), [Row(r.present, r.vals) for r in inner.rows], keys=inner.keys)
 
     def _lateral(self, left: Rel, join: exp.Join, outer: Scope | None) -> Rel:
         """``JOIN LATERAL (subquery)``: the subquery is compiled once per left row, seeing that row's columns."""
@@ -937,10 +947,10 @@ class Compiler:
             raise Unsupported("empty left side")
         return Rel(cols, kinds, rows, left.hidden, left.first)
 
-    def join(self, left: Rel, join: exp.Join, outer: Scope | None) -> Rel:
+    def join(self, left: Rel, join: exp.Join, outer: Scope | None, right: Rel | None = None) -> Rel:
         if isinstance(join.this, exp.Lateral):
             return self._lateral(left, join, outer)
-        right = self.table_factor(join.this, outer)
+        right = self.table_factor(join.this, outer) if right is None else right
         side = (join.side or "").upper()
         kind = (join.kind or "").upper()
         if kind in ("ANTI", "SEMI"):
@@ -953,7 +963,18 @@ class Compiler:
             using = [n for i, (q, n) in enumerate(left.cols) if i not in left.hidden and n in visible_right]
         cols = left.cols + right.cols
         kinds = left.kinds + right.kinds
-        if len(left.rows) * len(right.rows) > MAX_ROWS:
+        keyed = None
+        if on is not None and not using and side in ("", "LEFT", "RIGHT") and kind in ("", "INNER", "OUTER"):
+            # each left row matches at most one right row: one joined row per left row (bounded_keyed_joins)
+            keyed = bounded_keyed_joins.keyed_side(
+                self, left, right, bounded_keyed_joins.conjuncts(on),
+                lambda a, b: Scope([(q, n, v) for (q, n), v in zip(cols, a.vals + b.vals)], outer,
+                                   hidden=[id(v) for i, v in enumerate(a.vals + b.vals) if i in left.hidden or i - len(left.cols) in right.hidden]),
+                # an inner join keeps its rows in the same order; an outer one moves the unmatched rows, and reading
+                # the left side as the keyed one turns the order around: both only where no order can be seen
+                try_right=side == "" or (side == "LEFT" and self.reorder), try_left=self.reorder and side in ("", "RIGHT"),
+            )
+        if keyed is None and len(left.rows) * len(right.rows) > MAX_ROWS:
             raise Unsupported("join too large for the bound")
         pairs = [(self._pick(left, name), self._pick(right, name)) for name in using]
         conditions = []
@@ -969,6 +990,8 @@ class Compiler:
                 else:
                     line.append(_true())
             conditions.append(line)
+        if keyed is not None:
+            return bounded_keyed_joins.compact(self, left, right, conditions, bool(side), keyed)
         rows = []
         for i, a in enumerate(left.rows):
             for j, b in enumerate(right.rows):
@@ -1164,7 +1187,9 @@ class Compiler:
             scope = Scope(blank, outer, {k: (lambda e=e: self.expr(e, scope)) for k, e in alias_nodes.items()}, Group(members, scopes),
                           picker=self._picker(scopes, None, members, []))
             out_rows.append(self._group_row(items, scope, having, order, outer, _true()))
-        return self._finish(names, out_rows)
+        out = self._finish(names, out_rows)
+        out.keys = bounded_keyed_joins.group_keys(out, keys) if key_nodes else ()
+        return out
 
     def _picker(self, scopes: list[Scope], rep: int | None, members: list, keys: list[V]):
         """The value of a column that is neither grouped nor aggregated.
@@ -1257,7 +1282,7 @@ class Compiler:
             if count is not None:
                 keep = z3.And(keep, rank < skip + count)
             out.append(Row(z3.And(a.present, keep), a.vals))
-        return Rel(rel.cols, rel.kinds, out)
+        return Rel(rel.cols, rel.kinds, out, keys=rel.keys)
 
     def _precedes(self, b: Row, a: Row):
         """Does row ``b`` sort strictly before row ``a`` under the ORDER BY keys."""
@@ -2196,6 +2221,7 @@ def _check_bounded(
     prepare: Callable[[str], str] | None = None,
     translate: Callable[[str], str] | None = None,
     group_constants: bool = False,
+    keyed_joins: bool = True,
 ) -> BoundedResult:
     """Check two queries on every database of at most ``rows`` rows per table.
 
@@ -2231,7 +2257,7 @@ def _check_bounded(
             outcome = None
             for attempt in range(3):
                 database = SymbolicDatabase(schema, bound, restrict=restrictions)
-                compiler = Compiler(database, dialect, nulls_first=nulls_first, group_constants=group_constants)
+                compiler = Compiler(database, dialect, nulls_first=nulls_first, group_constants=group_constants, keyed_joins=keyed_joins)
                 left = compiler.compile(left_sql)
                 right = compiler.compile(right_sql)
                 remaining = timeout_ms if budget_s is None else int(max(1, min(timeout_ms, (budget_s - (time.time() - began)) * 1000)))
@@ -2275,11 +2301,11 @@ def _check_bounded(
 
 
 @serialized
-def evaluate(sql: str, schema: BoundedSchema, data: dict[str, list[tuple]], dialect: str = "bigquery", nulls_first: bool | None = None):
+def evaluate(sql: str, schema: BoundedSchema, data: dict[str, list[tuple]], dialect: str = "bigquery", nulls_first: bool | None = None, keyed_joins: bool = True):
     """The rows the *encoding* gives ``sql`` on a concrete database (for testing it against DuckDB)."""
 
     database = SymbolicDatabase(schema, max([len(r) for r in data.values()] + [1]))
-    compiler = Compiler(database, dialect, nulls_first=nulls_first)
+    compiler = Compiler(database, dialect, nulls_first=nulls_first, keyed_joins=keyed_joins)
     rel = compiler.compile(sql)
     solver = bounded_solver(20_000)
     for name, slots in database.tables.items():
@@ -2299,6 +2325,7 @@ def evaluate(sql: str, schema: BoundedSchema, data: dict[str, list[tuple]], dial
                 solver.add(z3.Not(slot.present))
     if compiler._picks:
         raise Unsupported("an ungrouped column has no single value")
+    solver.add(*database.constraints)  # the keyed-join encoding stands on the declared keys
     solver.add(*compiler.side_conditions)
     verdict = solver.check()
     if verdict == z3.unknown:
