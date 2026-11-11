@@ -18,6 +18,14 @@ A query that reads the clock, a random value, a sequence or the session is never
 
 The harness can also run every proof on the real databases. Set `DLBENCH_NATIVE` to name test servers (MySQL, MariaDB, PostgreSQL, ClickHouse; SQLite and DuckDB need none) and each proved pair runs on both of its databases with the same random rows. For example, MySQL 8 answers `SELECT UNIX_TIMESTAMP('2039-01-20 01:00:00')` with a number and MariaDB 10.11 answers NULL, so that statement is now a known gap instead of a proof. Without the setting nothing changes.
 
+The same function name can mean different things in two databases. `LOG(2)` is 0.69 in MySQL and 0.30 in PostgreSQL, and `ROUND(2.5)` on a floating-point value is 3 in SQLite and 2 in PostgreSQL. The harness lists the calls that were seen to differ when one statement was run on every engine, and leaves a pair that uses one of them unknown.
+
+Two date-formatting calls are read back as SQLite's `STRFTIME`: DuckDB's `strftime` with the format written first, and MonetDB's `sys.timestamp_to_str`. Only the common pieces (`%Y %m %d %H %M %S`) are accepted. The MonetDB case rests on its documentation, because no MonetDB server was available to run it.
+
+An `INSERT` or a `CREATE TABLE ... AS` is decided when the translation reads back as the very same statement, or when everything but the inner query is the same text and the inner queries are proved equal. For example `INSERT INTO t1 VALUES (ln(1))` against the same statement with different letter case. This says the same rows are written; it does not say what each database's column types then do to them, and these statements are not re-run on the real databases.
+
+Three of the development pairs are proved thanks to a prover rule (`sqlite_date_text.py`) that reads the digits SQLite's `STRFTIME` returns as text or as a number, as SQLite itself does.
+
 ORDER BY on the source can require an ordered comparison. Output names are otherwise ignored under this evaluation's policy.
 
 ```sh
