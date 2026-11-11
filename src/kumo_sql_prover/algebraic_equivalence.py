@@ -4878,6 +4878,7 @@ def normalize(
     from .single_source_columns import qualify_single_source_columns
     from .keyed_self_membership import keyed_self_membership
     from .own_group_joins import inner_own_group_join, own_group_join
+    from .own_group_keys import keyed_own_group_rows
     from .exact_rounding import exact_rounding
     from .exact_power_division import divide_by_power_of_ten
     from .exact_scaling import scale_after_division
@@ -4972,6 +4973,7 @@ def normalize(
         drop_one_row_tail,
         lambda sel: keyed_self_membership(sel, schema, keys, not_null),
         lambda sel: inner_own_group_join(sel, schema, not_null),
+        lambda sel: keyed_own_group_rows(sel, schema, keys, not_null),
         lambda sel: exact_rounding(sel, types_map, dialect),
         lambda sel: scale_after_division(sel, types_map, dialect),
         lambda sel: divide_by_power_of_ten(sel, types_map, dialect),
