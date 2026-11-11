@@ -55,8 +55,11 @@ def test_the_four_comparisons_become_exists():
         "SELECT t.a FROM t WHERE EXISTS(SELECT 1 FROM u WHERE (u.c = t.c OR u.a = 1) AND (t.b + 1) <= (u.b * 2))"
     )
     assert read("SELECT t.a FROM t WHERE 5 > (SELECT MIN(u.b) FROM u)") == "SELECT t.a FROM t WHERE EXISTS(SELECT 1 FROM u WHERE 5 > u.b)"
-    assert read("SELECT t.a FROM t WHERE t.b > (SELECT MIN(u.b) FROM u LEFT JOIN t AS v ON v.a = u.a WHERE v.c = t.c)") == (
-        "SELECT t.a FROM t WHERE EXISTS(SELECT 1 FROM u LEFT JOIN t AS v ON v.a = u.a WHERE v.c = t.c AND t.b > u.b)"
+    assert read("SELECT t.a FROM t WHERE t.b > (SELECT MIN(u.b) FROM u CROSS JOIN t AS v WHERE v.a = u.a AND v.c = t.c)") == (
+        "SELECT t.a FROM t WHERE EXISTS(SELECT 1 FROM u CROSS JOIN t AS v WHERE v.a = u.a AND v.c = t.c AND t.b > u.b)"
+    )
+    assert read("SELECT t.a FROM t WHERE t.b > (SELECT MIN(u.b) FROM u, t AS v WHERE v.a = u.a AND v.c = t.c)") == (
+        "SELECT t.a FROM t WHERE EXISTS(SELECT 1 FROM u, t AS v WHERE v.a = u.a AND v.c = t.c AND t.b > u.b)"
     )
     # a bare outer column is qualified from the schema of the select's only table
     assert read("SELECT a FROM t WHERE b > (SELECT MIN(u.b) FROM u WHERE u.c = t.c)", SCHEMA) == (
@@ -86,6 +89,10 @@ def test_the_four_comparisons_become_exists():
     "SELECT t.a FROM t JOIN u ON t.a = u.a WHERE b > (SELECT MIN(v.b) FROM u AS v)",
     f"SELECT t.a, SUM(t.b) FROM t GROUP BY t.a HAVING SUM(t.b) > (SELECT MIN(u.b) FROM u)",
     f"SELECT t.a FROM t WHERE (SELECT MAX(v.b) FROM u AS v) > (SELECT MIN(u.b) {SUB})",
+    # sources the scalar-aggregate decorrelation reads (closed_sources): left to it
+    "SELECT t.a FROM t WHERE t.b > (SELECT MIN(x.b) FROM (SELECT u.b, u.c FROM u) AS x WHERE x.c = t.c)",
+    "SELECT t.a FROM t WHERE t.b > (SELECT MIN(u.b) FROM u JOIN t AS v ON v.a = u.a WHERE v.c = t.c)",
+    "SELECT t.a FROM t WHERE t.b > (SELECT MIN(u.b) FROM u LEFT JOIN t AS v ON v.a = u.a WHERE v.c = t.c)",
 ])
 def test_other_comparisons_are_left_alone(sql):
     assert read(sql) is None
@@ -145,7 +152,7 @@ READ_QUERIES = [
     f"SELECT t.a, t.b FROM t WHERE t.b < (SELECT MAX(u.b) {SUB})",
     f"SELECT t.a, t.b FROM t WHERE (SELECT MAX(DISTINCT u.b + u.a) {SUB} OR u.a = 1) >= t.b + 1",
     "SELECT t.a, t.b FROM t WHERE 2 > (SELECT MIN(u.b) FROM u)",
-    "SELECT a, b FROM t WHERE b > (SELECT MIN(u.b) FROM u LEFT JOIN t AS v ON v.a = u.a WHERE v.c = t.c OR v.c IS NULL)",
+    "SELECT a, b FROM t WHERE b > (SELECT MIN(u.b) FROM u, t AS v WHERE v.a = u.a AND (v.c = t.c OR v.c IS NULL))",
 ]
 
 

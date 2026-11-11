@@ -28,6 +28,11 @@ Conditions, all checked:
   changes neither), with no ``GROUP BY``, ``HAVING``, ``DISTINCT``, ``QUALIFY``, window, ``ORDER BY``, ``LIMIT``,
   ``OFFSET``, ``FILTER`` or set operation. Its sources, joins and ``WHERE`` are kept; the comparison is added to
   the ``WHERE``, which is applied to the same joined rows the aggregate read;
+* the subquery's sources are tables, joined by commas or ``CROSS JOIN``. A subquery over a derived table or a
+  ``JOIN .. ON`` is left alone: the prover's scalar-aggregate decorrelation reads those (``closed_sources``) and
+  proves them against the join with a grouped derived table, a proof this rule would take away, because the
+  attempt without the shape rules (``shape_fallback``) switches off both. Over plain tables that attempt reads
+  the subquery as it did before this rule;
 * ``y`` holds no aggregate, window or subquery, and ``x`` none either;
 * every column of ``x`` is qualified by a source of the outer select, and the subquery (at any depth) declares no
   source of that name: moved inside, ``x`` must still read the outer row. A bare column is qualified first, but
@@ -73,6 +78,11 @@ def _extremum(node: exp.Expression) -> tuple[exp.Select, type, exp.Expression] |
         return None
     if body.args.get(FROM_KEY) is None or len(body.expressions) != 1:
         return None
+    if any(not isinstance(source, exp.Table) for source in _sources(body)):
+        return None  # a derived table: left to the scalar-aggregate decorrelation (module doc)
+    for join in body.args.get("joins") or []:
+        if any(v for k, v in join.args.items() if k not in ("this", "kind")) or (join.args.get("kind") or "CROSS").upper() != "CROSS":
+            return None  # JOIN .. ON, an outer join: likewise
     call = body.expressions[0]
     call = call.this if isinstance(call, exp.Alias) else call
     if type(call) not in (exp.Min, exp.Max) or any(v for k, v in call.args.items() if k != "this"):
