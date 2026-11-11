@@ -21,8 +21,9 @@ published schema (``dataset/schemas``: types, primary keys, NOT NULL, foreign ke
 * ``unknown``, ``unsupported`` (the SQL does not parse), ``timeout`` and ``error`` (a crash).
 
 Databases come from the prover's own counterexample, KumoSQL's targeted suite
-(``kumo_sql_prover.refute``) and, for TPC-H when ``tpchgen-cli`` is installed, a generated TPC-H
-instance at scale factor 0.01. Queries are PostgreSQL; DuckDB runs them with PostgreSQL's
+(``kumo_sql_prover.refute``), for TPC-H when ``tpchgen-cli`` is installed a generated TPC-H
+instance at scale factor 0.01, and last a search directed by the two queries' own text
+(``tools/witness_search.py``: the constants they compare with, repeated rows, never a zero divisor). Queries are PostgreSQL; DuckDB runs them with PostgreSQL's
 integer division and NULL ordering, and ``now()``/``current_date`` read one fixed instant on
 both sides. A difference is only counted when it cannot come from tie-breaking: queries with
 ``random()`` are never refuted, and when a query's rows can depend on input order (a LIMIT that
@@ -160,6 +161,8 @@ DUCKDB_SETTINGS = (
 )
 PROVE_SECONDS = 60  # hard cap on one proof attempt, normalization included
 SEARCH_SECONDS = 8.0  # budget of the targeted-database search per pair
+DIRECTED_SECONDS = 8.0  # budget of the directed search (tools/witness_search.py) for a pair that was not proved
+DIRECTED_SECONDS_PROVED = 1.0  # and for a proved pair, where a witness would mean a wrong proof
 QUERY_SECONDS = 10.0  # one query on one replayed database
 NOW = "2024-06-01 12:00:00"  # the instant now() and current_date read during a replay
 SAMPLE_SEED = 2026
@@ -864,8 +867,27 @@ def _used(trees, tables: dict[str, Table]) -> dict[str, Table]:
     return used
 
 
-def search(left: str, right: str, tables: dict[str, Table], replayer: Replayer, kind: str, proposed: list[Data], instance: Path | None):
-    """``(witness, source)`` of a replayed difference, or ``(None, "")``."""
+def search(left: str, right: str, tables: dict[str, Table], replayer: Replayer, kind: str, proposed: list[Data], instance: Path | None, directed: float = 0.0):
+    """``(witness, source)`` of a replayed difference, or ``(None, "")``.
+
+    ``directed`` is the budget in seconds of the directed search, which runs last (0: not at all).
+    """
+
+    witness, source = _search(left, right, tables, replayer, kind, proposed, instance)
+    if witness or directed <= 0 or os.environ.get("KUMOSQL_DIRECTED", "1") == "0":
+        return witness, source
+    tools = str(Path(__file__).resolve().parent)
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import witness_search
+
+    try:
+        return witness_search.find_witness(left, right, tables, replayer, kind, directed, sys.modules[__name__])
+    except Exception:  # noqa: BLE001 - no database is no evidence
+        return None, ""
+
+
+def _search(left: str, right: str, tables: dict[str, Table], replayer: Replayer, kind: str, proposed: list[Data], instance: Path | None):
 
     duck_left, duck_right = replay_sql(left), replay_sql(right)
     for source, data in proposed:
@@ -941,7 +963,7 @@ def decide(pair: Pair, tables: dict[str, Table], instance: Path | None = None) -
     use_instance = instance if pair.benchmark == "tpch" else None
     if pair.benchmark == "tpch":
         proposed.append(("the database of the authors' documented TPC-H Q2 case", documented_database(tables)))
-    witness, source = search(left, right, tables, replayer, kind, proposed, use_instance)
+    witness, source = search(left, right, tables, replayer, kind, proposed, use_instance, DIRECTED_SECONDS_PROVED if proved else DIRECTED_SECONDS)
     if proved:
         if witness:
             return Verdict("wrong", "proved equivalent, but a replayed database separates the queries", witness, adapted, kind, source)
