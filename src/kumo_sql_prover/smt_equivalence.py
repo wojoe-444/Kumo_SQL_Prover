@@ -84,7 +84,7 @@ from .solver_lock import Z3_MISSING, bound, bounded_solver, serialized, sweep
 from .string_literals import canonical_literals
 from .type_names import invalid_type_name
 from .sqlx_fragments import masked_template_problem
-from . import numeric_column_reading, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals
+from . import numeric_column_reading, opaque_pairing, shape_fallback, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals
 from .float_sum_order import Ledger
 
 try:  # pragma: no cover - exercised by the import itself
@@ -4880,30 +4880,40 @@ def _unify_opaque(compiler: "_Compiler", unions, **settings) -> None:
         ctes = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
         return frozenset(t.name.lower() for t in tree.find_all(exp.Table)) - ctes
 
+    def equal(rep: str, key: str) -> bool:
+        _nesting[0] += 1
+        try:
+            # The LIMIT-aware entry point: a body may end in ORDER BY .. LIMIT on both sides. The bodies are read
+            # in the dialect of the proof they belong to (``_own_dialect_text``), never as BigQuery by default.
+            result = prove_equivalent_smt(bodies[rep][2], bodies[key][2], compare_names=False, dialect=compiler.dialect, **settings)
+        finally:
+            _nesting[0] -= 1
+        return result.status is SmtStatus.PROVEN_EQUIVALENT
+
     representatives: list[str] = []
     mapping: dict[str, str] = {}
+    tried: set[tuple[str, str]] = set()
+    if shape_fallback.enabled() and len(unions) == 2:
+        # first each body of one query against its likely counterpart in the other (``opaque_pairing``)
+        sides = [{occ.table for occ in _all_occs((union,)) if occ.opaque} for union in unions]
+        mapping, tried = opaque_pairing.pair_across(bodies, sides[0], sides[1], equal)
     budget = _OPAQUE_PROOFS
     for key, (sql, arity, own) in bodies.items():
+        if key in mapping:
+            continue
         for rep in representatives:
             rep_sql, rep_arity, rep_own = bodies[rep]
-            if rep_arity != arity or budget <= 0 or tables(rep_sql) != tables(sql):
+            if rep_arity != arity or budget <= 0 or (rep, key) in tried or tables(rep_sql) != tables(sql):
                 continue
             budget -= 1
-            _nesting[0] += 1
-            try:
-                # The LIMIT-aware entry point: a body may end in ORDER BY .. LIMIT on both sides. The bodies are read
-                # in the dialect of the proof they belong to (``_own_dialect_text``), never as BigQuery by default.
-                result = prove_equivalent_smt(rep_own, own, compare_names=False, dialect=compiler.dialect, **settings)
-            finally:
-                _nesting[0] -= 1
-            if result.status is SmtStatus.PROVEN_EQUIVALENT:
+            if equal(rep, key):
                 mapping[key] = rep
                 break
         else:
             representatives.append(key)
     if mapping:
         for occ in _all_occs(unions):
-            if occ.opaque and occ.table in mapping:
+            while occ.opaque and occ.table in mapping:
                 occ.table = mapping[occ.table]
 
 
