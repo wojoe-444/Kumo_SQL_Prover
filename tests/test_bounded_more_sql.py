@@ -304,3 +304,65 @@ def test_dense_rank_counts_the_distinct_keys_before_a_row():
     same("select a, dense_rank() over (order by a) from t where a is not null", "select a, (select count(distinct x.a) from t x where x.a <= t.a) from t where a is not null")
     different("select a, dense_rank() over (order by a) from t", "select a, rank() over (order by a) from t", rows=3)
     assert agrees_with_replay("select a, b, dense_rank() over (partition by a order by b desc), dense_rank() over (order by a, b) from t")
+
+
+# --- dates, intervals, numbers written as strings, casts ---------------------------------------------
+
+
+def test_date_literals_and_intervals():
+    same("select id from e where d = '2020-2-1'", "select id from e where d = '2020-02-01'")
+    same("select id from e where d < date('2020-02-01 +08')", "select id from e where d < '2020-02-01'")
+    same("select id from e where d >= date_sub('2020-03-01', interval 29 day)", "select id from e where d >= '2020-02-01'")
+    same("select id from e where d = date_add('2020-03-01', interval -1 day)", "select id from e where d = '2020-02-29'")
+    same("select id from e where d = subdate('2020-03-01', interval 1 day) or d = adddate('2020-01-30', 1)", "select id from e where d in ('2020-02-29', '2020-01-31')")
+    same("select id from e where d < date '2020-01-31' + interval '1' month", "select id from e where d < '2020-02-29'")  # clamped to the month's end
+    same("select id from e where d < date('2019-02-28') + interval 1 year and d >= date '2020-03-31' - interval 1 quarter", "select id from e where d < '2020-02-28' and d >= '2019-12-31'")
+    same("select id, d + interval 2 week from e", "select id, date_add(d, interval 14 day) from e")
+    different("select id from e where d < date '2020-01-31' + interval '1' month", "select id from e where d < '2020-03-02'")
+    different("select id from e where d = '2020-2-1'", "select id from e where d = '2020-01-02'", rows=1)
+    # a month added to a date that is not a literal needs the month-end rule on a symbolic date: not modeled
+    unsupported("select id from e where d + interval 1 month > '2020-02-01'", "select id from e", "interval arithmetic")
+    unsupported("select id from e where d = '2020-02-30'", "select id from e where false", "date")
+
+
+@pytest.mark.parametrize("sql", [
+    "select id, d = '2020-2-1', d < date('2020-02-29 +08'), d >= date_sub('2020-03-01', interval 29 day) from e",
+    "select id from e where d between subdate('2020-03-01', interval 30 day) and adddate('2020-01-30', 2)",
+    "select id, d < date '2020-01-31' + interval '1' month, d > date('2021-01-01') - interval 1 year, d = '2019-11-30' + interval 1 month from e",
+    "select id, d + interval 1 week, subdate(d, 1), adddate(d, interval 3 day), date_add(d, interval '2' day) from e",
+])
+def test_dates_match_the_replay(sql):
+    assert agrees_with_replay(sql)
+
+
+def test_a_number_written_as_a_string_literal_compares_as_the_number():
+    same("select a from t where a <> '2'", "select a from t where a <> 2")
+    same("select a from t where a in ('1', '3') and b between '0' and '2'", "select a from t where a in (1, 3) and b between 0 and 2")
+    different("select a from t where a = '2'", "select a from t where a = 3", rows=1)
+    # any other string against a number is left alone (MySQL reads 'x' as 0, DuckDB fails)
+    unsupported("select a from t where a = 'x'", "select a from t where a = 0", "compare")
+    unsupported("select a from t where a = '2.5'", "select a from t where false", "compare")
+    unsupported("select t.a from t join u on t.a = u.c", "select t.a from t join u on t.a = u.a", "compare")
+    for sql in ("select a, a = '2', b < '1', a in ('1', '3'), b between '0' and '2' from t", "select a from t where a <> '-1' or b >= '03'"):
+        if "'03'" in sql:
+            unsupported(sql, sql, "compare")  # a leading zero is not the way either engine prints the number
+        else:
+            assert agrees_with_replay(sql)
+
+
+def test_casts_between_dates_timestamps_booleans_and_integers():
+    same("select cast(a > 1 as signed) from t", "select case when a > 1 then 1 when a <= 1 then 0 end from t")
+    same("select id from e where cast(d as datetime) >= '2020-02-01 00:00:00'", "select id from e where d >= '2020-02-01'")
+    same("select id, cast(cast(d as datetime) as date) from e", "select id, d from e")
+    different("select cast(a > 1 as signed) from t", "select 1 from t", rows=1)
+    for sql in ("select a, cast(a > 1 as signed), cast(b is null as signed) + 1 from t", "select id, cast(d as datetime), cast(cast(d as datetime) as date) from e"):
+        assert agrees_with_replay(sql)
+
+
+def test_a_table_alias_can_rename_columns():
+    same("select x, y from t as r (x, y) where x > 1", "select a, b from t where a > 1")
+    same("select r.x, r.b from t as r (x)", "select a, b from t")
+    same("with w as (select a, b from t) select p, q from w as v (p, q)", "select a, b from t")
+    different("select x from t as r (y, x)", "select a from t", rows=1)
+    unsupported("select a from t as r (x, y)", "select a from t", "unknown column")
+    unsupported("select x from t as r (x, y, z)", "select a from t", "column aliases")

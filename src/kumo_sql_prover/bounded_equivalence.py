@@ -388,13 +388,39 @@ def to_kind(v: V, kind: str) -> V:
     if kind in ("date", "time", "datetime") and v.kind == "str" and isinstance(v.lit, str):
         try:
             if kind == "date":
-                return const(_dt.date.fromisoformat(v.lit), "date")
+                return const(_date_literal(v.lit), "date")
             if kind == "time":
                 return const(_dt.time.fromisoformat(v.lit if len(v.lit) > 5 else v.lit + ":00"), "time")
             return const(_dt.datetime.fromisoformat(v.lit), "datetime")
         except ValueError:
             raise Unsupported("unparseable date or time literal")
     raise Unsupported(f"cannot treat {v.kind} as {kind}")
+
+
+_LOOSE_DATE = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
+_DATE_WITH_OFFSET = re.compile(r"(\d{4}-\d{1,2}-\d{1,2}) [+-]\d{2}")
+
+
+def _date_literal(text: str) -> _dt.date:
+    """The date a string literal names: ``2019-07-04``, or ``2019-7-4`` (MySQL and DuckDB read a month or day without
+    its leading zero). Raises ``ValueError`` for anything else."""
+
+    loose = _LOOSE_DATE.fullmatch(text)
+    if loose:
+        return _dt.date(int(loose.group(1)), int(loose.group(2)), int(loose.group(3)))
+    return _dt.date.fromisoformat(text)
+
+
+def _add_months(day: _dt.date, months: int) -> _dt.date:
+    """``day`` moved by whole months; a day past the end of the new month becomes its last day (as MySQL and DuckDB do)."""
+
+    total = day.year * 12 + day.month - 1 + months
+    year, month = divmod(total, 12)
+    month += 1
+    if not 1 <= year <= 9999:
+        raise Unsupported("date out of range")
+    last = (_dt.date(year + (month == 12), month % 12 + 1, 1) - _dt.timedelta(days=1)).day if (year, month) != (9999, 12) else 31
+    return _dt.date(year, month, min(day.day, last))
 
 
 def unify(a: V, b: V) -> tuple[V, V]:
@@ -869,6 +895,7 @@ class Compiler:
         if isinstance(node, exp.Table):
             alias = node.alias.lower() if node.alias else node.name.lower()
             name = node.name.lower()
+            renamed = [c.name.lower() for c in node.args["alias"].args.get("columns") or []] if node.args.get("alias") else []
             if not node.db and not node.catalog and name in self._ctes[-1]:
                 select, columns, frame = self._ctes[-1][name]
                 self._ctes.append(frame)
@@ -876,13 +903,15 @@ class Compiler:
                     inner = self.query(select, None)
                 finally:
                     self._ctes.pop()
-                return self._renamed(inner, alias, columns or None, node)
-            if isinstance(node.this, exp.Func) or node.args.get("joins") is not None and False:
+                return self._renamed(self._renamed(inner, alias, columns or None, node), alias, renamed or None, node)
+            if isinstance(node.this, exp.Func):
                 raise Unsupported("table function")
+            extra = sorted(k for k, v in node.args.items() if v and k not in ("this", "db", "catalog", "alias", "joins"))
+            if extra:  # a sample, a pivot, a time-travel version: not the table itself
+                raise Unsupported(f"table with {', '.join(extra)}")
             table, slots = self.db.table_for(node)
-            cols = [(alias, c.name.lower()) for c in table.columns]
-            kinds = [kind_of(c.type) or "unsupported" for c in table.columns]
-            return Rel(cols, kinds, [Row(r.present, list(r.vals)) for r in slots])
+            base = Rel([(alias, c.name.lower()) for c in table.columns], [kind_of(c.type) or "unsupported" for c in table.columns], [Row(r.present, list(r.vals)) for r in slots])
+            return self._renamed(base, alias, renamed or None, node)
         inner = node.this if isinstance(node, exp.Subquery) else None
         if isinstance(inner, exp.Table) or (isinstance(inner, exp.Subquery) and (inner.args.get("joins") or (inner.alias and not node.alias))):
             # ``(a JOIN b ON ..)``: parentheses around a FROM item and its joins, not a derived table
@@ -923,7 +952,11 @@ class Compiler:
     def _renamed(self, inner: Rel, alias: str | None, columns, node) -> Rel:
         if node.args.get("pivots") or node.args.get("sample"):
             raise Unsupported("pivot or sample")
-        names = columns or [n for _, n in inner.cols]
+        names = [n for _, n in inner.cols]
+        if columns:  # ``AS x (a, b)`` renames the first columns and keeps the names of the rest
+            if len(columns) > len(names):
+                raise Unsupported("more column aliases than columns")
+            names[: len(columns)] = columns
         return Rel([(alias, n) for n in names], list(inner.kinds), [Row(r.present, r.vals) for r in inner.rows])
 
     def _lateral(self, left: Rel, join: exp.Join, outer: Scope | None) -> Rel:
@@ -1453,7 +1486,8 @@ class Compiler:
                 return self._is(compare(_COMPARES[type(node)], self.expr(node.this, scope), self.expr(test.this, scope)), test.expression)
             if isinstance(node.expression, (exp.Any, exp.All)):
                 return self._quantified(_COMPARES[type(node)], self.expr(node.this, scope), node.expression, scope)
-            return compare(_COMPARES[type(node)], self.expr(node.this, scope), self.expr(node.expression, scope))
+            left, right = self.expr(node.this, scope), self.expr(node.expression, scope)
+            return compare(_COMPARES[type(node)], _number_text(node.this, left, right), _number_text(node.expression, right, left))
         raise Unsupported(f"expression {type(node).__name__}")
 
     def _quantified(self, op: str, left: V, quantifier, scope: Scope) -> V:
@@ -1531,18 +1565,29 @@ class Compiler:
 
     def _shift(self, base: V, interval: exp.Interval, op: str, scope) -> V:
         unit = interval.args.get("unit")
-        name = (unit.name if unit is not None else "DAY").upper()
-        if name != "DAY" or base.kind != "date":
-            raise Unsupported("interval arithmetic other than days on dates")
-        amount = self.expr(interval.this, scope)
-        if amount.kind == "str" and isinstance(amount.lit, str):
-            try:
-                amount = const(int(amount.lit), "int")
-            except ValueError:
+        return self._moved(base, self.expr(interval.this, scope), unit.name if unit is not None else "DAY", op)
+
+    def _moved(self, base: V, amount: V, unit: str, op: str) -> V:
+        """A date moved by an interval. Days and weeks are exact for any date; months, quarters and years are computed
+        only for a literal date and a literal amount (the month-end rule on a symbolic date is not modeled)."""
+
+        unit = unit.upper()
+        if base.kind == "str" and isinstance(base.lit, str):  # DATE_ADD('2019-07-05', ..): the string is a date
+            base = to_kind(base, "date")
+        if amount.kind == "str" and isinstance(amount.lit, str):  # INTERVAL '3' MONTH
+            if not re.fullmatch(r"-?\d{1,9}", amount.lit):
                 raise Unsupported("interval literal")
-        if amount.kind != "int":
-            raise Unsupported("interval amount")
-        return V("date", base.val + amount.val if op == "add" else base.val - amount.val, z3.Or(base.null, amount.null))
+            amount = const(int(amount.lit), "int")
+        if base.kind != "date" or amount.kind != "int":
+            raise Unsupported("interval arithmetic other than days on dates" if base.kind != "date" else "interval amount")
+        sign = 1 if op == "add" else -1
+        days = {"DAY": 1, "WEEK": 7}.get(unit)
+        if days is not None:
+            return V("date", base.val + sign * days * amount.val, z3.Or(base.null, amount.null))
+        months = {"MONTH": 1, "QUARTER": 3, "YEAR": 12}.get(unit)
+        if months is None or not isinstance(base.lit, _dt.date) or not isinstance(amount.lit, int) or isinstance(amount.lit, bool):
+            raise Unsupported("interval arithmetic other than days on dates")
+        return const(_add_months(base.lit, sign * months * amount.lit), "date")
 
     def _e_DateAdd(self, node, scope):
         return self._date_function(node, scope, "add")
@@ -1552,15 +1597,7 @@ class Compiler:
 
     def _date_function(self, node, scope, op):
         unit = node.args.get("unit")
-        if unit is not None and unit.name.upper() != "DAY":
-            raise Unsupported("date arithmetic other than days")
-        base = self.expr(node.this, scope)
-        amount = self.expr(node.expression, scope)
-        if base.kind == "str":
-            base = to_kind(base, "date")
-        if base.kind != "date" or amount.kind != "int":
-            raise Unsupported("date arithmetic")
-        return V("date", base.val + amount.val if op == "add" else base.val - amount.val, z3.Or(base.null, amount.null))
+        return self._moved(self.expr(node.this, scope), self.expr(node.expression, scope), unit.name if unit is not None else "DAY", op)
 
     def _e_DateDiff(self, node, scope):
         unit = node.args.get("unit")
@@ -1612,6 +1649,7 @@ class Compiler:
     def _e_Between(self, node, scope):
         value = self.expr(node.this, scope)
         low, high = self.expr(node.args["low"], scope), self.expr(node.args["high"], scope)
+        low, high = _number_text(node.args["low"], low, value), _number_text(node.args["high"], high, value)
         return logical_and([compare("gte", value, low), compare("lte", value, high)])
 
     def _e_In(self, node, scope):
@@ -1627,7 +1665,7 @@ class Compiler:
         else:
             if node.args.get("unnest"):
                 raise Unsupported("IN UNNEST")
-            candidates = [(_true(), self.expr(e, scope)) for e in node.expressions]
+            candidates = [(_true(), _number_text(e, self.expr(e, scope), value)) for e in node.expressions]
         matches = []
         unknown = []
         for present, other in candidates:
@@ -1756,7 +1794,11 @@ class Compiler:
         return V("int", value, v.null)
 
     def _e_TsOrDsToDate(self, node, scope):
-        return self._day(self.expr(node.this, scope))
+        value = self.expr(node.this, scope)
+        if value.kind == "str" and isinstance(value.lit, str) and _DATE_WITH_OFFSET.fullmatch(value.lit):
+            # DATE('1995-03-21 +08'): MySQL and DuckDB read the date and drop what follows it
+            value = const(value.lit.split(" ")[0], "str")
+        return self._day(value)
 
     def _e_Year(self, node, scope):
         return self._part(self.expr(node.this, scope), "YEAR")
@@ -1832,6 +1874,12 @@ class Compiler:
             return to_kind(v, wanted)
         if v.kind == "null":
             return null_value(wanted)
+        if wanted == "int" and v.kind == "bool":  # TRUE is 1, FALSE is 0
+            return to_kind(v, "int")
+        if wanted == "datetime" and v.kind == "date":  # midnight of that day
+            return V("datetime", v.val * 86400, v.null)
+        if wanted == "date" and v.kind == "datetime":
+            return self._day(v)
         raise Unsupported(f"CAST from {v.kind} to {wanted}")
 
     def _e_Like(self, node, scope):
@@ -1968,6 +2016,12 @@ class Compiler:
         name = str(node.this).upper()
         if _single_value(node):
             return self._first_member(node, scope)
+        if name in ("SUBDATE", "ADDDATE") and len(node.expressions) == 2:  # a day count or an INTERVAL
+            day, count = node.expressions
+            op = "sub" if name == "SUBDATE" else "add"
+            if isinstance(count, exp.Interval):
+                return self._shift(self.expr(day, scope), count, op, scope)
+            return self._moved(self.expr(day, scope), self.expr(count, scope), "DAY", op)
         if not _is_condition(node):
             # an unknown name is read as an uninterpreted *predicate* (VeriEQL's ``B(x)``): sound where a truth value is
             # expected, wrong for a call whose value is compared, computed with or returned (``YEARWEEK(d) = 201901``)
@@ -2087,6 +2141,17 @@ class Compiler:
             best = z3.If(take, v.val, best)
             have = z3.Or(have, p)
         return V(kind, best, z3.Not(have))
+
+
+def _number_text(node: exp.Expression, value: V, other: V) -> V:
+    """``id = '2'``: a string literal that spells a whole number, compared with a number, is that number (MySQL converts
+    the string, DuckDB casts the literal). Any other string against a number stays unsupported."""
+
+    while isinstance(node, exp.Paren):
+        node = node.this
+    if isinstance(node, exp.Literal) and node.is_string and other.kind in ("int", "real") and re.fullmatch(r"-?(0|[1-9]\d{0,17})", node.this):
+        return const(int(node.this), "int")
+    return value
 
 
 def _window_call(node: exp.Expression) -> bool:
