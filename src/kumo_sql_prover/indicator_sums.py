@@ -170,7 +170,7 @@ def _disjuncts(node: exp.Expression) -> list[exp.Expression] | None:
         node = node.this
     if isinstance(node, exp.Or):
         left, right = _disjuncts(node.this), _disjuncts(node.expression)
-        return (left or [node.this]) + (right or [node.expression])
+        return (left or [node.this.unnest()]) + (right or [node.expression.unnest()])
     if isinstance(node, exp.In) and node.expressions and not any(value for key, value in node.args.items() if key not in ("this", "expressions")):
         return [exp.EQ(this=node.this.copy(), expression=item.copy()) for item in node.expressions]
     return None
