@@ -162,6 +162,12 @@ A database that compares a whole number with a decimal column first converts the
 
 A query that removes duplicates inside a subquery, then joins it to a table on whole-number key columns, can have its duplicate removal moved to the outside when the join already makes every output row unique. KumoSQL's prover applies that move only when the columns are declared whole numbers and the joined tables' keys are fully pinned down; any grouping, limit, outer join or other twist makes it decline and leave the pair unproven. The evidence is a handful of textbook query pairs, so treat it as a narrow rule. The reference page has the exact conditions and the recorded scores: [Full reference](../docs/provers.md).
 
+## Example: a query made only of written-out rows
+
+Database projects test their joins with tiny tables typed straight into the query: "join these two rows with those two rows, expect these three rows". Such a query reads no stored table, so its answer is the same on every database. The prover now works that answer out with a small built-in calculator and compares the two lists of rows. The calculator covers whole numbers, true and false, text equality, missing values, joins, grouping and counting; when a query uses anything else (dates, division, text functions, sorting with a limit) it steps aside and the prover goes on as before, so an unusual query is left undecided, never guessed.
+
+Related small rules from the same work: counting the rows of a full join equals counting its two halves; "the count of matching rows is above zero" is the same as "a matching row exists"; and asking "is it in this list, or in a shorter version of this list" is the same as asking about the full list. Each rule ships with pairs that look alike but differ (for example counting a column that can be empty), which must stay unproved. The evidence is those tests plus a comparison of the calculator with DuckDB on thousands of random queries; the scores are in the [engine paired tests page](evals/engine-paired-tests.md).
+
 ## Trying again without the newest rules
 
 The prover rewrites both queries into a standard form and then compares the two. Every rewrite keeps the query's meaning, so a rewrite can never make the prover call two different queries equal. But a rewrite can get in the way. If it changes one query and has nothing to change in the other, two forms that used to match can stop matching, and a proof that worked before is lost.

@@ -4897,6 +4897,26 @@ def normalize(
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
+        from .closed_queries import fold_closed_query
+        from .inline_rows import inline_struct_rows
+
+        tree = fold_closed_query(inline_struct_rows(tree, dialect), dialect)  # pre-pass: inline rows as a table; a query that reads no table as its rows
+        from .counted_joins import counted_join_rules
+
+        tree = counted_join_rules(tree)  # pre-pass: COUNT(*) over a FULL JOIN as the count of its two halves
+        from .count_exists_rules import count_tests_to_exists
+
+        tree = count_tests_to_exists(tree)  # pre-pass: (SELECT COUNT(*) ..) > 0 as EXISTS
+        from .subquery_absorption import absorb_subquery_tests
+
+        tree = absorb_subquery_tests(tree)  # pre-pass: x IN (..) OR x IN (the same with one more filter) is the first
+        from .typed_comparisons import typed_comparison_rules
+
+        tree = typed_comparison_rules(tree, types, dialect)  # pre-pass: date + INTERVAL as DATE_ADD in a comparison; x + 1 = y + 1 as x = y
+        from .sqlite_date_text import sqlite_date_text_rules
+
+        tree = sqlite_date_text_rules(tree, dialect)  # pre-pass: SQLite's STRFTIME digits as text or as a number
+    if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
