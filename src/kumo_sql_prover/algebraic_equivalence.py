@@ -52,6 +52,7 @@ from .exists_constant_rules import exists_constant_rules
 from .decorrelation_rules import decorrelation_step
 from .constraint_normalization import keyed_join_to_exists, normalize_key_counts
 from .grouping_expansion import collapse_grouping_expansion
+from .grouped_output_names import group_by_named_outputs
 from .grouping_sets import expand_grouping_sets, grouping_sets_to_union
 from .named_windows import inline_named_windows
 from .having_rules import key_having_to_where
@@ -4906,6 +4907,8 @@ def normalize(
     tree = _in_over_union(tree)
     if shapes:
         tree = separate_disjoint_unions(tree)
+    if shapes:
+        tree = group_by_named_outputs(tree, schema)  # pre-pass: before any rule reads a key as a column
     tree = expand_grouping_sets(tree)
     for select in list(tree.find_all(exp.Select))[::-1]:
         replacement = collapse_grouping_expansion(select) or collapse_counted_intersection(select)
