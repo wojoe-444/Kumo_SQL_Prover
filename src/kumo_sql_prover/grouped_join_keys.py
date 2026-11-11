@@ -39,8 +39,9 @@ condition on an aggregate) keeps the same groups. Columns of ``t`` are fixed in 
 windows, ``DISTINCT``, ordering or a row limit; a grouped table with ``HAVING``, ``DISTINCT``, a row limit,
 grouping sets, windows, an output that is neither a key nor made of aggregates, a hidden group key, or a nested
 query outside its ``FROM``; a key that is not tied, tied columns that contain no declared key; a column that
-is not qualified by one of the two sources; and a column of the grouped table's input that cannot be attributed
-to one of its sources once ``t`` stands next to them.
+is neither qualified by one of the two sources nor a bare name only one of them has (the select has no
+``HAVING`` or ``ORDER BY``, so a bare name is never an output name); and a column of the grouped table's input
+that cannot be attributed to one of its sources once ``t`` stands next to them.
 """
 
 from __future__ import annotations
@@ -99,6 +100,18 @@ def join_before_grouping(
     t_alias, g_alias = table.alias_or_name.lower(), source.alias.lower()
     if t_alias == g_alias:
         return None
+    if any(not column.table and not _within(column, source) for column in select.find_all(exp.Column)):
+        # the select has no HAVING or ORDER BY, so a bare name is a column of one of the two sources
+        outputs = {item.alias_or_name.lower() for item in inner.expressions}
+        copy = select.copy()
+        inside = next(s for s in select_sources(copy) if isinstance(s, exp.Subquery))
+        for column in [c for c in copy.find_all(exp.Column) if not c.table and not _within(c, inside)]:
+            name = column.name.lower()
+            in_table, in_derived = name in known[_table_key(table)], name in outputs
+            if in_table == in_derived or column.args.get("db") or not isinstance(column.this, exp.Identifier):
+                return None
+            column.replace(exp.column(name, table.alias_or_name if in_table else source.alias))
+        return join_before_grouping(copy, schema, keys)
     inner = _qualified_input(inner, known, t_alias)
     if inner is None:
         return None

@@ -63,6 +63,11 @@ def test_the_keyed_table_joins_before_the_grouping():
     )
 
 
+def test_a_bare_name_is_read_from_the_one_source_that_has_it():
+    assert rewritten(f"SELECT id, wins FROM {G} JOIN people AS p ON who = id") is not None
+    assert rewritten(f"SELECT id, wins FROM {G} JOIN people AS p ON who = id") == rewritten(f"SELECT p.id, g.wins FROM {G} JOIN people AS p ON g.who = p.id")
+
+
 @pytest.mark.parametrize("sql", [
     f"SELECT p.id, g.wins FROM {G} LEFT JOIN people AS p ON g.who = p.id",  # a group without a person stays
     f"SELECT p.id, g.wins FROM people AS p LEFT JOIN {G} ON g.who = p.id",
@@ -88,7 +93,8 @@ def test_the_keyed_table_joins_before_the_grouping():
     f"SELECT p.id, COUNT(*) FROM {G} JOIN people AS p ON g.who = p.id GROUP BY p.id",  # the select groups itself
     f"SELECT DISTINCT p.name, g.wins FROM {G} JOIN people AS p ON g.who = p.id",
     f"SELECT p.id, g.wins FROM {G} JOIN people AS p ON g.who = p.id ORDER BY g.wins LIMIT 1",
-    f"SELECT id, wins FROM {G} JOIN people AS p ON g.who = p.id",  # bare columns
+    "SELECT id, n FROM people AS p JOIN (SELECT w1 AS id, COUNT(*) AS n FROM games GROUP BY w1) AS g ON g.id = p.id",  # id: of both sources
+    f"SELECT p.id, wins FROM {G} JOIN people AS p ON g.who = p.id AND day > 1",  # day: of neither
     f"SELECT p.id, g.wins FROM {G} JOIN people AS p ON g.who = p.id JOIN notes AS n ON n.id = p.id",  # a third source
     f"SELECT p.id, g.wins FROM {G} JOIN people AS p ON g.who = p.id WHERE EXISTS (SELECT 1 FROM notes AS n WHERE n.id = p.id)",
     f"SELECT * FROM {G} JOIN people AS p ON g.who = p.id",
