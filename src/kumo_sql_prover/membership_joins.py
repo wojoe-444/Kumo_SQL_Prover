@@ -1,4 +1,4 @@
-"""Inside a membership test, a nested ``IN (SELECT ..)`` is read as a join.
+"""Inside a membership test, a nested ``IN (SELECT ..)`` is read as a join (a nested ``EXISTS`` is left to the semi-join reading).
 
     WHERE s.k IN (SELECT ps.sk FROM ps WHERE ps.pk IN (SELECT p.k FROM p WHERE p.f = 1))
 
@@ -74,17 +74,13 @@ def _plain_joins(select: exp.Select) -> bool:
 
 
 def _nested(test: exp.Expression) -> tuple[exp.Select, exp.Expression | None] | None:
-    """``(N, e)`` when ``test`` is ``e IN (N)`` with one value, ``(N, None)`` when it is ``EXISTS (N)``."""
+    """``(N, e)`` when ``test`` is ``e IN (N)`` with one value.
 
-    if type(test) is exp.Exists:
-        if any(v for key, v in test.args.items() if key != "this"):
-            return None
-        inner = test.this
-        if type(inner) is exp.Subquery:
-            if inner.alias or any(v for key, v in inner.args.items() if key != "this"):
-                return None
-            inner = inner.this
-        return (inner, None) if type(inner) is exp.Select else None
+    A nested ``EXISTS`` is not read: the prover's semi-join reading already spells it, and a pair of DSB queries
+    (about 6,000 to 11,000 characters, too long for the shape fallback) lost a proof on main because this rule
+    rewrote an ``EXISTS`` inside an ``EXISTS`` on one query only.
+    """
+
     if type(test) is not exp.In or any(v for key, v in test.args.items() if key not in ("this", "query")):
         return None
     query = test.args.get("query")

@@ -43,6 +43,11 @@ Conditions, all checked:
   (in an ``ON``, the sources joined so far); a bare name in ``ORDER BY`` that is an output name is left to mean
   the output;
 * a source of the derived table whose name the select already uses gets a fresh alias;
+* something is carried over: the grouped table has a ``HAVING``, a condition reads one of its aggregates, or the
+  select has an ``ORDER BY``, ``LIMIT`` or ``OFFSET``. A plain pre-aggregated join is left as it is, because the
+  other query of a pair may keep the pre-aggregated table or a CTE of it, and reading one side flat would move it
+  away from the form the two shared (twelve DSB development pairs, too long for the shape fallback, lost their
+  proof on main to this);
 * the select is not inside an ``IN`` or ``EXISTS``: the prover reads a membership query without grouping, so there
   the pre-aggregated table is the better spelling.
 """
@@ -329,6 +334,11 @@ def pull_up_keyed_join(select: exp.Select, schema: dict | None, keys: dict | Non
         where_parts.extend(part.copy() for part in _conjuncts(join.args.get("on")))
     inner_having = inner.args.get("having")
     having_parts.extend(part.copy() for part in _conjuncts(inner_having.this if inner_having is not None else None))
+    if not having_parts and not any(copy.args.get(key) is not None for key in ("order", "limit", "offset")):
+        # Nothing to carry over: a plain pre-aggregated join is left as the other query of a pair may write it.
+        # DSB's ``wss JOIN store JOIN date_dim`` (keys on both) was read flat on one query and not on the CTE form
+        # of the other, and a pair too long for the shape fallback lost its proof on main.
+        return None
 
     group_by: list[exp.Expression] = []
     seen: set[str] = set()

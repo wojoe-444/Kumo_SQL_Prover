@@ -70,7 +70,7 @@ def test_the_join_becomes_a_grouped_join():
         "GROUP BY c.ck, c.name, o.k, o.ck, o.price, l.k HAVING (SUM(l.q) > 5 OR o.price > 3) ORDER BY SUM(l.q), 2"
     )
     # a source of the grouped table that shares a name with the select gets a fresh alias
-    out = pulled("SELECT o.k, g.total FROM o JOIN (SELECT o.ck, COUNT(*) AS total FROM o GROUP BY o.ck) AS g ON o.ck = g.ck")
+    out = pulled("SELECT o.k, g.total FROM o JOIN (SELECT o.ck, COUNT(*) AS total FROM o GROUP BY o.ck HAVING COUNT(*) > 1) AS g ON o.ck = g.ck")
     assert out.startswith("SELECT o.k, COUNT(*) AS total FROM o, o AS kqp") and "GROUP BY o.k, o.ck, kqp" in out
     # an output name in ORDER BY keeps meaning the output
     assert (
@@ -80,6 +80,10 @@ def test_the_join_becomes_a_grouped_join():
 
 
 @pytest.mark.parametrize("sql", [
+    # nothing to carry over (no HAVING, no filter on an aggregate, no tail): the other query of a pair may keep the
+    # pre-aggregated table, and reading one side flat loses the proof
+    "SELECT o.k, g.total FROM o JOIN (SELECT l.k, SUM(l.q) AS total FROM l GROUP BY l.k) AS g ON o.k = g.k",
+    "SELECT o.k, g.total FROM c JOIN o ON c.ck = o.ck JOIN (SELECT l.k, SUM(l.q) AS total FROM l GROUP BY l.k) AS g ON o.k = g.k WHERE o.price > 1",
     # a source without a declared key: two equal rows would share a group
     "SELECT h.x, g.total FROM h JOIN (SELECT l.k, SUM(l.q) AS total FROM l GROUP BY l.k) AS g ON h.x = g.k",
     "SELECT o.k, g.total FROM o JOIN h ON h.x = o.k JOIN (SELECT l.k, SUM(l.q) AS total FROM l GROUP BY l.k) AS g ON o.k = g.k",
@@ -184,7 +188,7 @@ def test_near_misses_are_not_proved(left, right, rows):
 REPLAYED = [
     "SELECT c.name, o.k, g.total FROM c JOIN o ON c.ck = o.ck JOIN (SELECT l.k, SUM(l.q) AS total FROM l GROUP BY l.k HAVING SUM(l.q) > 2) AS g ON o.k = g.k",
     "SELECT name, o.k, total + 1 FROM c, o, (SELECT k AS kk, SUM(q) AS total FROM l WHERE n > 1 GROUP BY k) AS g WHERE c.ck = o.ck AND o.k = kk AND (total > 3 OR price > 1)",
-    "SELECT o.k, g.total, g.n FROM o JOIN (SELECT o.ck, COUNT(*) AS total, MAX(l.q) AS n FROM o JOIN l ON l.k = o.k GROUP BY o.ck) AS g ON o.ck = g.ck",
+    "SELECT o.k, g.total, g.n FROM o JOIN (SELECT o.ck, COUNT(*) AS total, MAX(l.q) AS n FROM o JOIN l ON l.k = o.k GROUP BY o.ck HAVING MAX(l.q) > 0) AS g ON o.ck = g.ck",
     "SELECT o.k, o.price, g.a, g.b FROM o, (SELECT l.q AS a, COUNT(DISTINCT l.k) AS b FROM l GROUP BY l.q HAVING MIN(l.n) < 3) AS g WHERE g.b <> o.price",
     "SELECT c.ck, g.x, g.t FROM c, (SELECT h.x, SUM(h.y) AS t FROM h GROUP BY h.x) AS g WHERE c.name = g.x OR g.t IS NULL",
 ]
@@ -222,3 +226,19 @@ def test_a_key_with_a_nullable_column_does_not_identify_a_row():
     assert first != second
     for left, right in ((keyed, flat), (flat, keyed)):
         assert not prove_equivalent_algebraic(left, right, schema=SCHEMA, types=TYPES, constraints=only_unique, dialect="postgres", compare_names=False).proven
+
+
+def test_a_plain_pre_aggregated_join_still_meets_the_cte_spelling_of_the_other_query():
+    """A pair where only one query has the keyed shape: the rule leaves both alone, so the shared form is kept."""
+
+    left = (
+        "SELECT o.k, g.total FROM o JOIN (SELECT l.k, SUM(l.q) AS total FROM l GROUP BY l.k) AS g ON o.k = g.k "
+        "JOIN c ON c.ck = o.ck WHERE c.name > 1"
+    )
+    right = (
+        "WITH cc AS (SELECT ck FROM c WHERE name > 1) "
+        "SELECT o.k, g.total FROM o JOIN (SELECT l.k, SUM(l.q) AS total FROM l GROUP BY l.k) AS g ON o.k = g.k "
+        "JOIN cc ON cc.ck = o.ck"
+    )
+    assert proved(left, right)
+    assert proved(right, left)
