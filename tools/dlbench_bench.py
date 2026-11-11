@@ -54,6 +54,7 @@ import argparse
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+import datetime
 import functools
 import hashlib
 import json
@@ -116,6 +117,12 @@ EPOCH_YEARS = range(1971, 2038)
 # Population in MySQL and MariaDB, sample in PostgreSQL, DuckDB and MonetDB; sqlglot reads them as one function
 AMBIGUOUS_SPREAD = {"std", "stddev", "variance"}
 MYSQL_FAMILY = {"mysql", "mariadb"}
+# One name, different functions: what two engines of different families compute for the same call (each seen natively)
+SET_RETURNING = {"generate_series", "unnest", "range", "generate_subscripts", "arrayjoin", "numbers", "json_each", "regexp_split_to_table"}
+NAN_IN_CLICKHOUSE = {"acos", "asin", "ln", "log10", "log1p", "log2", "pow", "power", "sqrt"}  # NULL in MySQL outside the domain
+SUBSTRINGS = {"mid", "substr", "substring"}
+DIGESTS = {"md4", "md5", "sha", "sha1", "sha2", "sha224", "sha256", "sha384", "sha512"}  # raw bytes in ClickHouse, hex digits elsewhere
+BITWISE = (exp.BitwiseAnd, exp.BitwiseOr, exp.BitwiseXor, exp.BitwiseNot, exp.BitwiseLeftShift, exp.BitwiseRightShift)
 DATE_BUILDERS = {"from_days", "make_date", "make_timestamp", "makedate", "makedate32", "makedatetime", "makedatetime64"}
 CONTRADICTIONS = FIXTURES / "native_contradictions.json"
 PROVER_TIMEOUT_MS = 3000
@@ -340,6 +347,113 @@ def _plain(tree, renames: dict[str, str], schema: dict[str, dict[str, str]] | No
     return tree
 
 
+# strftime specifiers that mean the same in SQLite, DuckDB and C (which MonetDB's timestamp_to_str calls):
+# four-digit year, two-digit month, day, hour (00-23), minute and second. Everything else is declined:
+# %J and %f are SQLite's own, %s, %j, %w, %u, %e, %p and the rest differ or were not confirmed.
+_SHARED_FORMAT = re.compile(r"(?:[^%]|%[YmdHMS])*")
+
+
+def _format_of(arguments: list) -> tuple[object, object] | None:
+    """``(value, format)`` when exactly one of two arguments is a string literal with a shared ``%`` specifier."""
+
+    if len(arguments) != 2:
+        return None
+    formats = [a for a in arguments if isinstance(a, exp.Literal) and a.is_string and "%" in a.name]
+    if len(formats) != 1 or not _SHARED_FORMAT.fullmatch(formats[0].name):
+        return None
+    value = next(a for a in arguments if a is not formats[0])
+    if isinstance(value, exp.Literal) and value.is_string:
+        return None  # two string literals: which one is the format is a guess
+    return value, formats[0]
+
+
+_WHOLE_TARGETS = {exp.DataType.Type.INT, exp.DataType.Type.BIGINT, exp.DataType.Type.SMALLINT, exp.DataType.Type.TINYINT}
+
+
+def _year_padding_cannot_matter(node, form: str) -> bool:
+    """Whether a year written without leading zeros would change nothing where ``node`` stands.
+
+    MonetDB formats through C's ``strftime``, which writes the year 99 as ``99`` where SQLite writes
+    ``0099`` (glibc; checked on this C library, MonetDB itself was not available). The two agree from
+    the year 1000 on. Before it, the text differs, so the call is read back only where that cannot
+    show: the format has no ``%Y``; or the format is ``%Y`` alone and the text is cast to a whole
+    number at once (``0099`` and ``99`` are both 99); or it is tested for equality (``=``, ``<>``,
+    ``IN``) against string literals that are themselves a possible output with a four-digit year not
+    starting with 0, which neither spelling of an early year can equal. An ordering comparison is
+    refused: ``'0099' < '1960'`` and ``'99' > '1960'``.
+    """
+
+    if "%Y" not in form:
+        return True
+    parent = node.parent
+    while isinstance(parent, exp.Paren):
+        node, parent = parent, parent.parent
+    if isinstance(parent, exp.Cast):
+        return form == "%Y" and parent.to.this in _WHOLE_TARGETS
+    output = re.compile("".join(
+        r"[1-9]\d{3}" if piece == "%Y" else r"\d{2}" if piece.startswith("%") else re.escape(piece) for piece in re.findall(r"%.|[^%]+", form)
+    ))
+
+    def possible(literal) -> bool:
+        return isinstance(literal, exp.Literal) and literal.is_string and output.fullmatch(literal.name) is not None
+
+    if isinstance(parent, (exp.EQ, exp.NEQ)):
+        return possible(parent.expression if parent.this is node else parent.this)
+    if isinstance(parent, exp.In) and parent.this is node and parent.args.get("query") is None and parent.args.get("field") is None:
+        return bool(parent.expressions) and all(possible(e) for e in parent.expressions)
+    return False
+
+
+def _unshared_date_format(tree) -> bool:
+    """Whether a date-formatting call in a DuckDB or MonetDB translation uses a specifier outside the shared ones."""
+
+    for node in tree.find_all(exp.TimeToStr):
+        literals = [a for a in (node.this, node.args.get("format")) if isinstance(a, exp.Literal) and a.is_string and "%" in a.name]
+        if any(not _SHARED_FORMAT.fullmatch(a.name) for a in literals) or (not literals and node.args.get("format") is not None):
+            return True
+    for node in tree.find_all(exp.Anonymous):
+        if node.name.lower() in ("timestamp_to_str", "date_to_str", "time_to_str", "strftime"):
+            if any(isinstance(a, exp.Literal) and a.is_string and "%" in a.name and not _SHARED_FORMAT.fullmatch(a.name) for a in node.expressions):
+                return True
+    return False
+
+
+def _date_formats_as_sqlite(tree, target_dbms: str):
+    """Two date-formatting calls sqlglot leaves as they are, read as SQLite's ``STRFTIME(format, value)``.
+
+    * DuckDB takes ``strftime(value, format)`` and also ``strftime(format, value)``; sqlglot reads the
+      first argument as the value either way, so the second spelling comes out with its arguments
+      swapped.
+    * MonetDB's ``sys.timestamp_to_str(value, format)`` is not a function sqlglot knows. It is read
+      back only where the unpadded year of C's ``strftime`` cannot matter (``_year_padding_cannot_matter``).
+
+    Only for a format made of ``%Y %m %d %H %M %S`` and plain text, and only when exactly one argument
+    is a string literal holding a ``%`` specifier, so the order is not a guess.
+    """
+
+    if target_dbms == "duckdb":
+        for node in list(tree.find_all(exp.TimeToStr)):
+            read = _format_of([node.this, node.args.get("format")]) if not node.args.get("culture") and not node.args.get("zone") else None
+            if read is not None and read[1] is node.this:  # format first: sqlglot took it for the value
+                value, form = read[0].copy(), read[1].copy()
+                node.set("this", value)
+                node.set("format", form)
+    elif target_dbms == "monetdb":
+        for node in list(tree.find_all(exp.Anonymous)):
+            if node.name.lower() != "timestamp_to_str":
+                continue
+            read = _format_of(list(node.expressions))
+            if read is None or read[1] is not node.expressions[1]:
+                continue  # MonetDB takes the value first
+            outer = node.parent if isinstance(node.parent, exp.Dot) and node.parent.expression is node and node.parent.name.lower() == "timestamp_to_str" and node.parent.this.name.lower() == "sys" else node
+            if isinstance(node.parent, exp.Dot) and outer is node:
+                continue  # qualified by something other than sys
+            if not _year_padding_cannot_matter(outer, read[1].name):
+                continue
+            outer.replace(exp.TimeToStr(this=read[0].copy(), format=read[1].copy()))
+    return tree
+
+
 def as_source(pair: Pair) -> tuple[str | None, str | None]:
     """Both queries in the source's dialect, names normalised; ``None`` where a query does not parse."""
 
@@ -347,6 +461,8 @@ def as_source(pair: Pair) -> tuple[str | None, str | None]:
     source, target = parse(pair.source_query, pair.source_dbms), parse(pair.target_query, pair.target_dbms)
     try:
         left = _plain(source, {}).sql(dialect=dialect) if source is not None else None
+        if target is not None and pair.source_dbms == "sqlite":
+            target = _date_formats_as_sqlite(target, pair.target_dbms)
         right = _plain(target, pair.renames, schema_of(pair)).sql(dialect=dialect) if target is not None else None
     except Exception:  # a construct sqlglot cannot write in the source dialect
         return None, None
@@ -375,6 +491,10 @@ def dialect_gap(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
         return "PostgreSQL time zone"  # TO_TIMESTAMP gives a timestamp with a time zone, whose text ends in +00
     if (source in MYSQL_FAMILY) != (target in MYSQL_FAMILY) and words & AMBIGUOUS_SPREAD:
         return "population variance"
+    if {source, target} == MYSQL_FAMILY and words & (AMBIGUOUS_SPREAD | {"stddev_pop", "stddev_samp", "var_pop", "var_samp"}):
+        return "deviation precision"  # of whole numbers: a double in MySQL, a decimal with four more digits in MariaDB
+    if _family(source) != _family(target) and (name := _engine_specific(pair, trees, words, types)) is not None:
+        return name
     if (source in CASELESS_LIKE) != (target in CASELESS_LIKE) and any(t.find(exp.Like) for t in trees):
         return "LIKE and case"
     if (source in MYSQL_FAMILY) != (target in MYSQL_FAMILY) and any(
@@ -408,6 +528,10 @@ def dialect_gap(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
         or any(j.side for j in trees[1].find_all(exp.Join))
     ):
         return "ClickHouse defaults"
+    if source == "sqlite" and (_text_against_number(left) or _text_against_number(right)):
+        return "SQLite text against a number"
+    if source == "sqlite" and target in ("duckdb", "monetdb") and _unshared_date_format(trees[1]):
+        return "date format"  # only %Y %m %d %H %M %S are known to mean the same as in SQLite
     if source == "sqlite":
         import llm_sql_solver_bench as solver
 
@@ -417,7 +541,127 @@ def dialect_gap(pair: Pair, left: str, right: str, schema: dict[str, dict[str, s
     return None
 
 
+def _family(dbms: str) -> str:
+    return "mysql" if dbms in MYSQL_FAMILY else dbms
+
+
+def _calls(tokens: list[tuple[str, str]], names: set[str]):
+    """``(name, arguments)`` for every call of one of ``names``: the arguments as token lists, split at top-level commas."""
+
+    for index, (kind, text) in enumerate(tokens):
+        if "STRING" in kind or text not in names or tokens[index + 1:index + 2] != [("L_PAREN", "(")]:
+            continue
+        depth, arguments = 0, [[]]
+        for token in tokens[index + 1:]:
+            depth += (token[0] == "L_PAREN") - (token[0] == "R_PAREN")
+            if depth == 0:
+                break
+            if depth == 1 and token[0] == "COMMA":
+                arguments.append([])
+            elif not (depth == 1 and token[0] == "L_PAREN"):
+                arguments[-1].append(token)
+        yield text, arguments
+
+
+_MONTHS = re.compile(r"\s*[+-]?\s*\d+\s+(month|year)s?\s*", re.I)
+
+
+def _whole(node) -> int | None:
+    """The value of a whole-number literal (``2``, ``-2``), or ``None``."""
+
+    literal = node.this if isinstance(node, exp.Neg) else node
+    if not (isinstance(literal, exp.Literal) and not literal.is_string and literal.name.isdigit()):
+        return None
+    return -int(literal.name) if isinstance(node, exp.Neg) else int(literal.name)
+
+
+def _substring_differs(node, families: set[str]) -> bool:
+    """Whether the two engines can answer this ``SUBSTR`` differently.
+
+    From running ``SUBSTR(s, i)`` and ``SUBSTR(s, i, n)`` on every engine for short strings and every
+    small ``i`` and ``n``: all agree for a position of 1 or more and a length of 0 or more; SQLite and
+    DuckDB agree everywhere; from a negative position ClickHouse agrees with them and MySQL and
+    PostgreSQL do not; from position 0 PostgreSQL agrees with them and MySQL and ClickHouse do not; a
+    negative length is each engine's own. A position or length that is not a literal can be any of these.
+    """
+
+    if families == {"sqlite", "duckdb"}:
+        return False
+    start = _whole(node.args["start"]) if node.args.get("start") is not None else None
+    length = node.args.get("length")
+    if start is None or (length is not None and (_whole(length) is None or _whole(length) < 0)):
+        return True
+    if start >= 1:
+        return False
+    return not families <= ({"sqlite", "duckdb", "clickhouse"} if start < 0 else {"sqlite", "duckdb", "postgresql"})
+
+
+def _engine_specific(pair: Pair, trees: list, words: set[str], types: "_Types") -> str | None:
+    """A call that the pair's two engines compute differently although sqlglot reads it as one function (named).
+
+    Each rule is a difference seen by running one statement on the engines themselves
+    (docs/evals/dlbench.md has a made-up statement for each):
+
+    * ``ROUND``: a half goes away from zero in SQLite and DuckDB and to the even neighbour in MySQL,
+      PostgreSQL and ClickHouse for a double; ``ROUND(2.675, 2)`` is 2.67 in SQLite and 2.68 elsewhere.
+    * ``LOG(x)``: the natural logarithm in MySQL and ClickHouse, base 10 in PostgreSQL and DuckDB.
+    * A logarithm, root or power outside its domain is NULL in MySQL and NaN in ClickHouse.
+    * ``SUBSTR`` from position 0 or a negative position, or with a negative length (``_substring_differs``).
+    * ``CAST(x AS CHAR)`` without a length is one character in PostgreSQL.
+    * Bitwise operators work on unsigned 64-bit numbers in MySQL (``~3`` is 18446744073709551612).
+    * ``DIV``: sqlglot does not write MySQL's integer division back as it read it.
+    * ``HEX`` of a number: its digits in MySQL and DuckDB, padded to whole bytes in ClickHouse, the hex
+      of its decimal text in SQLite. Of a string literal or a column every table declares as text, it
+      is the same everywhere.
+    * SQLite's ``date(x, '+1 month')`` runs past the end of a shorter month (January 31 gives March 2);
+      the others stop at its last day.
+    * ``generate_series`` and other calls that return rows in one engine and a list in another.
+    * ``MD5`` and the SHA functions return raw bytes in ClickHouse and hex digits elsewhere.
+    """
+
+    engines = {pair.source_dbms, pair.target_dbms}
+    tokens = [token for query, dbms in ((pair.source_query, pair.source_dbms), (pair.target_query, pair.target_dbms)) for token in _tokens(query, dbms) or ()]
+    if words & SET_RETURNING:
+        return "set-returning function"
+    if "round" in words:
+        return "rounding"
+    if "log" in words:
+        return "logarithm base"
+    hexes = [node for tree in trees for node in tree.find_all(exp.Hex, exp.LowerHex)]
+    if len(hexes) != len(list(_calls(tokens, {"hex"}))) or any(
+        not ((isinstance(node.this, exp.Literal) and node.this.is_string) or (isinstance(node.this, exp.Column) and node.this.name.lower() in types.text))
+        for node in hexes
+    ):
+        return "HEX of a number"
+    if pair.source_dbms == "sqlite" and any(
+        _MONTHS.fullmatch(text) if "STRING" in kind else text == "interval" for kind, text in _tokens(pair.source_query, "sqlite") or ()
+    ):
+        return "SQLite month arithmetic"
+    if "clickhouse" in engines:
+        if words & DIGESTS:
+            return "ClickHouse digest"
+        for _, arguments in _calls(tokens, NAN_IN_CLICKHOUSE):
+            if not all(kind in ("NUMBER", "DASH") for argument in arguments for kind, _ in argument):
+                return "ClickHouse NaN"
+    families = {_family(pair.source_dbms), _family(pair.target_dbms)}
+    substrings = [node for tree in trees for node in tree.find_all(exp.Substring)]
+    if len(substrings) != len(list(_calls(tokens, SUBSTRINGS))) and families != {"sqlite", "duckdb"}:
+        return "substring position"  # a spelling sqlglot did not read as SUBSTR
+    if any(_substring_differs(node, families) for node in substrings):
+        return "substring position"
+    for tree in trees:
+        for node in tree.walk():
+            if isinstance(node, BITWISE):
+                return "bitwise operators"
+            if isinstance(node, exp.IntDiv):
+                return "integer division"
+            if isinstance(node, exp.Cast) and node.to.this in (exp.DataType.Type.CHAR, exp.DataType.Type.NCHAR) and not node.to.expressions:
+                return "CHAR without a length"
+    return None
+
+
 _NUMERIC_TYPE = re.compile(r"\s*((tiny|small|medium|big)?int(eger)?[248]?|real|float[48]?|double|dec(imal)?|numeric|number|bit|bool(ean)?|year|serial)\b")
+_TEXT_TYPE = re.compile(r"\s*((var)?char|(tiny|medium|long)?text|string|character)\b")
 _BOOLEAN = (
     exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE, exp.NullSafeEQ, exp.NullSafeNEQ, exp.In, exp.Between, exp.Is, exp.And, exp.Or,
     exp.Not, exp.Exists, exp.Like, exp.ILike, exp.Boolean,
@@ -439,6 +683,7 @@ class _Types:
             for column, kind in columns.items():
                 declared[column.lower()].append(kind)
         self.declared = set(declared)
+        self.text = {c for c, kinds in declared.items() if all(_TEXT_TYPE.match(k.lower()) for k in kinds)}
         self.numeric = {c for c, kinds in declared.items() if all(_NUMERIC_TYPE.match(k.lower()) for k in kinds)}
 
 
@@ -635,12 +880,56 @@ def contradicted() -> dict[str, dict]:
     return json.loads(CONTRADICTIONS.read_text(encoding="utf-8"))
 
 
+_TEXT_VALUED = (exp.TimeToStr, exp.Substring, exp.Trim, exp.Upper, exp.Lower, exp.DPipe, exp.Concat, exp.TsOrDsToDate, exp.Date, exp.Replace)
+_TEXT_NAMES = {"strftime", "date", "datetime", "time", "substr", "substring", "replace", "ltrim", "rtrim", "printf", "format", "hex"}
+
+
+def _text_against_number(sql: str) -> bool:
+    """Whether a SQLite query compares the text a function returns with a bare number.
+
+    SQLite does not convert here: ``STRFTIME('%Y', d) < 1997`` is false for every row, because any
+    text sorts above any number, and ``STRFTIME('%Y', d) = 1997`` is false too. The other databases
+    convert one side, so a translation that keeps the comparison means something else, and the
+    provers do not model SQLite's rule. No proof is taken for such a query, whatever its label says.
+    """
+
+    tree = parse(sql, "sqlite")
+    if tree is None:
+        return False
+
+    def text(node) -> bool:
+        node = node.unnest()
+        return isinstance(node, _TEXT_VALUED) or (isinstance(node, exp.Anonymous) and node.name.lower() in _TEXT_NAMES)
+
+    def number(node) -> bool:
+        node = node.unnest()
+        return (isinstance(node, exp.Literal) and not node.is_string) or isinstance(node, (exp.Neg, exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Count, exp.Sum, exp.Avg))
+
+    for node in tree.walk():
+        if isinstance(node, (exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE)):
+            sides = [(node.this, node.expression)]
+        elif isinstance(node, exp.Between):
+            sides = [(node.this, node.args["low"]), (node.this, node.args["high"])]
+        elif isinstance(node, exp.In):
+            sides = [(node.this, e) for e in node.expressions]
+        else:
+            continue
+        if any((text(a) and number(b)) or (number(a) and text(b)) for a, b in sides):
+            return True
+    return False
+
+
 def _texty(declared: str) -> bool:
     return any(w in declared.lower() for w in ("char", "text", "clob", "date", "time", "string", "blob")) or not declared
 
 
 def _ordered(sql: str, dialect: str) -> bool:
-    tree = parse(sql, dialect)
+    """Whether the query ends in ORDER BY; ``dialect`` is sqlglot's name (``postgres``), not the database's."""
+
+    try:
+        tree = sqlglot.parse_one(sql, read=dialect)
+    except Exception:
+        return False
     while isinstance(tree, exp.Subquery):
         tree = tree.this
     return tree is not None and tree.args.get("order") is not None
@@ -735,23 +1024,115 @@ def same_statement(pair: Pair) -> bool:
     tree = parse(pair.source_query, pair.source_dbms)
     if not isinstance(tree, (exp.Query, exp.Insert, exp.Create, exp.Update, exp.Delete)):
         return False
-    for index, (kind, text) in enumerate(left):
+    return not _rerun_dependent(pair.source_query, pair.source_dbms)
+
+
+def _rerun_dependent(sql: str, dbms: str) -> bool:
+    """Whether two runs of the statement need not do the same thing (or it cannot be told)."""
+
+    tokens, tree = _tokens(sql, dbms), parse(sql, dbms)
+    if not tokens or tree is None:
+        return True
+    for index, (kind, text) in enumerate(tokens):
         if kind in ("PARAMETER", "SESSION_PARAMETER", "PLACEHOLDER") or text in RERUN_DEPENDENT:
-            return False
-        if text in VOLATILE_NO_ARGUMENT and left[index + 1:index + 3] == [("L_PAREN", "("), ("R_PAREN", ")")]:
-            return False
+            return True
+        if text in VOLATILE_NO_ARGUMENT and tokens[index + 1:index + 3] == [("L_PAREN", "("), ("R_PAREN", ")")]:
+            return True
         if "STRING" in kind and text != text.rstrip():
-            return False
+            return True
     from kumo_sql_prover.smt_equivalence import _NONDETERMINISTIC_NAMES, _NONDETERMINISTIC_TYPES
 
     for node in tree.walk():
         if type(node).__name__ in _NONDETERMINISTIC_TYPES or isinstance(node, (exp.Window, exp.Parameter, exp.SessionParameter, exp.Placeholder, exp.TableSample)):
-            return False
+            return True
         if isinstance(node, exp.Anonymous) and node.name.upper() in _NONDETERMINISTIC_NAMES:
-            return False
+            return True
         if (node.args.get("limit") or node.args.get("offset")) and not node.args.get("order"):
-            return False
-    return True
+            return True
+    return False
+
+
+def _inner_query(tree):
+    """The query an ``INSERT`` or a ``CREATE TABLE ... AS`` takes its rows from, or ``None`` for any other statement."""
+
+    if isinstance(tree, exp.Insert) or (isinstance(tree, exp.Create) and str(tree.args.get("kind") or "").upper() == "TABLE"):
+        inner = tree.args.get("expression")
+        return inner if isinstance(inner, (exp.Query, exp.Values)) else None
+    return None
+
+
+def _rows_as_select(inner):
+    """``VALUES (1, 'a'), (2, 'b')`` as ``SELECT 1, 'a' UNION ALL SELECT 2, 'b'``; a query as it is."""
+
+    if not isinstance(inner, exp.Values):
+        return inner
+    selects = []
+    for row in inner.expressions:
+        if not isinstance(row, exp.Tuple) or not row.expressions:
+            return None
+        selects.append(exp.Select(expressions=[exp.alias_(value.unnest().copy(), f"c{i}") for i, value in enumerate(row.expressions)]))
+    if not selects or len({len(select.expressions) for select in selects}) != 1:
+        return None
+    query = selects[0]
+    for select in selects[1:]:
+        query = exp.Union(this=query, expression=select, distinct=False)
+    return query
+
+
+def statement_proof(pair: Pair, left: str, right: str, schema: dict[str, dict[str, str]]) -> str | None:
+    """How an ``INSERT`` or ``CREATE TABLE ... AS`` pair is decided although the provers read queries only, or ``None``.
+
+    ``left`` and ``right`` are the two statements as sqlglot writes them in the source's dialect (the
+    translation's names read back), so the dialect-gap rules have passed already.
+
+    * ``"same statement, read back"``: the two are then the same statement token for token, the way
+      ``INSERT INTO t1 (data) VALUES (repeat('a',1*1024))`` and its re-capitalised translation are.
+    * ``"inner query proved"``: everything outside the inner query is the same text (the table, the
+      column list, ``IGNORE``, every table property), and the provers prove the two inner queries
+      equal, ``VALUES`` rows read as ``SELECT ... UNION ALL SELECT ...``.
+
+    Refused, as by the same-statement rule: a statement whose second run need not do what the first
+    did (the clock, random values, the session, variables, ``GROUP_CONCAT``, windows, ``LIMIT``
+    without ``ORDER BY``) on either side, and any statement that is not an ``INSERT`` or a
+    ``CREATE TABLE ... AS`` (a table definition means what its engine's types mean). The decision is
+    about the rows the statement writes: what the table's column types then do to them (rounding,
+    truncation, an error) is the engine's own and is not modelled.
+    """
+
+    dialect = SQLGLOT[pair.source_dbms]
+    if "monetdb" in (pair.source_dbms, pair.target_dbms):
+        return None  # read as PostgreSQL and never run: a statement is not decided on a name alone
+    try:
+        trees = [sqlglot.parse_one(left, read=dialect), sqlglot.parse_one(right, read=dialect)]
+    except Exception:
+        return None
+    inner = [_inner_query(tree) for tree in trees]
+    if inner[0] is None or inner[1] is None or type(trees[0]) is not type(trees[1]):
+        return None
+    if _rerun_dependent(pair.source_query, pair.source_dbms) or _rerun_dependent(pair.target_query, pair.target_dbms):
+        return None
+    if _tokens(left, pair.source_dbms) == _tokens(right, pair.source_dbms):
+        return "same statement, read back"
+    outside = []
+    for tree in trees:
+        rest = tree.copy()
+        rest.set("expression", exp.Placeholder())
+        outside.append(_tokens(rest.sql(dialect=dialect), pair.source_dbms))
+    queries = [_rows_as_select(query) for query in inner]
+    if outside[0] is None or outside[0] != outside[1] or queries[0] is None or queries[1] is None:
+        return None
+    if isinstance(trees[0], exp.Create):  # the inner query's output names are the new table's columns
+        try:
+            names = [[name.lower() for name in query.named_selects] for query in inner]
+        except Exception:
+            return None
+        if names[0] != names[1] or any(e.find(exp.Star) for query in inner for e in query.selects):
+            return None
+    try:
+        proved = prove(queries[0].sql(dialect=dialect), queries[1].sql(dialect=dialect), schema, dialect)
+    except Exception:
+        return None
+    return "inner query proved" if proved else None
 
 
 # -- checking proofs by running them --------------------------------------------------
@@ -793,6 +1174,10 @@ def _bag(rows) -> Counter:
     def norm(v):
         if isinstance(v, float):
             return round(v, 6) + 0.0
+        if isinstance(v, datetime.datetime):
+            return v.isoformat(sep=" ")
+        if isinstance(v, datetime.date):  # DuckDB's DATE against the ISO text SQLite's date() returns
+            return v.isoformat()
         return v
 
     return Counter(tuple(norm(v) for v in row) for row in rows)
@@ -933,6 +1318,8 @@ def decide(pair: Pair) -> dict:
                 wrong, detail = True, difference
         elif same_statement(pair):
             outcome, detail = "proven", "same statement"
+        elif (how := statement_proof(pair, left, right, schema)) is not None:
+            outcome, detail = "proven", how
         else:
             outcome = "unknown"
     else:
@@ -981,6 +1368,11 @@ def results_rows(results: list[dict]) -> dict[str, dict]:
     parsed = sum(r["parsed"] for r in results)
     gaps = sum(r["detail"].startswith("dialect gap") for r in results)
     same = sum(r["outcome"] == "proven" and r["detail"] == "same statement" for r in exact)
+    read_back = sum(r["outcome"] == "proven" and r["detail"] == "same statement, read back" for r in exact)
+    inner = sum(r["outcome"] == "proven" and r["detail"] == "inner query proved" for r in exact)
+    queries = {p.id for p in load_pairs() if isinstance(parse(p.source_query, p.source_dbms), exp.Query)}
+    same_other = sum(r["outcome"] == "proven" and r["detail"] == "same statement" and r["id"] not in queries for r in exact)
+    monetdb = sum(r["outcome"] == "proven" and r["target"] == "monetdb" for r in results)
     volatile_calls = sum(r["detail"].startswith("volatile") for r in results)
     listed = sum(r["detail"].startswith("contradicted natively") for r in results)
     return {
@@ -991,13 +1383,13 @@ def results_rows(results: list[dict]) -> dict[str, dict]:
             "score": f"{proven}/{len(exact)} exact pairs proved, {sum(r['wrong'] for r in results)} wrong; {parsed}/{len(results)} parsed",
             "metric": "Translations from SQLite, MySQL and PostgreSQL into six databases' dialects, proved equal to the source in the source's dialect after sqlglot reads both; parsed means both sides parse in their own dialect.",
             "evidence": "proof",
-            "correctness": f"Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); {gaps} pairs where the two databases read the same text differently (LIKE case, string collations, integer and decimal division, Unix time ranges, row values, SQLite type conversion; the docs list every rule) are left unproved, and so are {volatile_calls} that call the clock, a random value, a sequence or the session{f' and {listed} whose proof an earlier native replay contradicted' if listed else ''}. {replay_sentence(results)} {sum(r['outcome'] == 'proven' for r in approx)}/{len(approx)} 'approximate' pairs are proved (listed in the docs). {same} of the exact proofs are a MariaDB translation that is its MySQL source token for token, where the provers have nothing to read (an INSERT, a table with no published definition); statements whose answer can change between two runs are refused.",
+            "correctness": f"Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); {gaps} pairs where the two databases read the same text differently (LIKE case, string collations, integer and decimal division, Unix time ranges, row values, SQLite type conversion; the docs list every rule) are left unproved, and so are {volatile_calls} that call the clock, a random value, a sequence or the session{f' and {listed} whose proof an earlier native replay contradicted' if listed else ''}. {replay_sentence(results)} {sum(r['outcome'] == 'proven' for r in approx)}/{len(approx)} 'approximate' pairs are proved (listed in the docs). {same} of the exact proofs are a MariaDB translation that is its MySQL source token for token, where the provers have nothing to read (an INSERT, a table with no published definition); statements whose answer can change between two runs are refused. {read_back} more are an INSERT or CREATE TABLE AS that, read back into the source's dialect, is the source statement token for token, and {inner} an INSERT or CREATE TABLE AS whose inner queries the provers prove equal with everything else the same text; these decide the rows written, not what the table's column types do to them.",
             "coverage": {k: counts[k] for k in ("proven", "unknown", "unsupported") if counts[k]},
             "held_out": f"{sum(r['outcome'] == 'proven' for r in held)}/{len(held)} exact pairs proved",
             "docs": "docs/evals/dlbench.md",
             "command": "python tools/dlbench_bench.py --write-results",
             "date": today(),
-            "caveats": f"Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test). The 2026-11-11 harness changes (translated column and table spellings read back, the same-statement rule, the volatile-call refusal, and the gap rules that the native replay of every proof led to) were developed on the development split only; held-out pairs were replayed for their verdicts, never read.",
+            "caveats": f"Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test). The 2026-11-11 harness changes (translated column and table spellings read back, the same-statement rule, the volatile-call refusal, the gap rules that the native replay of every proof led to, DuckDB and MonetDB date formatting read back, and the two rules for statements that write rows) were developed on the development split only; held-out pairs were replayed for their verdicts, never read. Proofs that are not of a query: {same_other} MariaDB same-statement decisions of an INSERT or CREATE, {read_back} INSERT or CREATE TABLE AS statements that read back as their source and {inner} decided by their inner queries; none of these is replayed natively, and neither is any MonetDB proof ({monetdb}, no engine).",
         },
     }
 

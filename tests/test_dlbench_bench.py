@@ -24,9 +24,9 @@ native = importlib.util.module_from_spec(_native_spec)
 sys.modules["dlbench_native"] = native
 _native_spec.loader.exec_module(native)
 
-# measured 799/807 and 161/604 on b5192d3. Of the 156 before, 21 were removed as false-proof classes (the native
-# replay showed the engines disagree); the string rule narrowed with the same replay and new prover rules added 26.
-FLOORS = {"parsed": 799, "exact_proven": 161}
+# measured 799/807 and 190/604. Of the 156 measured first on 2026-11-11, 21 were removed as false-proof classes (the
+# native replay showed the engines disagree); the later harness rules and new prover rules added the rest.
+FLOORS = {"parsed": 799, "exact_proven": 190}
 
 
 def _pair(source_dbms, target_dbms, source, target, schema=(), renames=None):
@@ -104,6 +104,92 @@ def test_a_local_name_is_not_read_as_a_respelled_table():
                  'WITH sales_orders AS (SELECT 1 AS year) SELECT year FROM sales_orders', ORDERS)
     assert '"sales orders"' not in bench.as_source(pair)[1]
     assert bench.decide(pair)["outcome"] != "proven"
+
+
+DATED = ["Table: `t`\nColumns:\n(`a`, integer)\n(`b`, text)\n(`d`, date)\n"]
+
+
+@pytest.mark.parametrize("target_dbms, source, target", [
+    # DuckDB takes the format first too; sqlglot reads the first argument as the value
+    ("duckdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE strftime('%Y', d) = '2016'"),
+    ("duckdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE STRFTIME(d, '%Y') = '2016'"),
+    ("duckdb", "SELECT STRFTIME('%Y-%m-%d %H:%M:%S', d), STRFTIME('on %d', d) FROM t", "SELECT strftime('%Y-%m-%d %H:%M:%S', d), strftime(d, 'on %d') FROM t"),
+    # MonetDB: where a year without leading zeros cannot show
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') = '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) <> '2016'", "SELECT COUNT(*) FROM t WHERE timestamp_to_str(d, '%Y') <> '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y-%m', d) = '2014-02'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y-%m') = '2014-02'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) IN ('2016', '2017')", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') IN ('2016', '2017')"),
+    ("monetdb", "SELECT a FROM t WHERE CAST(STRFTIME('%Y', d) AS INT) = 2000", "SELECT a FROM t WHERE CAST(sys.timestamp_to_str(d, '%Y') AS INT) = 2000"),
+    ("monetdb", "SELECT STRFTIME('%m', d), a FROM t WHERE STRFTIME('%d', d) < '15'", "SELECT sys.timestamp_to_str(d, '%m'), a FROM t WHERE sys.timestamp_to_str(d, '%d') < '15'"),  # no year
+])
+def test_date_formats_are_read_back_as_sqlite(target_dbms, source, target):
+    pair = _pair("sqlite", target_dbms, source, target, DATED)
+    left, right = bench.as_source(pair)
+    assert left == right
+    result = bench.decide(pair)
+    assert (result["outcome"], result["wrong"]) == ("proven", False)
+
+
+@pytest.mark.parametrize("target_dbms, source, target", [
+    # C's strftime writes the year 99 as 99 and SQLite as 0099: '0099' < '1960' but '99' > '1960'
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) < '1960'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') < '1960'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) BETWEEN '1960' AND '1970'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') BETWEEN '1960' AND '1970'"),
+    ("monetdb", "SELECT STRFTIME('%Y', d) FROM t", "SELECT sys.timestamp_to_str(d, '%Y') FROM t"),  # the text itself is the answer
+    ("monetdb", "SELECT a FROM t ORDER BY STRFTIME('%Y', d), a", "SELECT a FROM t ORDER BY sys.timestamp_to_str(d, '%Y'), a"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '99'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') = '99'"),  # true in MonetDB for the year 99
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '0099'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') = '0099'"),  # true in SQLite only
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = b", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') = b"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) IN ('2016', '16')", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y') IN ('2016', '16')"),
+    ("monetdb", "SELECT a FROM t WHERE CAST(STRFTIME('%Y-%m', d) AS INT) = 2000", "SELECT a FROM t WHERE CAST(sys.timestamp_to_str(d, '%Y-%m') AS INT) = 2000"),
+    ("monetdb", "SELECT a FROM t WHERE CAST(STRFTIME('%Y', d) AS TEXT) = b", "SELECT a FROM t WHERE CAST(sys.timestamp_to_str(d, '%Y') AS TEXT) = b"),
+    # specifiers that are not known to mean the same
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%j', d) = '001'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%j') = '001'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%y', d) = '16'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%y') = '16'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%s', d) = '0'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%s') = '0'"),
+    ("duckdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%j', d) = '001'", "SELECT COUNT(*) FROM t WHERE strftime(d, '%j') = '001'"),
+    ("duckdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%f', d) = '00.000'", "SELECT COUNT(*) FROM t WHERE strftime('%f', d) = '00.000'"),
+    ("duckdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%w', d) = '0'", "SELECT COUNT(*) FROM t WHERE strftime(d, '%w') = '0'"),
+    # the order of the arguments is a guess, or not MonetDB's
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str('%Y', d) = '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', '%m') = '2016'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str('%m', '%Y') = '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME(b, d) = '2016'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, b) = '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE other.timestamp_to_str(d, '%Y') = '2016'"),
+    ("monetdb", "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = '2016'", "SELECT COUNT(*) FROM t WHERE sys.timestamp_to_str(d, '%Y', 'x') = '2016'"),
+])
+def test_other_date_formats_are_not_read_back(target_dbms, source, target):
+    pair = _pair("sqlite", target_dbms, source, target, DATED)
+    assert bench.decide(pair)["outcome"] != "proven"
+
+
+def test_an_ambiguous_duckdb_format_is_left_as_sqlglot_read_it():
+    tree = bench._date_formats_as_sqlite(bench.parse("SELECT strftime('%Y', '%m')", "duckdb"), "duckdb")
+    assert tree.sql(dialect="duckdb") == bench.parse("SELECT strftime('%Y', '%m')", "duckdb").sql(dialect="duckdb")
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) < 1997",  # always false in SQLite: text sorts above every number
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) = 1997",
+    "SELECT COUNT(*) FROM t WHERE 1997 >= STRFTIME('%Y', d)",
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) BETWEEN 1990 AND 1997",
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%m', d) IN (1, 2)",
+    "SELECT COUNT(*) FROM t WHERE SUBSTR(b, 1, 4) > 2000",
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) > a + 1",
+])
+def test_sqlite_text_against_a_number_is_not_proved(sql):
+    assert bench._text_against_number(sql)
+    for target in ("duckdb", "postgresql", "clickhouse", "monetdb"):
+        result = bench.decide(_pair("sqlite", target, sql, sql, DATED))
+        assert result["outcome"] == "unknown" and result["detail"].startswith("dialect gap: "), target
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) < '1997'",
+    "SELECT COUNT(*) FROM t WHERE CAST(STRFTIME('%Y', d) AS INT) < 1997",
+    "SELECT COUNT(*) FROM t WHERE STRFTIME('%Y', d) - a > 5",  # the difference is a number
+    "SELECT COUNT(*) FROM t WHERE a < 1997 AND b = 'x'",
+])
+def test_other_sqlite_comparisons_are_not_text_against_a_number(sql):
+    assert not bench._text_against_number(sql)
 
 
 def test_replay_data_keeps_whole_numbers_in_integer_columns():
@@ -184,6 +270,91 @@ def test_the_same_text_in_another_database_is_not_the_same_statement(source_dbms
     assert bench.decide(pair)["outcome"] != "proven"
 
 
+STATEMENTS = ["Table: `t`\nColumns:\n(`a`, integer)\n(`b`, text)\n", "Table: `u`\nColumns:\n(`a`, integer)\n(`b`, text)\n"]
+
+
+@pytest.mark.parametrize("source, target, left, right", [
+    ("mysql", "duckdb", "INSERT INTO t1 (data) VALUES (repeat('a',1*1024)); -- REPEAT", "INSERT INTO t1 (data) VALUES (REPEAT('a', 1 * 1024));"),
+    ("postgresql", "mysql", "INSERT INTO d (id, a, b) VALUES (2, 50, repeat('x', 10000))", "INSERT INTO d (id, a, b) VALUES (2, 50, REPEAT('x', 10000));"),
+    ("mysql", "duckdb", "CREATE TABLE t1 AS SELECT greatest(-1, 123456789)", "CREATE TABLE t1 AS SELECT GREATEST(-1,123456789);"),
+    ("mysql", "postgresql", "CREATE TABLE tail AS SELECT concat(b1.b, b2.b) AS tail FROM t1 b1, t1 b2", "CREATE TABLE tail AS SELECT b1.b || b2.b AS tail FROM t1 b1, t1 b2"),
+    ("mysql", "duckdb", "insert into t1 values ( 'test',md5('test')), ('test', md5('test'))", "INSERT INTO t1 VALUES ('test', MD5('test')), ('test', MD5('test'))"),
+])
+def test_a_statement_that_reads_back_as_its_source_is_decided(source, target, left, right):
+    result = bench.decide(_pair(source, target, left, right))
+    assert (result["outcome"], result["detail"], result["wrong"]) == ("proven", "same statement, read back", False)
+
+
+@pytest.mark.parametrize("source, target, left, right", [
+    ("mysql", "clickhouse", "INSERT INTO t1 VALUES (ln(1))", "INSERT INTO t1 VALUES (ln(1));"),  # ClickHouse rows read back with more parentheses
+    ("mysql", "clickhouse", "INSERT INTO t VALUES(1, REPEAT('2', 257)), (1, REPEAT('1', 257))", "INSERT INTO t VALUES(1,repeat('2',257)),(1,repeat('1',257));"),
+    ("mysql", "duckdb", "INSERT INTO t (a) SELECT a FROM u WHERE a > 1", "INSERT INTO t (a) SELECT a FROM u WHERE 1 < a"),
+    ("mysql", "duckdb", "INSERT INTO t VALUES (1 + 1, 3)", "INSERT INTO t VALUES (2, 3)"),
+    ("mysql", "postgresql", "CREATE TABLE x AS SELECT a FROM u WHERE a > 1 AND a > 0", "CREATE TABLE x AS SELECT a FROM u WHERE a > 1"),
+])
+def test_a_statement_whose_inner_queries_are_proved_is_decided(source, target, left, right):
+    result = bench.decide(_pair(source, target, left, right, STATEMENTS))
+    assert (result["outcome"], result["detail"], result["wrong"]) == ("proven", "inner query proved", False)
+
+
+@pytest.mark.parametrize("source, target, left, right", [
+    # a second run need not write the same rows
+    ("mysql", "duckdb", "INSERT INTO t1 VALUES (NOW())", "INSERT INTO t1 VALUES (NOW())"),
+    ("mysql", "duckdb", "INSERT INTO t1 VALUES (CURRENT_TIMESTAMP)", "INSERT INTO t1 VALUES (CURRENT_TIMESTAMP)"),
+    ("mysql", "duckdb", "INSERT INTO t1 VALUES (RAND())", "INSERT INTO t1 VALUES (RAND())"),
+    ("mysql", "postgresql", "INSERT INTO t1 VALUES (UUID())", "INSERT INTO t1 VALUES (UUID())"),
+    ("mysql", "duckdb", "INSERT INTO t (a) SELECT a FROM u LIMIT 1", "INSERT INTO t (a) SELECT a FROM u LIMIT 1"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT a FROM u LIMIT 1", "CREATE TABLE x AS SELECT a FROM u LIMIT 1"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT group_concat(b) FROM u", "CREATE TABLE x AS SELECT group_concat(b) FROM u"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT a, row_number() OVER (ORDER BY b) FROM u", "CREATE TABLE x AS SELECT a, row_number() OVER (ORDER BY b) FROM u"),
+    # something outside the inner query differs
+    ("mysql", "duckdb", "INSERT INTO t (a) SELECT a FROM u", "INSERT INTO u (a) SELECT a FROM u"),
+    ("mysql", "duckdb", "INSERT INTO t (a, b) VALUES (1, 2)", "INSERT INTO t (b, a) VALUES (1, 2)"),
+    ("mysql", "duckdb", "INSERT INTO t (a, b) VALUES (1, 2)", "INSERT INTO t VALUES (1, 2)"),
+    ("mysql", "mariadb", "INSERT INTO t (a) VALUES (1 + 1)", "INSERT IGNORE INTO t (a) VALUES (2)"),
+    ("mysql", "clickhouse", "CREATE TABLE t2 AS SELECT a FROM t", "CREATE TABLE t2 ENGINE=MergeTree ORDER BY tuple() AS SELECT a FROM t"),
+    ("mysql", "duckdb", "CREATE TABLE t2 AS SELECT a FROM t", "CREATE TABLE t2 (a BIGINT) AS SELECT a FROM t"),
+    ("mysql", "duckdb", "CREATE TABLE t2 AS SELECT a FROM t", "CREATE TABLE t3 AS SELECT a FROM t"),
+    ("mysql", "duckdb", "CREATE TABLE t2 AS SELECT a FROM t", "CREATE TEMPORARY TABLE t2 AS SELECT a FROM t"),
+    ("mysql", "duckdb", "CREATE TABLE t2 AS SELECT a FROM t", "CREATE VIEW t2 AS SELECT a FROM t"),
+    ("mysql", "duckdb", "CREATE TABLE t2 AS SELECT a FROM t", "INSERT INTO t2 SELECT a FROM t"),
+    # the inner proof is not a proof
+    ("mysql", "duckdb", "INSERT INTO t (a) SELECT a FROM u WHERE a > 1", "INSERT INTO t (a) SELECT a FROM u WHERE a >= 1"),
+    ("mysql", "duckdb", "INSERT INTO t VALUES (1, 2)", "INSERT INTO t VALUES (1, 3)"),
+    ("mysql", "duckdb", "INSERT INTO t VALUES (1, 2)", "INSERT INTO t VALUES (1, 2), (1, 2)"),
+    ("mysql", "duckdb", "INSERT INTO t VALUES (1, 2), (3, 4)", "INSERT INTO t VALUES (1, 4), (3, 2)"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT a FROM u", "CREATE TABLE x AS SELECT DISTINCT a FROM u"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT a AS n FROM u", "CREATE TABLE x AS SELECT a AS m FROM u"),  # the new table's column is named differently
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT a FROM u", "CREATE TABLE x AS SELECT a + 0 FROM u"),
+    ("mysql", "duckdb", "CREATE TABLE x AS SELECT * FROM u", "CREATE TABLE x AS SELECT a, b FROM u"),
+    ("mysql", "duckdb", "INSERT INTO t SELECT a, b FROM u", "INSERT INTO t SELECT b, a FROM u"),
+    # not an INSERT or a CREATE TABLE AS
+    ("mysql", "duckdb", "CREATE TABLE x (a INT)", "CREATE TABLE x (a INT)"),
+    ("mysql", "duckdb", "DELETE FROM t WHERE a > 1", "DELETE FROM t WHERE a > 1"),
+    ("mysql", "duckdb", "UPDATE t SET a = 1", "UPDATE t SET a = 1"),
+    ("mysql", "duckdb", "EXPLAIN SELECT a FROM t", "EXPLAIN SELECT a FROM t"),
+    ("mysql", "duckdb", "SHOW TABLES", "SHOW TABLES"),
+    ("mysql", "duckdb", "DESCRIBE t", "DESCRIBE t"),
+    # a call the two engines compute differently, and an engine that was never run
+    ("postgresql", "duckdb", "create table wide as select generate_series(1, 2) as id", "create table wide as select generate_series(1, 2) as id"),
+    ("mysql", "postgresql", "INSERT INTO t1 VALUES (LOG(2))", "INSERT INTO t1 VALUES (LOG(2))"),
+    ("mysql", "monetdb", "CREATE TABLE t2 AS SELECT REPEAT(1,2) FROM t1", "CREATE TABLE t2 AS SELECT REPEAT(1,2) FROM t1"),
+    ("postgresql", "monetdb", "INSERT INTO d (id) VALUES (2)", "INSERT INTO d (id) VALUES (2)"),
+])
+def test_other_statements_are_not_decided(source, target, left, right):
+    result = bench.decide(_pair(source, target, left, right, STATEMENTS))
+    assert result["outcome"] != "proven", result["detail"]
+
+
+def test_values_rows_are_read_as_a_union_of_selects():
+    inner = bench._inner_query(bench.parse("INSERT INTO t VALUES (1, 'a'), ((2), ('b'))", "mysql"))
+    assert bench._rows_as_select(inner).sql(dialect="mysql") == "SELECT 1 AS c0, 'a' AS c1 UNION ALL SELECT 2 AS c0, 'b' AS c1"
+    assert bench._rows_as_select(bench._inner_query(bench.parse("INSERT INTO t VALUES (1, 2), (3)", "mysql"))) is None
+    assert bench._inner_query(bench.parse("CREATE TABLE x (a INT)", "mysql")) is None
+    assert bench._inner_query(bench.parse("CREATE VIEW x AS SELECT 1", "mysql")) is None
+    assert bench._inner_query(bench.parse("SELECT 1", "mysql")) is None
+
+
 @pytest.mark.parametrize("source, target, left, right, gap", [
     ("sqlite", "postgresql", "SELECT a FROM t WHERE b LIKE 'x%'", "SELECT a FROM t WHERE b LIKE 'x%'", "LIKE and case"),
     ("sqlite", "mysql", "SELECT a FROM t WHERE b = 'x'", "SELECT a FROM t WHERE b = 'x'", "MySQL string comparison"),
@@ -241,6 +412,96 @@ def test_narrowed_gaps_let_numbers_through(source, target, left, right):
     assert bench.dialect_gap(pair, *bench.as_source(pair), bench.schema_of(pair)) is None
     result = bench.decide(pair)
     assert (result["outcome"], result["wrong"]) == ("proven", False)
+
+
+@pytest.mark.parametrize("source, target, left, right, gap", [
+    # one name, two functions: each difference was seen on the engines themselves
+    ("mysql", "postgresql", "SELECT ROUND(a) FROM t", "SELECT ROUND(a) FROM t", "rounding"),
+    ("sqlite", "postgresql", "SELECT ROUND(a, 2) FROM t", "SELECT ROUND(a, 2) FROM t", "rounding"),
+    ("sqlite", "duckdb", "SELECT ROUND(a, 2) FROM t", "SELECT ROUND(a, 2) FROM t", "rounding"),
+    ("mysql", "postgresql", "SELECT LOG(a) FROM t", "SELECT LOG(a) FROM t", "logarithm base"),
+    ("mysql", "clickhouse", "SELECT SQRT(a) FROM t", "SELECT sqrt(a) FROM t", "ClickHouse NaN"),
+    ("mysql", "clickhouse", "SELECT LN(a + 1) FROM t", "SELECT ln(a + 1) FROM t", "ClickHouse NaN"),
+    ("mysql", "postgresql", "SELECT SUBSTRING(b, -1) FROM t", "SELECT SUBSTRING(b, -1) FROM t", "substring position"),
+    ("sqlite", "postgresql", "SELECT SUBSTR(b, -2) FROM t", "SELECT SUBSTR(b, -2) FROM t", "substring position"),
+    ("sqlite", "clickhouse", "SELECT SUBSTR(b, 0, 2) FROM t", "SELECT SUBSTR(b, 0, 2) FROM t", "substring position"),
+    ("sqlite", "postgresql", "SELECT SUBSTR(b, a) FROM t", "SELECT SUBSTR(b, a) FROM t", "substring position"),
+    ("sqlite", "postgresql", "SELECT SUBSTR(b, 1, a) FROM t", "SELECT SUBSTR(b, 1, a) FROM t", "substring position"),
+    ("sqlite", "monetdb", "SELECT SUBSTR(b, -2) FROM t", "SELECT SUBSTRING(b FROM -2) FROM t", "substring position"),
+    ("mysql", "postgresql", "SELECT CAST(a AS CHAR) FROM t", "SELECT CAST(a AS CHAR) FROM t", "CHAR without a length"),
+    ("mysql", "postgresql", "SELECT a | 1 FROM t", "SELECT a | 1 FROM t", "bitwise operators"),
+    ("mysql", "duckdb", "SELECT ~a FROM t", "SELECT ~a FROM t", "bitwise operators"),
+    ("mysql", "duckdb", "SELECT a DIV 2 FROM t", "SELECT a // 2 FROM t", "integer division"),
+    ("mysql", "clickhouse", "SELECT HEX(a) FROM t", "SELECT hex(a) FROM t", "HEX of a number"),
+    ("sqlite", "duckdb", "SELECT HEX(a) FROM t", "SELECT HEX(a) FROM t", "HEX of a number"),
+    ("postgresql", "duckdb", "SELECT generate_series(1, 2) AS id", "SELECT generate_series(1, 2) AS id", "set-returning function"),
+    ("sqlite", "postgresql", "SELECT date(b, '+1 month') FROM t", "SELECT date(b, '+1 month') FROM t", "SQLite month arithmetic"),
+    ("mysql", "mariadb", "SELECT STD(a) FROM t", "SELECT STD(a) FROM t", "deviation precision"),
+    ("mysql", "clickhouse", "SELECT MD5(b) FROM t", "SELECT MD5(b) FROM t", "ClickHouse digest"),
+    ("mysql", "clickhouse", "INSERT INTO t1 VALUES (md5('test'))", "INSERT INTO t1 VALUES (MD5('test'))", "ClickHouse digest"),
+])
+def test_calls_two_engines_compute_differently_are_gaps(source, target, left, right, gap):
+    schema = ["Table: `t`\nColumns:\n(`a`, integer)\n(`b`, text)\n"]
+    result = bench.decide(_pair(source, target, left, right, schema))
+    assert (result["outcome"], result["detail"]) == ("unknown", f"dialect gap: {gap}")
+
+
+@pytest.mark.parametrize("source, target, left, right", [
+    ("sqlite", "duckdb", "SELECT SUBSTR(b, -2), SUBSTR(b, a), SUBSTR(b, 0, a) FROM t", "SELECT SUBSTR(b, -2), SUBSTR(b, a), SUBSTR(b, 0, a) FROM t"),
+    ("sqlite", "postgresql", "SELECT SUBSTR(b, 1, 4), SUBSTR(b, 0, 2) FROM t", "SELECT SUBSTR(b, 1, 4), SUBSTR(b, 0, 2) FROM t"),
+    ("sqlite", "clickhouse", "SELECT SUBSTR(b, -2), SUBSTR(b, 3) FROM t", "SELECT SUBSTR(b, -2), SUBSTR(b, 3) FROM t"),
+    ("sqlite", "monetdb", "SELECT SUBSTR(b, 6, 2) FROM t", "SELECT SUBSTRING(b FROM 6 FOR 2) FROM t"),
+    ("mysql", "postgresql", "SELECT SUBSTRING(b, 2, 1) FROM t", "SELECT SUBSTRING(b, 2, 1) FROM t"),
+    ("mysql", "duckdb", "SELECT HEX(b), HEX('abc') FROM t", "SELECT HEX(b), HEX('abc') FROM t"),
+    ("mysql", "clickhouse", "SELECT SQRT(4), LN(1)", "SELECT sqrt(4), ln(1)"),
+    ("mysql", "mariadb", "SELECT ROUND(a), LOG(a), a DIV 2, a | 1, SUBSTRING(b, -1), HEX(a) FROM t", "SELECT ROUND(a), LOG(a), a DIV 2, a | 1, SUBSTRING(b, -1), HEX(a) FROM t"),
+])
+def test_calls_the_engines_compute_alike_are_no_gap(source, target, left, right):
+    schema = ["Table: `t`\nColumns:\n(`a`, integer)\n(`b`, text)\n"]
+    pair = _pair(source, target, left, right, schema)
+    assert bench.dialect_gap(pair, *bench.as_source(pair), bench.schema_of(pair)) is None
+
+
+@pytest.mark.parametrize("sql, families, differs", [
+    ("SUBSTR(b, 1)", {"mysql", "postgresql"}, False),
+    ("SUBSTR(b, 3, 0)", {"mysql", "clickhouse"}, False),
+    ("SUBSTR(b, 3, -1)", {"sqlite", "postgresql"}, True),  # a negative length is each engine's own
+    ("SUBSTR(b, 3, -1)", {"sqlite", "duckdb"}, False),  # SQLite and DuckDB agree everywhere
+    ("SUBSTR(b, -2)", {"sqlite", "clickhouse"}, False),
+    ("SUBSTR(b, -2)", {"sqlite", "mysql"}, True),  # SUBSTR('a', -2) is 'a' in SQLite and '' in MySQL
+    ("SUBSTR(b, -2)", {"sqlite", "postgresql"}, True),  # the whole string in PostgreSQL
+    ("SUBSTR(b, 0, 2)", {"sqlite", "postgresql"}, False),
+    ("SUBSTR(b, 0, 2)", {"sqlite", "clickhouse"}, True),
+    ("SUBSTR(b, 0, 2)", {"mysql", "postgresql"}, True),
+    ("SUBSTR(b, a)", {"mysql", "postgresql"}, True),  # any of the above
+    ("SUBSTR(b, 1, a)", {"sqlite", "clickhouse"}, True),
+    ("SUBSTR(b, 2)", {"sqlite", "monetdb"}, False),
+    ("SUBSTR(b, -2)", {"sqlite", "monetdb"}, True),  # never run on MonetDB
+])
+def test_where_substr_can_differ(sql, families, differs):
+    node = bench.parse(f"SELECT {sql} FROM t", "sqlite").find(bench.exp.Substring)
+    assert bench._substring_differs(node, families) is differs
+
+
+@pytest.mark.parametrize("target, target_sql, proved", [
+    ("duckdb", "SELECT a FROM t ORDER BY a", True),
+    ("duckdb", "SELECT a FROM t ORDER BY a DESC", False),  # the other order
+    ("duckdb", "SELECT a FROM t", False),  # a list against an unordered result
+    ("mysql", "SELECT a FROM t ORDER BY a", False),  # NULL sorts first in MySQL and last in PostgreSQL
+])
+def test_an_ordered_postgresql_source_is_compared_as_a_list(target, target_sql, proved):
+    schema = ["Table: `t`\nColumns:\n(`a`, integer)\n(`b`, text)\n"]
+    result = bench.decide(_pair("postgresql", target, "SELECT a FROM t ORDER BY a", target_sql, schema))
+    assert (result["outcome"] == "proven") is proved
+    assert bench._ordered("SELECT a FROM t ORDER BY a", "postgres") and not bench._ordered("SELECT a FROM t", "postgres")
+
+
+def test_a_date_value_and_its_iso_text_are_one_answer():
+    import datetime
+
+    assert bench._bag([(datetime.date(2020, 1, 31), 1.0)]) == bench._bag([("2020-01-31", 1)])
+    assert bench._bag([(datetime.datetime(2020, 1, 31, 3, 4, 5),)]) == bench._bag([("2020-01-31 03:04:05",)])
+    assert bench._bag([("2020-01-31",)]) != bench._bag([("2020-01-30",)])
 
 
 @pytest.mark.parametrize("sql, site", [

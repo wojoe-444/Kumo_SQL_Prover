@@ -363,10 +363,11 @@ def random_rows(tables: dict[str, dict[str, str]], rng: random.Random, literals:
     """Rows of the declared kinds: whole numbers, fractions, short texts, ISO dates; one value in ten NULL."""
 
     numbers = [0, 1, 2, 3, -1] + [v for v in literals if isinstance(v, (int, float)) and abs(v) < 2**53]
-    texts = ["a", "b", "A", "a "] + [v for v in literals if isinstance(v, str)]  # 'a ': collations that pad differ on it
+    fractions = numbers + [0.5, 2.5, -1.5, 2.675]  # halves: engines round them differently
+    texts = ["a", "b", "A", "a ", "abcdef"] + [v for v in literals if isinstance(v, str)]  # 'a ': collations that pad differ on it
     dates = DATES + [v for v in literals if isinstance(v, str) and _ISO_DATE.fullmatch(v)]
     pools = {
-        "text": texts, "real": numbers, "int": [v for v in numbers if isinstance(v, int)], "date": dates,
+        "text": texts, "real": fractions, "int": [v for v in numbers if isinstance(v, int)], "date": dates,
         "datetime": [d + t for d in dates for t in (" 00:00:00", " 13:45:10")],
     }
     data = {}
