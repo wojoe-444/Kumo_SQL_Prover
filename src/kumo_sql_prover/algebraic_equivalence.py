@@ -120,6 +120,7 @@ from .string_spelling_rules import string_spelling_rules
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .scalar_having_groups import read_scalar_having_groups
 from .count_column_bounds import count_column_bounds
+from .renamed_join_heads import read_back_renamed_join_heads
 from .spread_aggregates import rewrite_spread_aggregates
 from .star_source_columns import list_read_star_columns
 from .extreme_group_sources import read_extreme_group_source
@@ -4884,6 +4885,7 @@ def normalize(
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
+        tree = read_back_renamed_join_heads(tree, schema)  # pre-pass: a column list on the first table of a parenthesized join
         tree = rewrite_spread_aggregates(tree, dialect, _assumptions)  # pre-pass: STDDEV and VARIANCE as a function of three sums
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
     tree = rewrite_quantified(tree, schema, not_null, keys)
