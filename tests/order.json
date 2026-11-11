@@ -674,7 +674,10 @@
   "tests/test_eager_sum_readback.py::test_witness_separates_the_pair[reduced-nullable-sal]": 0.0,
   "tests/test_eager_sum_readback.py::test_witness_separates_the_pair[reduced-count-of-another-column]": 0.0,
   "tests/test_odd_input.py::test_depth_does_not_end_the_process_on_a_small_stack[four-dialects]": 3.1,
-  "tests/test_keyed_union.py::test_the_conditional_verdict_names_the_key": 4.8
+  "tests/test_keyed_union.py::test_the_conditional_verdict_names_the_key": 4.8,
+  "tests/test_duplicate_self_joins.py::test_the_conditional_verdict_names_the_key": 3.5,
+  "tests/test_conditional_fewer_candidates.py::test_the_verdict_names_the_one_not_null_fact": 2.3,
+  "tests/test_conditional_fewer_candidates.py::test_a_pair_that_differs_under_the_not_null_facts_stays_unproved": 4.7
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,

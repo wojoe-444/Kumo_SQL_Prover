@@ -16,7 +16,7 @@ Suppose you replace `SELECT DISTINCT id FROM users` with `SELECT id FROM users`.
 
 The facts come from the queries themselves: a column is NOT NULL, a set of columns is unique, or one table's column always has a match in another table. Facts already declared in your catalog or Dataform assertions are assumed without being listed.
 
-The prover first tries all the candidate facts together. Oddly, more facts can make a proof harder: told that a column is a key, the prover simplifies one query in a way that no longer lines up with the other. So when all the facts together do not work, it tries once more with only the "never empty" facts. For example, `salaries LEFT JOIN (top salary per company) ON company` and the same query with a plain `JOIN` match whenever `company` is never empty, and that is the one fact the prover now reports.
+The prover first tries all the candidate facts together. Oddly, more facts can make a proof harder: told that a column is a key, the prover simplifies one query in a way that no longer lines up with the other. So when all the facts together do not work, it tries again with fewer: first only the "never empty" facts, then all the facts except one "no duplicates" fact at a time. For example, `salaries LEFT JOIN (top salary per company) ON company` and the same query with a plain `JOIN` match whenever `company` is never empty, and that is the one fact the prover now reports.
 
 ## Limits
 
