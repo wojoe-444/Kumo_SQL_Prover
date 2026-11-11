@@ -118,6 +118,8 @@ from .disjoint_union import separate_disjoint_unions
 from .one_row_tails import drop_one_row_tail
 from .string_spelling_rules import string_spelling_rules
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
+from .scalar_having_groups import read_scalar_having_groups
+from .count_column_bounds import count_column_bounds
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
 from .wrapped_join_filters import push_filter_into_wrapped_join
@@ -4892,6 +4894,7 @@ def normalize(
     tree = _left_join_indicator_to_exists(tree, keys)
     if shapes:
         tree = read_grouped_self_membership(tree, dialect)  # before the groups of an IN subquery become a derived table
+        tree = read_scalar_having_groups(tree, schema, _grouped_in_to_derived)  # a HAVING against an uncorrelated scalar subquery
     tree = _grouped_in_to_derived(tree)
     tree = _in_over_union(tree)
     if shapes:
@@ -4949,6 +4952,7 @@ def normalize(
         wrap_tailed_outer_join_aggregate,
         push_filter_into_wrapped_join,
         drop_one_row_tail,
+        count_column_bounds,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
