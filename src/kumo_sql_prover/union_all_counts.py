@@ -110,7 +110,7 @@ def count_over_union_all(
     site = _Site(select, known)
     if not site.ok:
         return None
-    return site.rewritten(keys or {}, not_null or {})
+    return site.rewritten({name.lower(): listed for name, listed in (keys or {}).items()}, not_null or {})
 
 
 def _plain_joins(select: exp.Select) -> bool:
@@ -236,6 +236,8 @@ def _integer_value(node: exp.Expression) -> bool:
         return _integer_value(node.this) and _integer_value(node.expression)
     if isinstance(node, exp.Case) and node.args.get("this") is None and node.args.get("default") is not None:
         return all(_integer_value(arm.args["true"]) for arm in node.args["ifs"]) and _integer_value(node.args["default"])
+    if isinstance(node, exp.If) and not isinstance(node.parent, exp.Case) and node.args.get("false") is not None:
+        return _integer_value(node.args["true"]) and _integer_value(node.args["false"])
     return False
 
 
@@ -486,7 +488,7 @@ class _Site:
         for term in select.args["order"].expressions if select.args.get("order") is not None else []:
             ordered.append(outside(term.this, names))
             read.append(ordered[-1])
-        if any(node is None for node in read) or not self._fixed(read, group_keys, keys, declared, base, names):
+        if any(node is None for node in read) or not _fixed(read, group_keys, keys, declared, base, names):
             return None
         # every check has passed except the aggregates' own
         copy = select.copy()
@@ -528,31 +530,32 @@ class _Site:
         copy.set("having", exp.Having(this=test))
         return copy
 
-    def _fixed(self, read: list[exp.Expression], group_keys: list[exp.Expression], keys, declared, base, names: set[str]) -> bool:
-        """Whether everything read outside an aggregate is fixed by the group key (see the module docstring)."""
 
-        key_sql = {key.unnest().sql() for key in group_keys}
-        grouped: dict[str, set[str]] = {}
-        for key in group_keys:
-            key = key.unnest()
-            if isinstance(key, exp.Column):
-                grouped.setdefault(key.table.lower(), set()).add(key.name.lower())
-        determined = set()
-        for alias, have in grouped.items():
-            table = base.get(alias, "")
-            for key in keys.get(table, []):
-                wanted = {c.lower() for c in key}
-                if wanted and wanted <= have and wanted <= declared.get(table, set()):
-                    determined.add(alias)
+def _fixed(read: list[exp.Expression], group_keys: list[exp.Expression], keys, declared, base, names: set[str]) -> bool:
+    """Whether everything read outside an aggregate is fixed by the group key (see the module docstring)."""
 
-        def fixed(node: exp.Expression) -> bool:
-            if isinstance(node, exp.AggFunc) or node.sql() in key_sql:
-                return True
-            if isinstance(node, exp.Column):
-                return node.table.lower() in determined if node.table else node.name.lower() in names
-            return all(fixed(child) for child in node.iter_expressions())
+    key_sql = {key.unnest().sql() for key in group_keys}
+    grouped: dict[str, set[str]] = {}
+    for key in group_keys:
+        key = key.unnest()
+        if isinstance(key, exp.Column):
+            grouped.setdefault(key.table.lower(), set()).add(key.name.lower())
+    determined = set()
+    for alias, have in grouped.items():
+        table = base.get(alias, "")
+        for key in keys.get(table, []):
+            wanted = {c.lower() for c in key}
+            if wanted and wanted <= have and wanted <= declared.get(table, set()):
+                determined.add(alias)
 
-        return all(fixed(node) for node in read)
+    def fixed(node: exp.Expression) -> bool:
+        if isinstance(node, exp.AggFunc) or node.sql() in key_sql:
+            return True
+        if isinstance(node, exp.Column):
+            return node.table.lower() in determined if node.table else node.name.lower() in names
+        return all(fixed(child) for child in node.iter_expressions())
+
+    return all(fixed(node) for node in read)
 
 
 def _inside(node: exp.Expression, ancestor: exp.Expression) -> bool:
