@@ -2,18 +2,26 @@
   "suite": "DLBench cross-dialect translations (pinned subset)",
   "order": 35,
   "size": 807,
-  "score": "109/604 exact pairs proved, 0 wrong; 799/807 parsed",
+  "score": "190/604 exact pairs proved, 0 wrong; 799/807 parsed",
   "metric": "Translations from SQLite, MySQL and PostgreSQL into six databases' dialects, proved equal to the source in the source's dialect after sqlglot reads both; parsed means both sides parse in their own dialect.",
   "evidence": "proof",
-  "correctness": "Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); 539 pairs where the two databases read the same text differently (LIKE case, MySQL collation, integer division, SQLite type conversion) are left unproved. 1/203 'approximate' pairs are proved (listed in the docs).",
+  "correctness": "Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); 507 pairs where the two databases read the same text differently (LIKE case, string collations, integer and decimal division, Unix time ranges, row values, SQLite type conversion; the docs list every rule) are left unproved, and so are 11 that call the clock, a random value, a sequence or the session. With DLBENCH_NATIVE set, this run also replayed 141 of the 192 proofs on the databases themselves (mysql>clickhouse 11, mysql>duckdb 10, mysql>mariadb 29, mysql>postgresql 14, sqlite>clickhouse 19, sqlite>duckdb 29, sqlite>postgresql 29; clickhouse 26.9.2.1, duckdb 1.5.6, mariadb 10.11.14, mysql 8.0.46, postgresql 16.15, sqlite 3.53.1): 0 differences. Not replayed: 24 no MonetDB engine, 21 not a query, 6 not replayable. 2/203 'approximate' pairs are proved (listed in the docs). 10 of the exact proofs are a MariaDB translation that is its MySQL source token for token, where the provers have nothing to read (an INSERT, a table with no published definition); statements whose answer can change between two runs are refused. 8 more are an INSERT or CREATE TABLE AS that, read back into the source's dialect, is the source statement token for token, and 4 an INSERT or CREATE TABLE AS whose inner queries the provers prove equal with everything else the same text; these decide the rows written, not what the table's column types do to them.",
   "coverage": {
-    "proven": 110,
-    "unknown": 689,
+    "proven": 192,
+    "unknown": 607,
     "unsupported": 8
   },
-  "held_out": "19/103 exact pairs proved",
+  "held_out": "38/103 exact pairs proved",
   "docs": "docs/evals/dlbench.md",
   "command": "python tools/dlbench_bench.py --write-results",
-  "date": "2026-10-03",
-  "caveats": "Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test)."
+  "date": "2026-11-11",
+  "caveats": "Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test). The 2026-11-11 harness changes (translated column and table spellings read back, the same-statement rule, the volatile-call refusal, the gap rules that the native replay of every proof led to, DuckDB and MonetDB date formatting read back, and the two rules for statements that write rows) were developed on the development split only; held-out pairs were replayed for their verdicts, never read. Proofs that are not of a query: 9 MariaDB same-statement decisions of an INSERT or CREATE, 8 INSERT or CREATE TABLE AS statements that read back as their source and 4 decided by their inner queries; none of these is replayed natively, and neither is any MonetDB proof (24, no engine).",
+  "environment": {
+    "python": "3.13.18",
+    "sqlglot": "30.21.0",
+    "sqlglotc": "30.21.0",
+    "duckdb": "1.5.6",
+    "z3-solver": "5.4.1.0",
+    "commit": "828cd9c"
+  }
 }
