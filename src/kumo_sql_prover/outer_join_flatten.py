@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from sqlglot import exp
 
+from . import volatile_calls
 from .ast_utils import FROM_KEY
 
 _OUTER_SIDES = {"LEFT", "RIGHT", "FULL"}
@@ -59,6 +60,8 @@ def _deterministic(node: exp.Expression) -> bool:
         if isinstance(sub, _NONDETERMINISTIC):
             return False
         if isinstance(sub, exp.Anonymous) and (sub.name or "").upper() in _NONDETERMINISTIC_NAMES:
+            return False
+        if volatile_calls.kind(sub) == volatile_calls.PER_CALL:
             return False
     return True
 

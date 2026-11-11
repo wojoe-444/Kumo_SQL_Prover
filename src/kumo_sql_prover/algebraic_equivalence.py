@@ -121,7 +121,7 @@ from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
 from .wrapped_join_filters import push_filter_into_wrapped_join
-from .smt_equivalence import SmtEquivalenceResult, SmtStatus, prove_equivalent_smt
+from .smt_equivalence import SmtEquivalenceResult, SmtStatus, prove_equivalent_smt, without_volatile_proof
 
 MAX_BRANCHES = 16
 _SPLIT_ALIAS = "kumosql_u"
@@ -3701,6 +3701,24 @@ def _drop_redundant_distinct_source(select: exp.Select) -> exp.Expression | None
     return copy
 
 
+def _unwrap_output_columns(tree: exp.Expression) -> exp.Expression:
+    """``SELECT (t.a)`` outputs the column ``a`` under its own name, so the parentheses are dropped.
+
+    The engines name a parenthesized column by the column. Left in place, the parentheses made the output look
+    unnamed: a derived table's ``(p.a)`` was given a generated name, and a read of ``a`` from the query around
+    it then found no such output and was taken for a column of an enclosing query (a false proof).
+    """
+
+    for select in tree.find_all(exp.Select):
+        for item in select.expressions:
+            inner = item
+            while isinstance(inner, exp.Paren):
+                inner = inner.this
+            if inner is not item and isinstance(inner, exp.Column):
+                item.replace(inner.copy())
+    return tree
+
+
 def _name_derived_columns(tree: exp.Expression) -> exp.Expression:
     """A derived table's unnamed column (``MIN(x)``) gets a generated name, so ``SELECT *`` can list it.
 
@@ -4868,7 +4886,7 @@ def normalize(
     if group_by_constants:
         tree = _drop_constant_groupings(tree)
     tree = _resolve_ordinals(tree, group_by=not group_by_constants)
-    tree = _lowercase_columns(tree)
+    tree = _unwrap_output_columns(_lowercase_columns(tree))
     tree = _inline_ctes(tree)
     tree = rewrite_bigquery_constructs(tree, schema, types, dialect)  # pre-pass: UNNEST of literals, STRUCT fields
     tree = inline_named_windows(tree)
@@ -5032,9 +5050,18 @@ def prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtEq
     See ``_prove_equivalent_algebraic_checked`` for the rest.
     """
 
-    return numeric_column_reading.checked(
+    from . import statement_values
+
+    # NOW(), CURRENT_DATE and the like are read as one unknown value per statement: a proof is conditional on it.
+    return statement_values.proved(_prove_equivalent_algebraic_as_written, left_sql, right_sql, kwargs)
+
+
+def _prove_equivalent_algebraic_as_written(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
+    result = numeric_column_reading.checked(
         _prove_equivalent_algebraic_checked, left_sql, right_sql, kwargs, lambda reason: SmtEquivalenceResult(SmtStatus.NOT_PROVEN, reason)
     )
+    # The rules below may merge or drop a call; a pair that holds a volatile one as written is never proven.
+    return without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
 
 
 def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:

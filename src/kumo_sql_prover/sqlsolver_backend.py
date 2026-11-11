@@ -43,6 +43,7 @@ from .parse_check import refuse_misread_proofs
 from .sqlx_fragments import masked_template_problem
 from .type_names import invalid_type_name
 from .ast_utils import star_modified
+from . import volatile_calls
 from .smt_equivalence import (
     SmtEquivalenceResult,
     SmtStatus,
@@ -207,6 +208,8 @@ def translate_query(sql: str, schema: Schema) -> str:
             raise TranslationError(f"nondeterministic function {type(node).__name__}")
         if isinstance(node, exp.Anonymous) and node.name.upper() in _NONDETERMINISTIC_NAMES:
             raise TranslationError(f"nondeterministic function {node.name.upper()}")
+        if volatile_calls.kind(node, "bigquery") is not None:
+            raise TranslationError(volatile_calls.reason(node, "bigquery"))
         if isinstance(node, exp.Star) and star_modified(node):
             raise TranslationError("SELECT * EXCEPT/REPLACE/RENAME/ILIKE is not supported")
         if isinstance(node, exp.Table) and isinstance(node.this, exp.Identifier):
