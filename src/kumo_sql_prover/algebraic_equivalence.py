@@ -122,6 +122,7 @@ from .substring_casts import drop_substring_casts
 from .cased_group_sums import unnest_cased_sums
 from .counted_cases import sum_counted_cases
 from .discrete_bounds import close_strict_bounds, fold_chained_dates
+from .tuple_membership import expand_row_membership
 from .closed_scalar_filters import fold_scalar_filter, lift_scalar_arithmetic
 from .exclusive_union_filters import merge_exclusive_unions
 from .own_group_filters import filter_own_groups
@@ -4979,6 +4980,7 @@ def normalize(
         sum_counted_cases,
         lambda sel: close_strict_bounds(sel, types_map, dialect),
         unnest_cased_sums,
+        lambda sel: expand_row_membership(sel, dialect),
     ) if shapes else ()
 
     # shape rules that must read a select before ``_wrap_outer_join_aggregate`` wraps its outer joins
