@@ -238,3 +238,33 @@ def test_count_of_a_not_null_column_is_the_regrouped_count_star():
         constraints=constraints,
     )
     assert result.proven, result.reason
+
+
+def test_a_dedup_join_read_as_exists_keeps_the_other_conditions_of_its_on():
+    """The ``ON`` of the join that becomes ``EXISTS`` may also relate the other sources: those conditions stay.
+
+    They were dropped when the deduplicated table was not the first source, so a join condition between two
+    other tables vanished and the pair was proved against a query without it.
+    """
+
+    from kumo_sql_prover.distinct_rules import distinct_join_to_exists
+
+    joined = "SELECT t.c FROM t CROSS JOIN s JOIN (SELECT DISTINCT a FROM s WHERE d > 1) AS k ON s.b = k.a AND t.a = s.a"
+    rewritten = distinct_join_to_exists(sqlglot.parse_one(joined, read="mysql"))
+    assert rewritten is not None and "t.a = s.a" in rewritten.sql(dialect="mysql")
+    with_condition = "SELECT t.c FROM t, s WHERE t.a = s.a AND EXISTS (SELECT 1 FROM s AS s2 WHERE s2.d > 1 AND s2.a = s.b)"
+    without_condition = "SELECT t.c FROM t, s WHERE EXISTS (SELECT 1 FROM s AS s2 WHERE s2.d > 1 AND s2.a = s.b)"
+    assert prove(joined, with_condition).proven
+    assert not prove(joined, without_condition).proven
+    # the same join written with parentheses, as Calcite prints it
+    nested = "SELECT t.c FROM t JOIN (s JOIN (SELECT a FROM s WHERE d > 1 GROUP BY a) AS k ON s.b = k.a) ON t.a = s.a"
+    assert prove(nested, with_condition).proven
+    assert not prove(nested, without_condition).proven
+    # and it is a real difference: the engine returns other rows without the condition
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE t (a, b, c)")
+    db.execute("CREATE TABLE s (a, b, d)")
+    db.executemany("INSERT INTO t VALUES (?, ?, ?)", [(1, 0, 10), (2, 0, 20)])
+    db.executemany("INSERT INTO s VALUES (?, ?, ?)", [(1, 1, 5)])
+    assert sorted(db.execute(joined).fetchall()) == sorted(db.execute(with_condition).fetchall()) == [(10,)]
+    assert sorted(db.execute(without_condition).fetchall()) == [(10,), (20,)]
