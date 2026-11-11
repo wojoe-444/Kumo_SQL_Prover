@@ -80,7 +80,7 @@ Each run first takes the eval's own baseline verdict (unbounded prover and execu
 
 ## Results
 
-Measured 2026-11-11 at 3 rows per table, on source commit `325434b`, one suite at a time.
+Measured 2026-11-11 at 3 rows per table, on source commit `325434b`, one suite at a time. The QED row was measured again on `3e31f30` after its conversion grew from 375 to 407 pairs ([what was added](sqlsolver.md#tests-the-conversions-used-to-skip)); the other rows did not change.
 
 | Suite | Pairs | Bounded, 3 rows | Different (replayed) | Timeout | Unsupported | Unknown |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -88,7 +88,7 @@ Measured 2026-11-11 at 3 rows per table, on source commit `325434b`, one suite a
 | SQLSolver Spark SQL | 127 | 110 | 0 | 0 | 17 | 0 |
 | SQLSolver TPC-H | 22 | 21 | 0 | 1 | 0 | 0 |
 | SQLSolver TPC-C | 19 | 19 | 0 | 0 | 0 | 0 |
-| QED Calcite | 375 | 367 | 0 | 0 | 8 | 0 |
+| QED Calcite | 407 | 395 | 3 | 1 | 8 | 0 |
 | R-Bot Calcite | 45 | 37 | 1 | 0 | 7 | 0 |
 | Cosette examples | 60 | 52 | 6 | 0 | 2 | 0 |
 | SPES Calcite | 34 | 25 | 3 | 0 | 6 | 0 |
@@ -99,7 +99,7 @@ Measured 2026-11-11 at 3 rows per table, on source commit `325434b`, one suite a
 
 Every row has 0 wrong. A *timeout* is a pair whose 3-row check timed out, some after finishing a smaller bound (reported as e.g. "bounded, 2 rows"); *unknown* is a model the replay did not confirm or a parse failure. For pairs the unbounded prover already proves, the bounded verdict is a cross-check of the encoder. On pairs the proofs leave unknown, the bounded check refutes pairs the 150-database random search missed (LeetCode sample: 81 refutations among the 453 pairs the executed search called "agrees"; Literature: 1 of 9), each replayed on DuckDB. Singh & Bedathur's 1,874 pairs the prover already refutes are not rerun, so its row counts the other 926 (the earlier row counted 1,006 pairs and 71 bounded refutations, which the prover now refutes itself); its 9 timeouts and 10 unsupported pairs are the rest of that list.
 
-Disputed labels: R-Bot's `testNotPushFilterPastWindowWhenPredicateNotOnPartitionKey` (the prover already refutes it too), Cosette's `testDecorrelateTwoIn` and SPES's three semi-join cases (`testSemiJoinRule`, `testSemiJoinRuleExists`, `testSemiJoinTrim`) are labelled equivalent, but a replayed bounded counterexample exists; they are counted as label disputes, not as wrong.
+Disputed labels: QED's `testAggregateCaseToFilter`, `testDistinctCountGroupingSets1` and `testDistinctCountGroupingSets2` (recorded plans from an older Calcite whose rewrite was later corrected; the proof row keeps them as pairs that must not prove), R-Bot's `testNotPushFilterPastWindowWhenPredicateNotOnPartitionKey` (the prover already refutes it too), Cosette's `testDecorrelateTwoIn` and SPES's three semi-join cases (`testSemiJoinRule`, `testSemiJoinRuleExists`, `testSemiJoinTrim`) are labelled equivalent, but a replayed bounded counterexample exists; they are counted as label disputes, not as wrong.
 
 Checks behind "0 wrong": on `325434b` the encoding agrees with DuckDB on 712 Calcite and 1,601 LeetCode-sample queries (`differential`, 0 mismatches; queries with an ungrouped column are excluded because their answer is arbitrary). The first LeetCode run found the encoder assumed ORDER BY ties away, which hid real differences in 18 pairs; ties are now broken by row position and the same run is 0 wrong. A doubled primary key in one family of pairs is read as the shared harness reads it (the later one wins). The run flags a pair when a counterexample from the suite's own search meets a bounded "same": 4 Calcite pairs (the bounded check only reached 1 row before timing out), 3 LeetCode pairs and 1 Literature pair. The cases looked at (one LeetCode pair needs 4 rows; the Literature pair differs only on 6 or more rows; one LeetCode pair showed that the executed search ignores a consecutive-id rule) are not encoder faults. The SPES row was recorded as 26 bounded on 2026-10-02 but main reproduces 24; it is 25 here (`testReduceConstants2` now compiles).
 
