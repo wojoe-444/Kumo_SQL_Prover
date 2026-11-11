@@ -51,10 +51,15 @@ Conditions checked (the select is left alone otherwise):
 * every qualified column of the select names a source declared inside it.
 
 Nothing is assumed beyond what the prover already assumes for windows: a sub-proof's assumptions are passed on.
-At most ``MAX_PROOFS`` sub-proofs are tried for a pair, on inputs of at most ``MAX_CHARS`` characters.
+At most ``MAX_PROOFS`` sub-proofs are tried for a pair, on inputs of at most ``MAX_CHARS`` characters, at most
+``MAX_DEPTH`` sub-proofs deep and none started more than ``BUDGET_SECONDS`` after the first (``sub_proofs``).
 """
 
 from __future__ import annotations
+
+import contextlib
+import time
+from contextvars import ContextVar
 
 import sqlglot
 from sqlglot import exp
@@ -63,6 +68,38 @@ from .ast_utils import faithful_sql
 
 MAX_PROOFS = 4
 MAX_CHARS = 6000
+MAX_DEPTH = 2  # a sub-proof may unify the parts of its two inputs once more, and no deeper
+BUDGET_SECONDS = 20.0  # no sub-proof starts later than this after the first unification of a proof began
+_DEPTH: ContextVar[int] = ContextVar("kumosql_unify_depth", default=0)
+_DEADLINE: ContextVar[float | None] = ContextVar("kumosql_unify_deadline", default=None)
+
+
+@contextlib.contextmanager
+def sub_proofs():
+    """Yields whether this proof may unify parts by sub-proofs: not below ``MAX_DEPTH`` nested sub-proofs, not past the budget.
+
+    Each sub-proof normalizes its two inputs, which is most of what an unproven pair costs, and a sub-proof can
+    reach this point again for the parts of its inputs. The depth and one deadline for the whole proof (context
+    variables, so per thread and task) keep that bounded.
+    """
+
+    depth, deadline = _DEPTH.get(), _DEADLINE.get()
+    if depth >= MAX_DEPTH or (deadline is not None and time.monotonic() > deadline):
+        yield False
+        return
+    tokens = [(_DEPTH, _DEPTH.set(depth + 1))]
+    if deadline is None:
+        tokens.append((_DEADLINE, _DEADLINE.set(time.monotonic() + BUDGET_SECONDS)))
+    try:
+        yield True
+    finally:
+        for variable, token in reversed(tokens):
+            variable.reset(token)
+
+
+def within_budget() -> bool:
+    deadline = _DEADLINE.get()
+    return deadline is None or time.monotonic() <= deadline
 INPUT_ALIAS = "kqwi"
 _SELECT_ARGS = frozenset({"expressions", "from_", "from", "joins", "where", "group", "having", "kind"})
 _INPUT_ARGS = ("from_", "from", "joins", "where", "group", "having")
