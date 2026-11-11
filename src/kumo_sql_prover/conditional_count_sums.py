@@ -23,7 +23,10 @@ Conditions, all checked:
   literal 1 and whose ``ELSE`` is the integer literal 0 (or, inside ``COALESCE``, absent or NULL);
 * the ``SUM`` has no ``DISTINCT``, no ``FILTER``, is not a window function and belongs to the select being read;
 * for the bare ``SUM``: the select has a plain ``GROUP BY`` list with a key (not ``ROLLUP``, ``CUBE``, ``GROUPING SETS``
-  or ``()``, whose grand-total group exists over no rows);
+  or ``()``, whose grand-total group exists over no rows), and the sum is certainly an aggregate of that select: an
+  aggregate whose columns all belong to an enclosing query is that query's aggregate, which may have no
+  ``GROUP BY`` and then reads no rows as NULL. So inside a subquery expression (scalar, ``EXISTS``, ``IN``,
+  ``LATERAL``) the condition must read a column qualified by one of the select's own sources, or no column at all;
 * ``COALESCE`` has exactly the two arguments, the second the integer literal 0.
 
 ``SUM`` of integers and ``COUNT`` have the same type in PostgreSQL and BigQuery; elsewhere the value is the same
@@ -75,6 +78,36 @@ def _own(node: exp.Expression, select: exp.Select) -> bool:
     return node.find_ancestor(exp.Select) is select and node.find_ancestor(exp.Window, exp.Filter) is None
 
 
+def _sees_no_outer_row(select: exp.Select) -> bool:
+    """Whether ``select`` is the query or a derived table under derived tables and set operations only."""
+
+    node: exp.Expression = select
+    while node.parent is not None:
+        parent = node.parent
+        if isinstance(parent, exp.SetOperation):
+            node = parent
+            continue
+        if not isinstance(parent, exp.Subquery) or not isinstance(parent.parent, (exp.From, exp.Join)) or not isinstance(parent.parent.parent, exp.Select):
+            return False  # a scalar, EXISTS or IN subquery, a LATERAL, a CTE
+        node = parent.parent.parent
+    return True
+
+
+def _own_aggregate(condition: exp.Expression, select: exp.Select, placed: exp.Select) -> bool:
+    """Whether a sum over ``condition`` written in ``select`` is certainly an aggregate of ``select`` itself.
+
+    ``select`` is the (copied) select that holds ``condition``; ``placed`` is the same select where it stands in its query.
+    """
+
+    columns = list(condition.find_all(exp.Column))
+    if not columns or _sees_no_outer_row(placed):
+        return True
+    source = select.args.get("from_") or select.args.get("from")
+    items = ([source.this] if source is not None else []) + [join.this for join in select.args.get("joins") or []]
+    names = {item.alias_or_name.lower() for item in items if isinstance(item, (exp.Table, exp.Subquery)) and item.alias_or_name}
+    return any(column.table and column.table.lower() in names and column.find_ancestor(exp.Select) is select for column in columns)
+
+
 def count_conditional_sums(select: exp.Select) -> exp.Select | None:
     """``select`` with its sums of ones (module doc) written as counts, or None."""
 
@@ -106,7 +139,7 @@ def count_conditional_sums(select: exp.Select) -> exp.Select | None:
             if not _own(call, copy) or isinstance(call.parent, exp.Window):
                 continue
             condition = _condition(call, need_else=True)
-            if condition is not None:
+            if condition is not None and _own_aggregate(condition, copy, select):
                 call.replace(_count(condition))
                 changed = True
     return copy if changed else None
