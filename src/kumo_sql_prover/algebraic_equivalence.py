@@ -121,6 +121,7 @@ from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .scalar_having_groups import read_scalar_having_groups
 from .count_column_bounds import count_column_bounds
 from .spread_aggregates import rewrite_spread_aggregates
+from .star_source_columns import list_read_star_columns
 from .extreme_group_sources import read_extreme_group_source
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
@@ -4921,6 +4922,8 @@ def normalize(
     tree = _name_derived_columns(tree)
     if schema:
         tree = _using_to_on(_expand_stars(tree, schema), schema)  # USING over a derived table read once its stars are known
+        if shapes:
+            tree = list_read_star_columns(tree, schema)  # pre-pass: a star over repeated names lists the columns read from it
     tree = _except_of_same_table_filters(tree, schema, dialect)
     tree = _probe_and_nth_value(tree)
     tree = _name_derived_columns(_lateral_joins(tree))
