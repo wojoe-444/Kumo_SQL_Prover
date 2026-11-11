@@ -4880,6 +4880,9 @@ def normalize(
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
+        from .aggregate_membership import read_aggregate_membership
+
+        tree = read_aggregate_membership(tree, schema, dialect)  # pre-pass: (k, v) IN (SELECT k, MIN(v) .. GROUP BY k) compares with the group's aggregate
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
     tree = trim_redundant_row_clauses(tree)
