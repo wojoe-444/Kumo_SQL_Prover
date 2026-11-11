@@ -9,19 +9,18 @@
     "refuted": 4,
     "unknown": 69
   },
-  "caveats": "3 pairs are separated by a small database, 1 on the generated data. Logos 333d5275ac87; query text fetched at run time, never committed. By family: rbot-tpch 19/21 proved, 1 refuted; rbot-dsb 17/36 proved, 1 refuted; tpcds-variants 4/12 proved, 2 refuted. 14 TPC-DS variant pairs are adapted (TOP n read as LIMIT n, date + n days as an interval): 4 proved, 2 refuted among them. TPC-H data is scale 0.1 (tpchgen-cli); TPC-DS data is scale 1 from DSB's dsdgen, whose distributions differ from the official kit's. The TPC-H schema declares no keys, so proofs hold over every database with its NOT NULL columns. Prover routes time out after 120 s of wall-clock time, so a loaded machine can turn a few proofs into timeouts. Baseline before any harness fix: 23/69 proved, 4 refuted, 0 wrong (5/11 held out). The two harness fixes (moving Calcite's derived-table column lists into the derived table with KumoSQL's expand_alias_columns, and one renamed TPC-DS column on the generated data) were made on the dev split, but the baseline listing showed every pair's failure reason, held-out ones included (tuned on test, exposure only; the held-out score did not move). Measured on a861879.",
+  "caveats": "3 pairs are separated by a small database, 1 on the generated data. Logos 333d5275ac87; query text fetched at run time, never committed. By family: rbot-tpch 19/21 proved, 1 refuted; rbot-dsb 22/36 proved, 1 refuted; tpcds-variants 4/12 proved, 2 refuted. 14 TPC-DS variant pairs are adapted (TOP n read as LIMIT n, date + n days as an interval): 4 proved, 2 refuted among them. TPC-H data is scale 0.1 (tpchgen-cli); TPC-DS data is scale 1 from DSB's dsdgen, whose distributions differ from the official kit's. The TPC-H schema declares no keys, so proofs hold over every database with its NOT NULL columns. Prover routes time out after 120 s of wall-clock time, so a loaded machine can turn a few proofs into timeouts. Baseline before any harness fix: 23/69 proved, 4 refuted, 0 wrong (5/11 held out). The two harness fixes (moving Calcite's derived-table column lists into the derived table with KumoSQL's expand_alias_columns, and one renamed TPC-DS column on the generated data) were made on the dev split, but the baseline listing showed every pair's failure reason, held-out ones included (tuned on test, exposure only; the held-out score did not move). Measured on 550a27f.",
   "size": 73,
   "docs": "docs/evals/logos.md",
   "command": "python tools/logos_bench.py --jobs 4",
-  "date": "2026-11-10",
+  "date": "2026-11-11",
   "held_out": "1/12 shown different, 0 wrong",
   "environment": {
     "python": "3.13.18",
     "sqlglot": "30.21.0",
     "sqlglotc": "30.21.0",
     "duckdb": "1.5.6",
-    "z3-solver": "5.4.0.0",
-    "sqlfluff": "4.5.0",
-    "commit": "a861879+changes"
+    "z3-solver": "5.4.1.0",
+    "commit": "550a27f+changes"
   }
 }
