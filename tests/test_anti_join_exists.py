@@ -54,11 +54,61 @@ def test_the_anti_join_becomes_not_exists():
         read("SELECT a.g FROM a JOIN b ON a.k = b.k LEFT JOIN t AS s ON a.k > s.n WHERE b.y = 2 AND s.f IS NULL AND a.x = 1")
         == "SELECT a.g FROM a JOIN b ON a.k = b.k WHERE b.y = 2 AND NOT EXISTS(SELECT 1 FROM t AS s WHERE a.k > s.n) AND a.x = 1"
     )
+    # a derived table is probed as it is written; a constant column tells a matched row from a padded one
+    assert (
+        read("SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t WHERE f = 1) AS d ON a.k = d.k WHERE NOT d.i IS TRUE")
+        == "SELECT a.g FROM a WHERE NOT EXISTS(SELECT 1 FROM (SELECT k, TRUE AS i FROM t WHERE f = 1) AS d WHERE a.k = d.k)"
+    )
+    assert (
+        read("SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t) AS d ON a.k = d.k WHERE NOT (d.i IS TRUE AND a.k IS NOT NULL)")
+        == "SELECT a.g FROM a WHERE NOT EXISTS(SELECT 1 FROM (SELECT k, TRUE AS i FROM t) AS d WHERE a.k = d.k)"
+    )
+    assert (
+        read("SELECT a.g FROM a LEFT JOIN (SELECT k, 1 AS i FROM t GROUP BY k) AS d ON a.k = d.k WHERE d.i IS NULL AND a.x > 0")
+        == "SELECT a.g FROM a WHERE NOT EXISTS(SELECT 1 FROM (SELECT k, 1 AS i FROM t GROUP BY k) AS d WHERE a.k = d.k) AND a.x > 0"
+    )
+    assert (
+        read("SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t) AS d ON a.k = d.k WHERE d.i IS NOT TRUE")
+        == "SELECT a.g FROM a WHERE NOT EXISTS(SELECT 1 FROM (SELECT k, TRUE AS i FROM t) AS d WHERE a.k = d.k)"
+    )
     # a later inner or LEFT join that does not read the joined table
     assert (
         read("SELECT a.g, b.y FROM a LEFT JOIN t ON a.k = t.k LEFT JOIN b ON a.k = b.k WHERE t.k IS NULL")
         == "SELECT a.g, b.y FROM a LEFT JOIN b ON a.k = b.k WHERE NOT EXISTS(SELECT 1 FROM t WHERE a.k = t.k)"
     )
+
+
+def test_a_join_that_matches_once_is_read_under_or_and_not():
+    once = "(SELECT k, TRUE AS i FROM t WHERE f = 1 GROUP BY k) AS d"
+    probe = f"EXISTS(SELECT 1 FROM {once} WHERE a.k = d.k)"
+    assert read(f"SELECT a.g FROM a LEFT JOIN {once} ON a.k = d.k WHERE a.x = 0 OR d.i IS NULL AND a.g > 1") == f"SELECT a.g FROM a WHERE a.x = 0 OR NOT {probe} AND a.g > 1"
+    assert read(f"SELECT a.g FROM a LEFT JOIN {once} ON a.k = d.k WHERE NOT (d.i IS TRUE AND a.x IS NOT NULL)") == f"SELECT a.g FROM a WHERE NOT ({probe} AND a.x IS NOT NULL)"
+    assert read(f"SELECT a.g FROM a LEFT JOIN {once} ON a.k = d.k WHERE d.k IS NOT NULL OR a.x = 1") == f"SELECT a.g FROM a WHERE {probe} OR a.x = 1"
+    distinct = "(SELECT DISTINCT k, n FROM t) AS d"
+    assert (
+        read(f"SELECT a.g FROM a LEFT JOIN {distinct} ON a.k = d.k AND d.n = a.x + 1 WHERE d.k IS NULL OR a.g = 2")
+        == f"SELECT a.g FROM a WHERE NOT EXISTS(SELECT 1 FROM {distinct} WHERE a.k = d.k AND d.n = a.x + 1) OR a.g = 2"
+    )
+
+
+@pytest.mark.parametrize("sql", [
+    # may match more than once: under OR the matched rows that pass would be repeated
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t) AS d ON a.k = d.k WHERE a.x = 0 OR d.i IS NULL",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, n, TRUE AS i FROM t GROUP BY k, n) AS d ON a.k = d.k WHERE a.x = 0 OR d.i IS NULL",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t GROUP BY k) AS d ON a.k > d.k WHERE a.x = 0 OR d.i IS NULL",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t GROUP BY k) AS d ON a.k = d.k + d.k WHERE a.x = 0 OR d.i IS NULL",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k + 1 AS k, TRUE AS i FROM t GROUP BY k) AS d ON a.k = d.k WHERE a.x = 0 OR d.i IS NULL",
+    "SELECT a.g FROM a LEFT JOIN (SELECT DISTINCT TRUE AS i FROM t) AS d ON a.k = 1 WHERE a.x = 0 OR d.i IS NULL",
+    "SELECT a.g FROM a LEFT JOIN t ON a.k = t.k WHERE a.x = 0 OR t.k IS NULL",  # a base table
+    # reads that are not existence tests
+    "SELECT a.g, d.i IS NULL FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t GROUP BY k) AS d ON a.k = d.k WHERE a.x = 0 OR d.i IS NULL",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t GROUP BY k) AS d ON a.k = d.k WHERE a.x = 0 OR d.k > 1",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t GROUP BY k) AS d ON a.k = d.k WHERE a.x = 0 OR d.i IS NULL ORDER BY d.k",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t GROUP BY k) AS d ON a.k = d.k WHERE a.x = 0 OR i IS NULL",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t GROUP BY k) AS d ON a.k = d.k WHERE a.x = (SELECT MAX(b.y) FROM b WHERE d.i IS NULL)",
+])
+def test_reads_that_need_one_match_at_most_are_left_alone(sql):
+    assert read(sql) is None
 
 
 @pytest.mark.parametrize("sql", [
@@ -76,7 +126,16 @@ def test_the_anti_join_becomes_not_exists():
     "SELECT a.g FROM a JOIN t ON a.k = t.k WHERE t.k IS NULL",  # not an outer join
     "SELECT a.g FROM a RIGHT JOIN t ON a.k = t.k WHERE t.k IS NULL",
     "SELECT a.g FROM a LEFT JOIN t USING (k) WHERE t.k IS NULL",
-    "SELECT a.g FROM a LEFT JOIN (SELECT k FROM t) AS t ON a.k = t.k WHERE t.k IS NULL",  # not a base table
+    "SELECT a.g FROM a LEFT JOIN (SELECT * FROM t) AS d ON a.k = d.k WHERE d.k IS NULL",  # a star: outputs not known
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, n AS k FROM t) AS d ON a.k = d.k WHERE d.k IS NULL",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k FROM t) AS d(j) ON a.k = d.j WHERE d.j IS NULL",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, n = 1 AS i FROM t) AS d ON a.k = d.k WHERE NOT d.i IS TRUE",  # i is not constant
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, FALSE AS i FROM t) AS d ON a.k = d.k WHERE NOT d.i IS TRUE",  # TRUE when matched too
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t) AS d ON a.k = d.k WHERE d.i IS TRUE",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t) AS d ON a.k = d.k WHERE NOT d.i",  # NULL when padded
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t) AS d ON a.k = d.k WHERE NOT (d.i IS TRUE AND a.x IS NOT NULL)",  # x may be NULL when matched
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t) AS d ON a.k = d.k WHERE NOT d.i IS TRUE OR a.x = 1",
+    "SELECT a.g FROM a LEFT JOIN (SELECT k, NULL AS i FROM t) AS d ON a.k = d.k WHERE d.i IS NULL",
     "SELECT a.g FROM a LEFT JOIN t ON a.k = t.k AND EXISTS (SELECT 1 FROM b WHERE b.k = t.n) WHERE t.k IS NULL",
     "SELECT a.g FROM a LEFT JOIN t ON k = t.k WHERE t.k IS NULL",  # a bare column in ON
     "SELECT * FROM a LEFT JOIN t ON a.k = t.k WHERE t.k IS NULL",
@@ -99,6 +158,12 @@ TARGETS = [
      f"SELECT COUNT(*) FROM a, b WHERE a.k = b.k AND b.y > 0 AND {PROBE}"),
     ("SELECT a.g, b.y FROM a LEFT JOIN t ON a.k = t.k AND t.f = 1 JOIN b ON a.k = b.k WHERE t.k IS NULL",
      f"SELECT a.g, b.y FROM a JOIN b ON a.k = b.k WHERE {PROBE}"),
+    ("SELECT a.g, COUNT(*) FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t WHERE f = 1) AS d ON a.k = d.k WHERE NOT d.i IS TRUE GROUP BY a.g",
+     f"SELECT a.g, COUNT(*) FROM a WHERE {PROBE} GROUP BY a.g"),
+    ("SELECT a.g, COUNT(*) FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t WHERE f = 1) AS d ON a.k = d.k WHERE NOT (d.i IS TRUE AND a.k IS NOT NULL) GROUP BY a.g",
+     f"SELECT a.g, COUNT(*) FROM a WHERE {PROBE} GROUP BY a.g"),
+    ("SELECT a.g, COUNT(*) FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t GROUP BY k) AS d ON a.k = d.k WHERE a.x = 5 OR d.i IS NULL GROUP BY a.g",
+     "SELECT a.g, COUNT(*) FROM a WHERE a.x = 5 OR NOT EXISTS (SELECT 1 FROM t WHERE t.k = a.k) GROUP BY a.g"),
     # without an aggregate it proved before and still does
     ("SELECT a.g FROM a LEFT JOIN t ON a.k = t.k AND t.f = 1 WHERE t.k IS NULL", f"SELECT a.g FROM a WHERE {PROBE}"),
 ]
@@ -110,7 +175,7 @@ def test_anti_joins_prove(left, right):
 
 
 ROWS = {
-    "a": [(1, 1, 5), (1, 1, 5), (2, 1, 6), (3, 2, 7), (None, 2, 8), (4, 3, 9)],
+    "a": [(1, 1, 5), (1, 1, 5), (2, 1, 6), (3, 2, 7), (None, 2, 8), (4, 3, None)],
     "t": [(1, 1, None), (1, 1, 3), (2, 0, None), (4, 1, 4), (None, 1, None)],
     "b": [(1, 1), (3, 2), (3, 3), (9, 4)],
 }
@@ -129,6 +194,13 @@ NEAR_MISSES = [
     # written for them finds the rows of t with f = 1
     ("SELECT b.y, COUNT(*) FROM a LEFT JOIN t ON a.k = t.k OR t.f = 1 RIGHT JOIN b ON a.k = b.k WHERE t.f IS NULL GROUP BY b.y",
      "SELECT b.y, COUNT(*) FROM a RIGHT JOIN b ON a.k = b.k WHERE NOT EXISTS (SELECT 1 FROM t WHERE t.k = a.k OR t.f = 1) GROUP BY b.y"),
+    # x is not compared in ON, so it can be NULL on a matched row, and that row passes
+    ("SELECT a.g, COUNT(*) FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t) AS d ON a.k = d.k WHERE NOT (d.i IS TRUE AND a.x IS NOT NULL) GROUP BY a.g", GROUPED),
+    # a computed flag is NULL or FALSE on some matched rows
+    ("SELECT a.g, COUNT(*) FROM a LEFT JOIN (SELECT k, n = 3 AS i FROM t) AS d ON a.k = d.k WHERE NOT d.i IS TRUE GROUP BY a.g", GROUPED),
+    # under OR a row that passes the other test is repeated once per match when the join can match twice
+    ("SELECT a.g, COUNT(*) FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t) AS d ON a.k = d.k WHERE a.x = 5 OR d.i IS NULL GROUP BY a.g",
+     "SELECT a.g, COUNT(*) FROM a WHERE a.x = 5 OR NOT EXISTS (SELECT 1 FROM t WHERE t.k = a.k) GROUP BY a.g"),
     # an inner join is no anti-join
     ("SELECT a.g, COUNT(*) FROM a JOIN t ON a.k = t.k WHERE t.n IS NULL GROUP BY a.g", GROUPED),
 ]
@@ -146,6 +218,14 @@ READ_QUERIES = [
     "SELECT a.g, b.y FROM a LEFT JOIN t ON a.k = t.k LEFT JOIN b ON a.k = b.k WHERE t.k IS NULL",
     "SELECT a.g, b.y FROM a LEFT JOIN b ON a.k = b.k LEFT JOIN t ON b.y = t.n AND a.x <> t.k WHERE t.n IS NULL",
     "SELECT a.g, SUM(b.y) FROM a, b LEFT JOIN t ON b.k < t.k WHERE t.k IS NULL GROUP BY a.g",
+    "SELECT a.g, a.x FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t WHERE f = 1) AS d ON a.k = d.k WHERE NOT d.i IS TRUE",
+    "SELECT a.g, a.x FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t) AS d ON a.k = d.k WHERE NOT (d.i IS TRUE AND a.k IS NOT NULL)",
+    "SELECT a.g, a.x FROM a LEFT JOIN (SELECT n, 1 AS i FROM t GROUP BY n) AS d ON a.k <= d.n WHERE d.i IS NULL AND a.x > 0",
+    "SELECT a.g, a.x FROM a LEFT JOIN (SELECT k, FALSE AS i FROM t) AS d ON a.k = d.k WHERE d.i IS NOT FALSE AND a.g > 0",
+    "SELECT a.g, a.x FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t WHERE f = 1 GROUP BY k) AS d ON a.k = d.k WHERE a.x = 1 OR d.i IS NULL AND a.g > 1",
+    "SELECT a.g, a.x FROM a LEFT JOIN (SELECT k, TRUE AS i FROM t GROUP BY k) AS d ON a.k = d.k WHERE NOT (d.i IS TRUE AND a.x IS NOT NULL)",
+    "SELECT a.g, a.x FROM a LEFT JOIN (SELECT DISTINCT k, n FROM t) AS d ON a.k = d.k AND d.n = a.x + 1 WHERE d.k IS NOT NULL OR a.g = 2",
+    "SELECT a.g, b.y FROM a LEFT JOIN (SELECT k, 1 AS i FROM t GROUP BY k) AS d ON a.k = d.k JOIN b ON b.k = a.k WHERE d.i IS NULL OR b.y = 1",
 ]
 
 
