@@ -31,6 +31,7 @@ from .ast_utils import (
 from .distinct_safety import distinct_is_redundant
 from .input_validity import invalid_input_reason
 from .layout_equivalence import _builtin_functions
+from . import volatile_calls
 from .parse_check import refuse_misread_proofs
 from .lift_subqueries import lift_subqueries
 from .named_windows import inline_named_windows
@@ -626,7 +627,11 @@ def _drop_redundant_distinct(query: exp.Expression) -> None:
 def _is_unchanged_safe_value(node: exp.Expression) -> bool:
     if type(node).__name__ in _STABLE_IF_UNCHANGED_TYPES:
         return True
-    return isinstance(node, exp.Anonymous) and (node.name or "").upper() in _STABLE_IF_UNCHANGED_NAMES
+    if isinstance(node, exp.Anonymous) and (node.name or "").upper() in _STABLE_IF_UNCHANGED_NAMES:
+        return True
+    # Every other volatile call the shared list knows (a model call, a sequence, 'now' read as a time): the same
+    # rule, accepted only where a rewrite leaves it identical and in place. A sample depends on the rows it reads.
+    return volatile_calls.kind(node, "bigquery") is not None and not isinstance(node, exp.TableSample)
 
 
 def _value_nondeterminism_sites(query: exp.Expression) -> tuple[str, ...]:
@@ -761,6 +766,9 @@ def _nondeterminism_reasons(
             name = (node.name or "").upper()
             if name in _VALUE_NONDETERMINISTIC_NAMES or name.startswith("APPROX_"):
                 reasons.append(f"value nondeterminism: {node.sql(dialect='bigquery')}")
+                continue
+        if volatile_calls.kind(node, "bigquery") is not None:
+            reasons.append(f"value nondeterminism: {volatile_calls.describe(node)}")
     return list(dict.fromkeys(reasons))
 
 
