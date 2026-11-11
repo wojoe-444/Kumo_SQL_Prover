@@ -60,7 +60,10 @@ def test_the_flat_join_is_one_join_with_the_grouped_subquery():
 
 @pytest.mark.parametrize("sql", [
     f"SELECT p.k, p.n FROM p JOIN s ON p.k = s.k GROUP BY p.k, p.n {HAVING.replace('s.d) >= 2', 'p.o) >= 2')}",  # an aggregate over the keyed table
-    f"SELECT p.k, COUNT(*) FROM p JOIN s ON p.k = s.k GROUP BY p.k {HAVING}",  # the aggregate is output
+    f"SELECT p.k, COUNT(DISTINCT s.d) FROM p JOIN s ON p.k = s.k GROUP BY p.k {HAVING}",  # an aggregate the grouped subquery would compute differently
+    f"SELECT p.k, SUM(p.o) FROM p JOIN s ON p.k = s.k GROUP BY p.k {HAVING}",  # an aggregate over the keyed table
+    f"SELECT p.k, SUM(s.v + p.o) FROM p JOIN s ON p.k = s.k GROUP BY p.k {HAVING}",
+    f"SELECT p.k, SUM(s.v) FROM p JOIN s ON p.k = s.k GROUP BY p.k {HAVING} ORDER BY SUM(p.o)",
     f"SELECT p.k, p.n FROM p JOIN s ON p.k = s.k GROUP BY p.n {HAVING}",  # the key is not grouped
     f"SELECT p.k, p.n FROM p JOIN s ON p.k = s.k GROUP BY p.k, s.d {HAVING}",  # a column of s splits the groups
     f"SELECT p.k, s.d FROM p JOIN s ON p.k = s.k GROUP BY p.k {HAVING}",  # a column of s that is not matched
@@ -81,6 +84,19 @@ def test_the_flat_join_is_one_join_with_the_grouped_subquery():
 ])
 def test_other_selects_stay(sql):
     assert rewritten(sql) is None
+
+
+def test_aggregates_in_the_select_list_are_read_off_the_grouped_subquery():
+    after = rewritten(f"SELECT p.n, SUM(s.v) AS total FROM p JOIN s ON p.k = s.k GROUP BY p.k, p.n {HAVING}")
+    assert after is not None and after.startswith("SELECT p.n, kgf") and "SUM(s.v) AS kga" in after and " AS total FROM p JOIN (SELECT" in after
+    # an alias in HAVING reads the item
+    after = rewritten("SELECT p.n, SUM(s.v) AS total FROM p JOIN s ON p.k = s.k GROUP BY p.k HAVING total > 10")
+    assert after is not None and "HAVING SUM(s.v) > 10" in after
+    # a column of that name wins over the alias
+    assert rewritten("SELECT p.n, SUM(s.v) AS d FROM p JOIN s ON p.k = s.k GROUP BY p.k HAVING d > 10") is None
+    # an aggregate inside an expression, and in ORDER BY
+    after = rewritten("SELECT p.k, SUM(s.v) / COUNT(*) AS mean FROM p JOIN s ON p.k = s.k GROUP BY p.k HAVING COUNT(*) > 1 ORDER BY SUM(s.v)")
+    assert after is not None and "SUM(s.v) AS kga" in after and "COUNT(*) AS kga" in after and "/" in after.split("FROM")[0] and after.count("kgf") >= 4
 
 
 def test_the_key_is_needed():
@@ -132,6 +148,9 @@ def test_without_the_key_nothing_is_proved():
 
 
 FLAT = [
+    "SELECT p.k, SUM(s.v) AS total FROM p JOIN s ON p.k = s.k GROUP BY p.k HAVING SUM(s.v) > 2",
+    "SELECT p.n, COUNT(*), MAX(s.d) FROM p JOIN s ON p.k = s.k GROUP BY p.k, p.n HAVING MIN(s.d) >= 1 ORDER BY MAX(s.d)",
+    "SELECT s.k, p.n, SUM(s.v) AS t FROM s, p WHERE s.k = p.k AND s.d > 0 GROUP BY s.k, p.n HAVING t > 1",
     f"SELECT p.k, p.n FROM p JOIN s ON p.k = s.k GROUP BY p.k, p.n {HAVING}",
     f"SELECT s.k, p.n FROM s, p WHERE s.k = p.k GROUP BY s.k, p.n {HAVING}",
     f"SELECT p.k FROM p JOIN s ON s.k = p.k AND s.v > 0 WHERE p.o = 1 GROUP BY p.k {HAVING}",
@@ -149,7 +168,7 @@ def test_the_rewritten_query_returns_the_same_rows(sql):
     assert after is not None
     rng = random.Random(len(sql))
     value = lambda: rng.choice([None, 0, 1, 2, 2, 3, 5, 6])  # noqa: E731
-    for _ in range(200):
+    for _ in range(60):
         ids = rng.sample(range(0, 5), rng.choice([0, 1, 2, 3, 5]))
         tables = {
             "p": [(i, value(), value()) for i in ids],

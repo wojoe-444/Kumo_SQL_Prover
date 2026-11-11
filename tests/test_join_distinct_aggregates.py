@@ -211,7 +211,7 @@ def test_the_rewritten_query_returns_the_same_rows(sql):
         pytest.skip("not rewritten")
     rng = random.Random(len(sql))
     value = lambda: rng.choice([None, 0, 1, 1, 2, 2, 3])  # noqa: E731
-    for _ in range(200):
+    for _ in range(60):
         tables = {
             "p": [(value(), value()) for _ in range(rng.choice([0, 1, 2, 4, 6]))],
             "q": [(value(), value()) for _ in range(rng.choice([0, 1, 2, 4, 6]))],

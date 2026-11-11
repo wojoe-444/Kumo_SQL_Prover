@@ -28,9 +28,9 @@ tables ``s`` and ``p`` with no row limit, where a declared key of ``p`` is cover
 (the key columns of ``p``, each against one column of ``s``; a UNIQUE key needs no NOT NULL because the equality
 rejects NULL), a ``GROUP BY`` of plain columns that is, for each key column, ``p.k`` or the ``s`` column equal to
 it (and may list other columns of ``p``), a ``HAVING`` of conditions over aggregates of columns of ``s``, a select
-list of columns of ``p`` or the matched ``s`` columns, and a ``WHERE`` whose parts read only ``s`` (they move into
-the grouped subquery) or only ``p`` (they stay). The select list holds no aggregate (queries that output the
-aggregate are left to ``eager_aggregation``).
+list of columns of ``p``, the matched ``s`` columns and plain aggregates (``COUNT``, ``SUM``, ``MIN``, ``MAX``) of
+columns of ``s``, which the grouped subquery computes and the outer select reads, and a ``WHERE`` whose parts read
+only ``s`` (they move into the grouped subquery) or only ``p`` (they stay).
 """
 
 from __future__ import annotations
@@ -82,14 +82,15 @@ def rewrite_keyed_group_filter(select: exp.Select, schema: dict[str, list[str]] 
     where_parts = conjuncts(where.this) if where is not None else []
     pending = conditions + where_parts
     # which table is the keyed one is decided by the equalities: try each as p
+    having = _expanded_having(select, owners)
     for p_alias, s_alias in ((_alias_of(sources[0]), _alias_of(sources[1])), (_alias_of(sources[1]), _alias_of(sources[0]))):
-        result = _try(select, owners, tables, keys, pending, p_alias, s_alias)
+        result = _try(select, owners, tables, keys, pending, p_alias, s_alias, having)
         if result is not None:
             return result
     return None
 
 
-def _try(select, owners, tables, keys, pending, p_alias, s_alias):
+def _try(select, owners, tables, keys, pending, p_alias, s_alias, having):
     p_table, s_table = tables[p_alias], tables[s_alias]
     p_key = _table_key(p_table)
     equalities: dict[str, str] = {}  # p column -> s column
@@ -131,13 +132,16 @@ def _try(select, owners, tables, keys, pending, p_alias, s_alias):
     # the select list: columns of p, or the matched columns of s; the having: aggregates of s and constants
     for item in select.expressions:
         for node in item.walk():
-            if isinstance(node, (exp.Query, exp.Subquery, exp.Window, exp.Star, exp.Exists, exp.AggFunc)):
+            if isinstance(node, (exp.Query, exp.Subquery, exp.Window, exp.Exists)) or (isinstance(node, exp.Star) and not isinstance(node.parent, exp.Count)):
+                return None
+            if isinstance(node, exp.AggFunc) and not _plain_aggregate(node, owners, s_alias):
                 return None
         for column in item.find_all(exp.Column):
+            if any(isinstance(a, exp.AggFunc) for a in _ancestors(column, item)) or isinstance(column.parent, exp.AggFunc):
+                continue  # read through the aggregate, which the grouped subquery computes
             resolved = _resolve(column, owners)
             if resolved is None or (resolved[0] == s_alias and resolved[1] not in matched_s):
                 return None
-    having = select.args["having"]
     for node in having.walk():
         if isinstance(node, (exp.Query, exp.Subquery, exp.Window, exp.Exists)) or (isinstance(node, exp.Star) and not isinstance(node.parent, exp.Count)):
             return None
@@ -154,7 +158,12 @@ def _try(select, owners, tables, keys, pending, p_alias, s_alias):
         if any(a is not aggregate and isinstance(a, exp.AggFunc) for a in aggregate.walk()):
             return None
     if select.args.get("order") is not None:
+        for node in select.args["order"].walk():
+            if isinstance(node, exp.AggFunc) and not _plain_aggregate(node, owners, s_alias):
+                return None
         for column in select.args["order"].find_all(exp.Column):
+            if any(isinstance(a, exp.AggFunc) for a in _ancestors(column, select)):
+                continue
             resolved = _resolve(column, owners)
             if resolved is None or (resolved[0] == s_alias and resolved[1] not in matched_s):
                 return None
@@ -168,12 +177,22 @@ def _try(select, owners, tables, keys, pending, p_alias, s_alias):
     if s_filters:
         inner.set("where", exp.Where(this=exp.and_(*[f.copy() for f in s_filters])))
     outer = select.copy()
+    outputs: list[exp.Expression] = []
+    for aggregate in list(outer.find_all(exp.AggFunc)):
+        if aggregate.find_ancestor(exp.AggFunc) is not None:
+            continue
+        label = f"kga{number}_{len(outputs)}"
+        outputs.append(exp.alias_(aggregate.copy(), label, quoted=False))
+        aggregate.replace(exp.column(label, table=g_alias))
+    inner.set("expressions", list(inner.expressions) + outputs)
     outer.set("having", None)
     outer.set("group", None)
     outer.set("where", None)
     outer.set("joins", None)
     # read the matched columns of s off p, keeping the output's name
     for column in list(outer.find_all(exp.Column)):
+        if column.table.lower() == g_alias.lower():
+            continue
         resolved = _resolve(column, owners)
         if resolved is not None and resolved[0] == s_alias:
             replacement = exp.column(matched_s[resolved[1]], table=p_table.alias_or_name)
@@ -187,6 +206,30 @@ def _try(select, owners, tables, keys, pending, p_alias, s_alias):
     outer.set("having", None)
     outer.set("where", exp.Where(this=exp.and_(*[f.copy() for f in p_filters])) if p_filters else None)
     return outer
+
+
+def _expanded_having(select: exp.Select, owners: dict[str, list[str]]) -> exp.Having:
+    """The ``HAVING`` with a select item's alias read as the item (``HAVING balance > 1`` for ``SUM(x) AS balance``).
+
+    A column of either table that has the alias's name is the column, so such a name is left alone."""
+
+    having = select.args["having"].copy()
+    items = {item.alias.lower(): item.this for item in select.expressions if isinstance(item, exp.Alias) and item.alias}
+    taken = {c for columns in owners.values() for c in columns}
+    for column in list(having.find_all(exp.Column)):
+        name = column.name.lower()
+        if not column.table and name in items and name not in taken and any(isinstance(n, exp.AggFunc) for n in items[name].walk()):
+            column.replace(items[name].copy())
+    return having
+
+
+def _plain_aggregate(node: exp.Expression, owners: dict[str, list[str]], s_alias: str) -> bool:
+    """``COUNT``, ``SUM``, ``MIN`` or ``MAX`` (not DISTINCT) of an expression over columns of ``s`` alone."""
+
+    if not isinstance(node, _AGGREGATES) or isinstance(node.this, exp.Distinct) or any(a is not node and isinstance(a, exp.AggFunc) for a in node.walk()):
+        return False
+    resolved = [_resolve(column, owners) for column in node.find_all(exp.Column)]
+    return None not in resolved and all(r[0] == s_alias for r in resolved)
 
 
 def _ancestors(node: exp.Expression, stop: exp.Expression):
