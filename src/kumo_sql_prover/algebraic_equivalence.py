@@ -4883,7 +4883,6 @@ def normalize(
     tree = inline_named_windows(tree)
     from .nonnull_any import rewrite_nonnull_any
 
-    from .counted_cases import count_summed_cases
     from .counted_subqueries import count_subquery_as_join
     from .mysql_exists_casts import drop_mysql_exists_cast
     from .preserved_counts import count_preserved_not_null
@@ -4970,7 +4969,6 @@ def normalize(
         merge_preserved_join_source,
         prune_windowed_outputs,
         count_subquery_as_join,
-        count_summed_cases,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
@@ -5253,12 +5251,20 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
     if normalization_assumptions:
         result = dataclasses.replace(result, assumptions=tuple(dict.fromkeys((*result.assumptions, *sorted(normalization_assumptions)))))
     if result.status is SmtStatus.NOT_PROVEN and not replaced and not keyed_distinct and shapes:
-        from . import derived_table_proofs, window_inputs
+        from . import derived_table_proofs, grouped_aggregate_spellings, window_inputs
 
+        # Grouped aggregates that have two spellings: the second is tried here, after a failure, so that no pair
+        # proved with the first is read differently (see ``grouped_aggregate_spellings``).
+        texts = (left, right)
+        respelled = grouped_aggregate_spellings.respell(*texts, dialect=dialect)
+        if respelled is not None:
+            texts = respelled
+            retry = prove_equivalent_smt(*texts, types=types, **kwargs)
+            if retry.proven:
+                return dataclasses.replace(retry, assumptions=tuple(dict.fromkeys((*retry.assumptions, *sorted(normalization_assumptions)))))
         # Relations matched by their text (a windowed select, a derived table kept whole): two spellings the prover
         # itself shows equal are written as one text, and the solver is run again.
         with window_inputs.sub_proofs() as allowed:
-            texts = (left, right)
             for unify in (window_inputs.unify, derived_table_proofs.unify) if allowed else ():
                 try:
                     unified = unify(*texts, dialect=dialect, prove=lambda a, b: window_inputs.within_budget() and same(a, b))

@@ -21,7 +21,8 @@ The grouping is what makes it hold. Over no rows the sum is NULL and the count i
   (``SUM(CASE WHEN c THEN 1 END)`` is NULL for a group where ``c`` is never true).
 
 Every such sum of the select is rewritten: in its select list, ``HAVING`` and ``ORDER BY``. Sums of a subquery or of
-a derived table belong to that select and are rewritten when the rule visits it.
+a derived table belong to that select. The rule is not a normalization: ``grouped_aggregate_spellings`` applies it to
+a pair the prover did not prove as written, so that a pair proved with the sum on both sides is read as before.
 """
 
 from __future__ import annotations
