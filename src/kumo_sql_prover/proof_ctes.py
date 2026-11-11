@@ -38,6 +38,7 @@ import re
 
 from sqlglot import exp
 
+from . import volatile_calls
 from .proof_steps import RewriteStep, StepCheck, _key
 
 CTE_FAMILY = "cte_binders"
@@ -110,7 +111,9 @@ def _volatile_name(node: exp.Expression) -> str | None:
     elif isinstance(node, exp.Func):
         names.add(node.sql_name().upper().replace("_", ""))
     found = names & _VOLATILE
-    return sorted(found)[0] if found else None
+    if found:
+        return sorted(found)[0]
+    return volatile_calls.describe(node) if volatile_calls.kind(node, "bigquery") is not None else None
 
 
 def _tag_volatile(statement: exp.Expression) -> None:

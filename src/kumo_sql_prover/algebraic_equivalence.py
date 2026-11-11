@@ -129,7 +129,7 @@ from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
 from .wrapped_join_filters import push_filter_into_wrapped_join
-from .smt_equivalence import SmtEquivalenceResult, SmtStatus, prove_equivalent_smt
+from .smt_equivalence import SmtEquivalenceResult, SmtStatus, prove_equivalent_smt, without_volatile_proof
 
 MAX_BRANCHES = 16
 _SPLIT_ALIAS = "kumosql_u"
@@ -5064,9 +5064,18 @@ def prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtEq
     See ``_prove_equivalent_algebraic_checked`` for the rest.
     """
 
-    return numeric_column_reading.checked(
+    from . import statement_values
+
+    # NOW(), CURRENT_DATE and the like are read as one unknown value per statement: a proof is conditional on it.
+    return statement_values.proved(_prove_equivalent_algebraic_as_written, left_sql, right_sql, kwargs)
+
+
+def _prove_equivalent_algebraic_as_written(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
+    result = numeric_column_reading.checked(
         _prove_equivalent_algebraic_checked, left_sql, right_sql, kwargs, lambda reason: SmtEquivalenceResult(SmtStatus.NOT_PROVEN, reason)
     )
+    # The rules below may merge or drop a call; a pair that holds a volatile one as written is never proven.
+    return without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
 
 
 def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:

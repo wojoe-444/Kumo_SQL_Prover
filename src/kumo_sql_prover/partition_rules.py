@@ -29,6 +29,7 @@ except ImportError:  # z3-solver is an optional extra; the rules below are reach
     z3 = None
 from sqlglot import exp
 
+from . import volatile_calls
 from .solver_lock import bounded_solver, serialized
 
 _SOLVER_TIMEOUT_MS = 2000
@@ -71,6 +72,8 @@ def _volatile(node: exp.Expression) -> bool:
         if type(child).__name__ in _VOLATILE_TYPES:
             return True
         if isinstance(child, exp.Anonymous) and (child.name or "").upper() in ("RAND", "GENERATE_UUID", "ANY_VALUE"):
+            return True
+        if volatile_calls.kind(child) == volatile_calls.PER_CALL:
             return True
     return False
 
