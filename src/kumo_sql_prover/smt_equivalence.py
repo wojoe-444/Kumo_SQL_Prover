@@ -84,7 +84,7 @@ from .solver_lock import Z3_MISSING, bound, bounded_solver, serialized, sweep
 from .string_literals import canonical_literals
 from .type_names import invalid_type_name
 from .sqlx_fragments import masked_template_problem
-from . import numeric_column_reading, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals
+from . import derived_types, numeric_column_reading, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals
 from .float_sum_order import Ledger
 
 try:  # pragma: no cover - exercised by the import itself
@@ -983,6 +983,8 @@ class _Compiler:
         # Declared column types by table key, and the table of each base-table occurrence.
         self.types = {key.lower(): {c.lower(): t for c, t in cols.items()} for key, cols in (types or {}).items()}
         self.occ_tables: dict[str, str] = {}
+        self.opaque_keys: dict[str, str] = {}  # occurrence of a derived relation kept whole -> the text that names it
+        self.opaque_classes: dict[str, dict[str, str]] = {}  # the same occurrence -> column -> its numeric type, where fixed
         # A comparison, or a CASE/COALESCE/IF/NULLIF or set-operation column, met values whose numeric types are
         # not known to agree: the proof assumes they do (MIXED_NUMERIC_ASSUMPTION).
         self.mixed_numeric = False
@@ -1704,6 +1706,10 @@ class _Compiler:
         lost = _lost_null_ordering(canonical, text)
         key = "(" + text + ")" + lost
         occ = _Occ(key, self.fresh("d"), names, opaque=True)
+        self.opaque_keys[occ.uid] = key
+        if self.dialect == "bigquery" and isinstance(inner, exp.Select) and len(inner.expressions) == len(names):
+            classes = derived_types.output_classes(inner, self.schema, self.types)  # BigQuery's result types only
+            self.opaque_classes[occ.uid] = {f"c{position[i]}": cls for i, cls in enumerate(classes) if cls is not None}
         self.untyped_sources = True
         occs.append(occ)
         if not read and (dropped or any(body.find_all(exp.Sum))):
@@ -2242,21 +2248,27 @@ class _Compiler:
         return result
 
     def _declared_float(self, v: _Val) -> bool | None:
-        """Whether a base-table column value is declared FLOAT64 (None when it is not a declared column)."""
+        """Whether a base-table column value is declared FLOAT64 (None when it is not a declared column). A column
+        of a derived relation kept whole answers where its type is fixed (``derived_types``)."""
 
         if not (z3.is_const(v.val) and v.val.decl().kind() == z3.Z3_OP_UNINTERPRETED):
             return None
         uid, _, name = str(v.val).partition(".")
+        if name in self.opaque_classes.get(uid, ()):
+            return self.opaque_classes[uid][name] == smt_values.FLOAT64
         declared = self.types.get(self.occ_tables.get(uid, ""), {}).get(name)
         return _type_is_float(declared) if declared else None
 
     def _type_key(self, v: _Val):
-        """Values with equal keys have the same type: one table column, or one term."""
+        """Values with equal keys have the same type: one table column, one column of one derived relation kept
+        whole (two occurrences of the same text over the same tables compute the same types), or one term."""
 
         if z3.is_const(v.val) and v.val.decl().kind() == z3.Z3_OP_UNINTERPRETED:
             uid, _, name = str(v.val).partition(".")
             if uid in self.occ_tables:
                 return (self.occ_tables[uid], name)
+            if uid in self.opaque_keys:
+                return (self.opaque_keys[uid], name)
         return v.val.get_id()
 
     def _coerce(self, entries: list) -> list[_Val]:
@@ -2334,11 +2346,14 @@ class _Compiler:
     # ---- types and runtime errors (BigQuery) -----------------------------------------------
 
     def _declared_class(self, v: _Val) -> str | None:
-        """INT64, NUMERIC, BIGNUMERIC, FLOAT64 or OTHER for a base-table column value with a declared type."""
+        """INT64, NUMERIC, BIGNUMERIC, FLOAT64 or OTHER for a base-table column value with a declared type, and the
+        numeric type of a column of a derived relation kept whole where the declared types fix it (``derived_types``)."""
 
         if not (z3.is_const(v.val) and v.val.decl().kind() == z3.Z3_OP_UNINTERPRETED):
             return None
         uid, _, name = str(v.val).partition(".")
+        if name in self.opaque_classes.get(uid, ()):
+            return self.opaque_classes[uid][name]
         declared = self.types.get(self.occ_tables.get(uid, ""), {}).get(name)
         return smt_values.type_class(declared) if declared else None
 
