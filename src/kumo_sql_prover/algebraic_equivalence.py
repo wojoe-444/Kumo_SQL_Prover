@@ -4903,6 +4903,9 @@ def normalize(
         from .one_row_aggregates import read_one_row_aggregates
 
         tree = read_one_row_aggregates(tree, schema)  # pre-pass: a select that aggregates without GROUP BY is one row, as an IN list or a joined table
+        from .fk_membership import read_fk_membership
+
+        tree = read_fk_membership(tree, schema, foreign_keys)  # pre-pass: a foreign-key column is in its parent's key exactly when it is not NULL
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
     tree = trim_redundant_row_clauses(tree)
