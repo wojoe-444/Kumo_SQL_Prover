@@ -14,8 +14,9 @@ has every ``UNION`` in it written as ``UNION ALL`` when
 * every branch is a plain select over base tables (inner or cross joins, an optional ``WHERE``) whose outputs
   include, as plain columns, every column of a declared key of each of its tables, each of those columns declared
   NOT NULL; and
-* every two branches have an output position where both write a literal and the two literals differ: two
-  strings that still differ when case and trailing spaces are ignored, or two whole numbers.
+* every two branches differ at an output position where every branch of the tree writes a string literal, or
+  every branch writes a whole number: two strings that still differ when case and trailing spaces are ignored,
+  or two different numbers.
 
 **Why it is sound.** ``UNION`` keeps one copy of each row, where two rows are the same when they agree at every
 position (two NULLs agree). Two different rows of a base table differ in a column of its key, and a key column
@@ -25,12 +26,18 @@ passes its filters, each combination told apart by the keys of the tables. Rows 
 at the position of their two literals. So no two rows of the whole tree agree, every ``UNION`` inside it has
 nothing to remove whatever the nesting, and the tree returns the rows of its branches once each, as ``UNION ALL``
 does. The strings are compared more strictly than the engines compare them (case and trailing spaces ignored,
-plain ASCII only), so two literals an engine's collation treats as the same never count as different.
+plain ASCII only), so two literals an engine's collation treats as the same never count as different. A
+position counts only when all branches write literals of one kind there, because a column or a literal of
+another kind in some branch can change the type the engine gives the position, and with it what ``'1'`` and
+``'01'``, or two spellings of a date, are converted to before the rows are compared. For the key columns the
+rule relies on what the prover assumes of every comparison, that two different values stay different when an
+engine brings them to the common type of their position.
 
 **What is refused.** A branch with ``DISTINCT``, grouping, aggregates, windows, ``LIMIT``, an outer join, a
 derived table or a nested query, a star, or a table without a declared key of NOT NULL columns among the plain
-output columns; two branches with no position of two different literals (the same literal, a literal against a
-column, a string against a number, a string outside plain ASCII); ``EXCEPT`` and ``INTERSECT``; a ``UNION`` with
+output columns; two branches that differ at no position where every branch writes a literal of the same kind
+(the same literal, a column or a string against a number in some branch, a string outside plain ASCII);
+``EXCEPT`` and ``INTERSECT``; a ``UNION`` with
 its own ``ORDER BY`` or ``LIMIT``; a tree that is already all ``UNION ALL``.
 """
 
@@ -84,8 +91,15 @@ def _rows_never_repeat(query: exp.Expression, known, declared_keys, declared) ->
         if len(branch.expressions) != width or not _keyed(branch, known, declared_keys, declared):
             return False
         literals.append([_literal(item.unalias()) for item in branch.expressions])
+    # a position tells branches apart only when every branch writes a literal of one kind there: the column then
+    # has that kind in every dialect, and no literal is converted to another type before the rows are compared
+    usable = [
+        position
+        for position in range(width)
+        if all(row[position] is not None for row in literals) and len({row[position][0] for row in literals}) == 1
+    ]
     return all(
-        any(a is not None and b is not None and a[0] == b[0] and a[1] != b[1] for a, b in zip(literals[i], literals[j]))
+        any(literals[i][position][1] != literals[j][position][1] for position in usable)
         for i in range(len(branches))
         for j in range(i)
     )

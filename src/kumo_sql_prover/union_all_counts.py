@@ -479,7 +479,10 @@ class _Site:
                 test = ifs[0].this.unnest()
                 if isinstance(test, exp.Is) and isinstance(test.expression, exp.Null) and never_null(test.this, branch):
                     case.replace(case.args["default"].copy())
-            return value.this
+            value = value.this
+            while isinstance(value, exp.Paren) and isinstance(value.this, (exp.Literal, exp.Column)):
+                value = value.this
+            return value
 
         def outside(node: exp.Expression, allowed: set[str] = frozenset()) -> exp.Expression | None:
             """A copy whose columns outside the aggregates are read from the rewritten select's sources."""

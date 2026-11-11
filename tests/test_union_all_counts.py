@@ -77,6 +77,15 @@ def test_counts_of_a_column_and_sums_of_literals():
         " SUM(CASE WHEN p.id = g.w1 THEN 1 ELSE 0 END + CASE WHEN p.id = g.w2 AND g.day > 3 THEN 2 ELSE 0 END) FROM people AS p CROSS JOIN games AS g GROUP BY p.id"
         " HAVING SUM(CASE WHEN p.id = g.w1 THEN 1 ELSE 0 END + CASE WHEN p.id = g.w2 AND g.day > 3 THEN 1 ELSE 0 END) > 0"
     )
+    # a NULL test inside a summed value: settled where the branch's condition compares the column, kept where it does not
+    assert rewritten(
+        "SELECT p.id, SUM(u.k) FROM people AS p JOIN (SELECT g.w1 AS who, CASE WHEN g.w1 IS NULL THEN 0 ELSE 1 END AS k FROM games AS g"
+        " UNION ALL SELECT g.w2, CASE WHEN g.w3 IS NULL THEN 0 ELSE 1 END FROM games AS g) AS u ON p.id = u.who GROUP BY p.id"
+    ) == (
+        "SELECT p.id, SUM(CASE WHEN p.id = g.w1 THEN 1 ELSE 0 END + CASE WHEN p.id = g.w2 THEN (CASE WHEN g.w3 IS NULL THEN 0 ELSE 1 END) ELSE 0 END)"
+        " FROM people AS p CROSS JOIN games AS g GROUP BY p.id"
+        " HAVING SUM(CASE WHEN p.id = g.w1 THEN 1 ELSE 0 END + CASE WHEN p.id = g.w2 THEN 1 ELSE 0 END) > 0"
+    )
 
 
 def test_a_union_of_joins_is_read_through_its_own_conditions():
@@ -251,6 +260,8 @@ QUERIES = [
     "SELECT who, name, COUNT(*) AS n FROM (SELECT g.w1 AS who, p.name FROM games AS g, people AS p WHERE g.w1 = p.id"
     " UNION ALL SELECT g.w2, p.name FROM games AS g, people AS p WHERE g.w2 = p.id) AS u GROUP BY who, name",
     f"SELECT p.id, COUNT(*) AS n FROM people AS p JOIN {U2} ON p.id = u.who WHERE p.name <> 'x' GROUP BY p.id HAVING COUNT(*) > 1",
+    "SELECT p.id, SUM(u.k) FROM people AS p JOIN (SELECT g.w1 AS who, CASE WHEN g.w1 IS NULL THEN 0 ELSE 1 END AS k FROM games AS g"
+    " UNION ALL SELECT g.w2, CASE WHEN g.w3 IS NULL THEN 0 ELSE 1 END FROM games AS g) AS u ON p.id = u.who GROUP BY p.id",
     f"SELECT p.id, COUNT(*) AS n FROM people AS p JOIN {U2} ON p.id < u.who GROUP BY p.id HAVING COUNT(*) >= 1",
     f"SELECT n.name, COUNT(*), COUNT(u.who) FROM notes AS n JOIN {U3} ON n.id = u.who OR u.who IS NULL GROUP BY n.name",
     "SELECT p.id, COUNT(*) FROM people AS p JOIN (SELECT w1 AS id FROM games UNION ALL SELECT w2 FROM games WHERE w3 IS NULL UNION ALL SELECT w3 FROM games) AS u"

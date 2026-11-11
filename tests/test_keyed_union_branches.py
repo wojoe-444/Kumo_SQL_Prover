@@ -79,6 +79,9 @@ def test_a_union_of_tagged_keyed_branches_is_written_as_union_all():
     "SELECT * FROM (SELECT day, 'a' AS slot, w1 AS who FROM games UNION SELECT day, 1, w2 FROM games) AS u",  # a string against a number
     "SELECT * FROM (SELECT day, 'a' AS slot, w1 AS who FROM games UNION SELECT day, 'b', w2 FROM games UNION SELECT day, name, id FROM people) AS u",  # a column
     "SELECT * FROM (SELECT day, 1.0 AS slot, w1 AS who FROM games UNION SELECT day, 1.00, w2 FROM games) AS u",  # not whole numbers
+    # the strings differ, but the third branch makes the position a number where an engine converts them
+    "SELECT * FROM (SELECT day, '1' AS s, 1 AS t FROM games UNION SELECT day, '01', 1 FROM games UNION SELECT day, w1, 2 FROM games) AS u",
+    "SELECT * FROM (SELECT day, 'a' AS s, 1 AS t FROM games UNION SELECT day, 'b', 1 FROM games UNION SELECT day, 7, 2 FROM games) AS u",
     "SELECT * FROM (SELECT day + 0 AS day, 'a' AS slot, w1 AS who FROM games UNION SELECT day, 'b', w2 FROM games) AS u",  # the key is not returned itself
     "SELECT * FROM (SELECT id, 'a' AS slot FROM notes UNION SELECT id, 'b' FROM notes) AS u",  # notes has no key
     "SELECT * FROM (SELECT g.day, 'a' AS slot FROM games AS g, people AS p UNION SELECT day, 'b' FROM games) AS u",  # each game once per person
