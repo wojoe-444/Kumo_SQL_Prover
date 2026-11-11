@@ -117,6 +117,7 @@ from .counted_groups import count_extra_key
 from .membership_joins import join_nested_membership
 from .computed_group_outputs import lift_computed_outputs
 from .keyed_join_groups import pull_up_keyed_join
+from .exclusive_union_filters import merge_exclusive_unions
 from .own_group_filters import filter_own_groups
 from .having_count_rules import rewrite_count_tests
 from .semijoin_shapes import rewrite_semijoin_shapes
@@ -4903,6 +4904,7 @@ def normalize(
     tree = _in_over_union(tree)
     if shapes:
         tree = separate_disjoint_unions(tree)
+        tree = merge_exclusive_unions(tree)  # a UNION ALL of one query under exclusive filters is one select
     tree = expand_grouping_sets(tree)
     for select in list(tree.find_all(exp.Select))[::-1]:
         replacement = collapse_grouping_expansion(select) or collapse_counted_intersection(select)
