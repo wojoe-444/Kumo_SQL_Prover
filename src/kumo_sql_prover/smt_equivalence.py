@@ -4844,6 +4844,7 @@ def _group_shape(key: str):
 
 
 _OPAQUE_PROOFS = 6
+_MAX_NESTING = 2
 _nesting = [0]
 
 
@@ -4871,7 +4872,7 @@ def _unify_opaque(compiler: "_Compiler", unions, **settings) -> None:
     """
 
     bodies = compiler.opaque_bodies
-    if len(bodies) < 2 or _nesting[0] >= 2:
+    if len(bodies) < 2 or _nesting[0] >= _MAX_NESTING:
         return
 
     def tables(sql: str) -> frozenset:
