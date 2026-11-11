@@ -4892,6 +4892,9 @@ def normalize(
         from .subquery_absorption import absorb_subquery_tests
 
         tree = absorb_subquery_tests(tree)  # pre-pass: x IN (..) OR x IN (the same with one more filter) is the first
+        from .typed_comparisons import typed_comparison_rules
+
+        tree = typed_comparison_rules(tree, types, dialect)  # pre-pass: date + INTERVAL as DATE_ADD in a comparison; x + 1 = y + 1 as x = y
     if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
     tree = rewrite_quantified(tree, schema, not_null, keys)
