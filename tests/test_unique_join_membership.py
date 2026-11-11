@@ -58,10 +58,8 @@ def test_a_join_on_every_key_becomes_a_membership_test():
     assert rewritten("SELECT x.a, e FROM t AS x, u, (SELECT d, c FROM t GROUP BY c, d) AS g WHERE x.c = g.c AND u.e = g.d") == (
         "SELECT x.a, e FROM t AS x, u WHERE (u.e, x.c) IN (SELECT d, c FROM t GROUP BY c, d)"
     )
-    # an aggregate output tied as well: still at most one row of the derived table per row of t
-    assert rewritten("SELECT t.a, t.b FROM t JOIN (SELECT c AS k, MAX(d) AS m FROM t GROUP BY c) AS g ON t.c = g.k AND t.d = g.m") == (
-        "SELECT t.a, t.b FROM t WHERE (t.c, t.d) IN (SELECT c AS k, MAX(d) AS m FROM t GROUP BY c)"
-    )
+    # tied on an aggregate as well: the join back to the group's own MAX is left to the rules that read it
+    assert rewritten("SELECT t.a, t.b FROM t JOIN (SELECT c AS k, MAX(d) AS m FROM t GROUP BY c) AS g ON t.c = g.k AND t.d = g.m") is None
 
 
 def test_one_join_at_a_time_and_the_other_conditions_stay():
@@ -186,7 +184,7 @@ def test_the_refused_joins_do_differ():
 CASES = [
     f"SELECT t.a, t.b FROM t JOIN {G} ON t.c = g.c",
     "SELECT x.a, x.b, u.e FROM t AS x, u, (SELECT d, c FROM t GROUP BY c, d) AS g WHERE x.c = g.c AND u.e = g.d",
-    "SELECT t.a, t.b FROM t JOIN (SELECT c AS k, MAX(d) AS m FROM t GROUP BY c) AS g ON t.c = g.k AND t.d = g.m",
+    "SELECT t.a, t.b FROM t JOIN (SELECT c AS k, MAX(d) AS m FROM t GROUP BY c) AS g ON t.c = g.k WHERE g.m > 1 OR g.m IS NULL",
     "SELECT SUM(x.b), COUNT(*) FROM t AS x JOIN (SELECT c, d FROM t GROUP BY c, d HAVING COUNT(*) = 1) AS g ON x.c = g.c AND g.d = x.d "
     "JOIN (SELECT c FROM t GROUP BY c HAVING COUNT(*) > 1) AS h ON h.c = x.c WHERE x.b > 0",
     f"SELECT t.a, t.b FROM t JOIN {N} ON t.c = g.k WHERE g.n > 1 AND t.b > 0",

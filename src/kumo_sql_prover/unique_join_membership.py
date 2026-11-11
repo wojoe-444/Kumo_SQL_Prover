@@ -11,8 +11,8 @@ is
     SELECT .. FROM y WHERE (y.a, y.b) IN (SELECT d.k1, d.k2 FROM (SELECT k1, k2, COUNT(*) AS n .. HAVING h) AS d WHERE d.n > 1)
                        AND rest
 
-when ``d`` is read by nothing but equalities of one of its columns with a column of another source, covering
-every group key of ``d``, and conditions on ``d`` alone. When there are no such conditions and the equalities
+when ``d`` is read by nothing but equalities of one of its group key columns with a column of another source,
+covering every group key of ``d``, and conditions on ``d`` alone. When there are no such conditions and the equalities
 read every output of ``d`` exactly once, the membership test is written over the derived table's own select:
 ``(y.a, y.b) IN (SELECT k1, k2 FROM s GROUP BY k1, k2 HAVING h)``.
 
@@ -45,8 +45,10 @@ function. A column is ``d``'s when it is qualified with ``d``'s name.
 ``NATURAL``; a read of ``d`` in the select list, ``GROUP BY``, ``HAVING``, ``ORDER BY`` or a nested subquery;
 ``SELECT *``; a bare column with the name of an output of ``d``, in the select itself or in a nested subquery
 that does not bind all of its own names (it may be ``d``'s);
-equalities that leave a group key of ``d`` untied (two rows of ``d`` could then join with one row); a derived
-table that is not grouped (other rules read ``SELECT DISTINCT`` ones).
+equalities that leave a group key of ``d`` untied (two rows of ``d`` could then join with one row); an equality
+with an output of ``d`` that is not a group key (sound as well, but a join back to the group's own ``MIN`` or
+``MAX`` is the form ``extreme_joins`` and ``aggregate_membership`` compare such queries in); a derived table that
+is not grouped (other rules read ``SELECT DISTINCT`` ones).
 """
 
 from __future__ import annotations
@@ -119,6 +121,8 @@ def _rewrite(select: exp.Select, schema: dict | None) -> bool:
             tied = [mine.name.lower() for mine, _ in ties]
             if not ties or not all(names_ & set(tied) for names_ in carried):
                 continue
+            if any(output not in set().union(*carried) for output in tied):
+                continue  # tied on an aggregate as well: the join back to a group's own MIN or MAX, which other rules read
             if not local and sorted(tied) == sorted(outputs):
                 order = sorted(range(len(ties)), key=lambda j: outputs.index(tied[j]))
                 lefts = [ties[j][1].copy() for j in order]
