@@ -4883,6 +4883,9 @@ def normalize(
         from .inline_rows import inline_struct_rows
 
         tree = fold_closed_query(inline_struct_rows(tree, dialect), dialect)  # pre-pass: inline rows as a table; a query that reads no table as its rows
+        from .counted_joins import counted_join_rules
+
+        tree = counted_join_rules(tree)  # pre-pass: COUNT(*) over a FULL JOIN as the count of its two halves
     if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
     tree = rewrite_quantified(tree, schema, not_null, keys)
