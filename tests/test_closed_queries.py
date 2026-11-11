@@ -59,6 +59,16 @@ def status(left, right, **kwargs):
     ("(SELECT 1 AS x UNION ALL SELECT 1 UNION ALL SELECT NULL) EXCEPT DISTINCT (SELECT NULL)", "SELECT 1 AS x"),
     ("SELECT 'b' AS s, TRUE AS f UNION ALL SELECT 'a', NULL", "SELECT 'a' AS s, NULL AS f UNION ALL SELECT 'b', TRUE"),
     ("SELECT 9223372036854775807 AS big", "SELECT 9223372036854775807 AS big"),
+    # decimals, to be compared only
+    ("SELECT 1.0 IN (SELECT v FROM UNNEST([1, 2, 3]) AS v)", "SELECT TRUE"),
+    ("SELECT 1.5 > 1, 0.1 = .10, 2 IN (1.5, 2.50), 3 < 2.999, 2.0 != 2, NULL = 1.5", "SELECT TRUE, TRUE, FALSE, FALSE, FALSE, NULL"),
+    ("SELECT CAST(1 AS NUMERIC) IN (SELECT v FROM UNNEST([CAST(1 AS NUMERIC), CAST(2 AS NUMERIC)]) AS v) AS f, CAST(2 AS BIGNUMERIC) > 1.5 AS g", "SELECT TRUE AS f, TRUE AS g"),
+    ("SELECT COUNT(DISTINCT x) AS n, COUNT(x) AS m FROM UNNEST([1.0, 1.00, 2.5, NULL]) AS x", "SELECT 2 AS n, 3 AS m"),
+    ("SELECT x.v FROM (SELECT 1.5 AS d, 7 AS v UNION ALL SELECT 2.5, 8) AS x WHERE x.d > 2 AND CASE x.d WHEN 2.5 THEN TRUE ELSE FALSE END", "SELECT 8 AS v"),
+    ("SELECT 999999999999999 = 999999999999999.0, 0.000000000000001 < 1", "SELECT TRUE, TRUE"),
+    # an element of an array written in place
+    ("SELECT [5, 6, 7][OFFSET(2)], [5, 6, 7][ORDINAL(1)], [5, 6][SAFE_ORDINAL(3)], [5, 6][SAFE_OFFSET(-1)], [5][OFFSET(CAST(NULL AS INT64))], [CAST(NULL AS INT64)][ORDINAL(1)]", "SELECT 7, 5, NULL, NULL, NULL, NULL"),
+    ("SELECT a, [a * 10, a + 1][ORDINAL(a)] AS b FROM UNNEST([1, 2]) AS a", "SELECT 1 AS a, 10 AS b UNION ALL SELECT 2, 3"),
 ])
 def test_rows(sql, rows):
     assert folded(sql) == rows
@@ -121,6 +131,39 @@ def test_rows(sql, rows):
     f"SELECT b AS a, COUNT(*) FROM {A} GROUP BY a",  # the alias or the column?
     "SELECT * FROM UNNEST([1, 2]) AS x WITH OFFSET AS o",
     "SELECT x IS DISTINCT FROM 1 FROM UNNEST([1, 2]) AS x",
+    # decimals anywhere but in a comparison
+    "SELECT 1.5",  # FLOAT64 or NUMERIC? the result would have to say
+    "SELECT 0.1 + 0.2 = 0.3",  # FLOAT64 arithmetic rounds
+    "SELECT 1.5 * 2 > 1",
+    "SELECT -1.5 < 0",
+    "SELECT MAX(x) > 1 FROM UNNEST([1.5, 2.5]) AS x",
+    "SELECT SUM(x) > 1 FROM UNNEST([1.5, 2.5]) AS x",
+    "SELECT 1e0 = 1",
+    "SELECT 0.1234567890123456 = 0.1234567890123457",  # one FLOAT64 or two?
+    "SELECT 1000000000000000 = 1000000000000000.0",
+    "SELECT 9007199254740993 IN (1.5, 9007199254740992)",  # every operand is read as FLOAT64, where the two are one number
+    "SELECT CASE 9007199254740993 WHEN 1.5 THEN 1 WHEN 9007199254740992 THEN 2 END",
+    "SELECT COALESCE(1.5, 2) > 1",  # mixed kinds in one value
+    "SELECT NULLIF(3, 1.5) * 3 = 9",  # the result is a FLOAT64
+    "SELECT IF(TRUE, 1, 2.5) = 1",
+    "SELECT x = 1 FROM (SELECT 1 AS x UNION ALL SELECT 1.5) AS t",
+    "SELECT [1, 2.5][OFFSET(0)] = 1",
+    "SELECT 1.0 = TRUE",
+    "SELECT 1.0 = '1.0'",
+    "SELECT 1.5 BETWEEN 1 AND 2",
+    "SELECT CAST(1.5 AS NUMERIC) = 1.5",  # a FLOAT64 is rounded on the way
+    "SELECT CAST(1.5 AS INT64) = 2",
+    "SELECT CAST(100 AS NUMERIC(3, 1)) = 100",  # out of range
+    "SELECT CAST(1 AS NUMERIC(3, 4)) = 1",
+    "SELECT CAST(1 AS FLOAT64) = 1",
+    "SELECT CAST('1' AS NUMERIC) = 1",
+    # array elements
+    "SELECT [1, 2][OFFSET(2)]",  # out of bounds is an error
+    "SELECT [1, 2][ORDINAL(0)]",
+    "SELECT [1, 'a'][OFFSET(0)]",
+    "SELECT [1, 2][OFFSET(TRUE)]",
+    "SELECT x[OFFSET(0)] FROM (SELECT [1, 2] AS x) AS t",  # an array is not a value here
+    "SELECT [[1, 2][OFFSET(0)], 3] AS x",
 ])
 def test_declined(sql):
     assert evaluate(sqlglot.parse_one(sql, read="bigquery")) is None
@@ -213,3 +256,26 @@ def test_the_interpreter_agrees_with_duckdb_on_random_queries():
         assert sorted(map(repr, ours[1])) == sorted(map(repr, theirs)), sql  # TRUE is not 1
         agreed += 1
     assert agreed > 330
+
+
+def test_decimal_comparisons_agree_with_float64_on_duckdb():
+    """A decimal of up to 15 digits is compared as written; DuckDB compares the same numbers as DOUBLE."""
+
+    duckdb = pytest.importorskip("duckdb")
+    import random
+    import re
+
+    pool = ["0", "1", "2", "3", "1.0", "1.5", "2.50", "0.1", ".10", "0.3", "2.999", "999999999999999", "999999999999999.0", "0.000000000000001", "123456.789012345", "123456.789012344", "NULL"]
+    rng = random.Random(3)
+    db = duckdb.connect()
+    for _ in range(300):
+        a, b, c, d = (rng.choice(pool) for _ in range(4))
+        operator = rng.choice(["=", "!=", "<", "<=", ">", ">="])
+        if "." not in a + b + c + d:
+            continue
+        sql = f"SELECT {a} {operator} {b}, {a} IN ({b}, {c}, {d}), {c} NOT IN ({d}, {a})"
+        ours = evaluate(sqlglot.parse_one(sql, read="bigquery"))
+        assert ours is not None, sql
+        as_double = re.sub(r"[0-9]*\.[0-9]+", lambda m: f"CAST({m.group(0)} AS DOUBLE)", sql)
+        assert list(ours[1][0]) == list(db.execute(as_double).fetchall()[0]), sql
+    db.close()
