@@ -10,7 +10,9 @@ Each case gets one outcome:
 
 1. **proven**: the algebraic prover (DuckDB dialect, with the keys and NOT NULL columns the setup
    declares) proved the pair. This is **wrong**.
-2. **refuted**: the prover itself found the two queries differ.
+2. **refuted**: the prover itself found the two queries differ: its solver did, or its executed search
+   (``search_counterexample=True``) built a database on which the two queries, run on DuckDB as written,
+   return different rows (``kumo_sql_prover.duckdb_refutation``). The case's own data is not given to it.
 3. **unknown**: anything else.
 
 The harness also runs both queries on the case's data (DuckDB with its optimizer off, as
@@ -66,20 +68,23 @@ def load_cases(fixtures: Path = FIXTURES) -> list[Case]:
     return [Case(**json.loads(line)) for line in (fixtures / "cases.jsonl").read_text().splitlines() if line.strip()]
 
 
-def declared(case: Case) -> tuple[dict[str, list[str]], dict]:
-    """The setup's tables, their columns and the keys and NOT NULL columns it declares (CHECKs are ignored)."""
+def declared(case: Case) -> tuple[dict[str, list[str]], dict, dict[str, dict[str, str]]]:
+    """The setup's tables, their columns, the keys and NOT NULL columns it declares (CHECKs are ignored) and the column types."""
 
     from kumo_sql_prover.smt_equivalence import TableConstraints
 
-    schema, constraints = {}, {}
+    schema, constraints, types = {}, {}, {}
     for statement in sqlglot.parse(case.setup, read="duckdb") if case.setup else ():
         if not (isinstance(statement, exp.Create) and statement.kind == "TABLE"):
             continue
         table = statement.this.this.name
         columns, keys, not_null = [], [], set()
+        types[table] = {}
         for item in statement.this.expressions:
             if isinstance(item, exp.ColumnDef):
                 columns.append(item.name)
+                if item.args.get("kind") is not None:
+                    types[table][item.name] = item.args["kind"].sql(dialect="duckdb")
                 for constraint in item.args.get("constraints") or ():
                     kind = constraint.args.get("kind")
                     if isinstance(kind, exp.PrimaryKeyColumnConstraint):
@@ -95,7 +100,7 @@ def declared(case: Case) -> tuple[dict[str, list[str]], dict]:
                 not_null |= set(key)
         schema[table] = columns
         constraints[table] = TableConstraints(not_null=frozenset(not_null), keys=tuple(keys))
-    return schema, constraints
+    return schema, constraints, types
 
 
 def results(case: Case) -> tuple[list[tuple], list[tuple]]:
@@ -128,11 +133,11 @@ def prove(case: Case) -> str:
     from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
     from kumo_sql_prover.smt_equivalence import SmtStatus
 
-    schema, constraints = declared(case)
+    schema, constraints, types = declared(case)
     try:
         result = prove_equivalent_algebraic(
-            case.left, case.right, schema=schema or None, constraints=constraints or None,
-            compare_names=False, dialect="duckdb", timeout_ms=PROVER_TIMEOUT_MS,
+            case.left, case.right, schema=schema or None, constraints=constraints or None, types=types or None,
+            compare_names=False, dialect="duckdb", timeout_ms=PROVER_TIMEOUT_MS, search_counterexample=True,
         )
     except Exception:  # a crash is a failure to prove, never a proof
         return "unknown"
@@ -162,7 +167,7 @@ def results_row(rows: list[dict]) -> dict:
         "order": 38,
         "size": len(rows),
         "score": f"{counts['refuted']}/{len(rows)} refuted, {counts['proven']} proved, {sum(r['wrong'] for r in rows)} wrong",
-        "metric": "Query pairs from public optimizer wrong-result bug reports (a query and the rewrite an optimizer made of it), which return different rows on the report's data: none may be proved; refuted means the prover itself found a difference.",
+        "metric": "Query pairs from public optimizer wrong-result bug reports (a query and the rewrite an optimizer made of it), which return different rows on the report's data: none may be proved; refuted means the prover itself found a difference (its solver, or a database it built on which the two queries, run on DuckDB as written, return different rows; it is not given the report's data).",
         "evidence": "executed",
         "correctness": "Every pair is checked to differ on its own data (DuckDB with the optimizer off, or SQLite), so any proof counts as wrong.",
         "coverage": {k: counts[k] for k in ("proven", "refuted", "unknown") if counts[k]},
@@ -170,7 +175,7 @@ def results_row(rows: list[dict]) -> dict:
         "docs": "docs/evals/optimizer-bugs.md",
         "command": "python tools/optimizer_bugs_bench.py --write-results",
         "date": today(),
-        "caveats": "The pairs were collected by an outside research assistant and re-checked here; one was dropped (it ran a single query under two optimizer settings). Most rewrites are spelled out from the reports' plans, so they are SQL readings of a plan, not SQL the reporters wrote. Every case, held-out ones included, was seen while building the harness; no prover change was made for this eval.",
+        "caveats": "The pairs were collected by an outside research assistant and re-checked here; one was dropped (it ran a single query under two optimizer settings). Most rewrites are spelled out from the reports' plans, so they are SQL readings of a plan, not SQL the reporters wrote. Every case, held-out ones included, was seen while building the harness. The executed search for DuckDB-dialect pairs was written with the development pairs in view (tuned on test); the held-out pairs were scored by verdict only. The pairs still open use LIMIT or OFFSET, DISTINCT ON, a ROWS window frame or a generator, which the search does not run because the engine may pick the rows, and one runs only on SQLite.",
     }
 
 

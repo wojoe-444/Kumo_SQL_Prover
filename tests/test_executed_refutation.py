@@ -187,3 +187,15 @@ def test_date_add_compares_as_a_date():
     left = "SELECT DATE_ADD(DATE '2024-01-01', INTERVAL 1 DAY) AS d FROM t"
     right = "SELECT DATE '2024-01-02' AS d FROM t"
     assert search_counterexample(left, right, schema=SCHEMA, types=TYPES) is None
+
+
+def test_a_collate_pair_is_not_searched_on_tables_that_cannot_declare_a_collation():
+    from kumo_sql_prover.refute import find_targeted_difference
+
+    # With COLLATE NOCASE declared on city the two are the same; the types alone cannot say so, so no refutation.
+    left = "SELECT name, city, row_number() OVER (PARTITION BY city ORDER BY name) AS n FROM c"
+    right = "SELECT name, city, row_number() OVER (PARTITION BY city COLLATE NOCASE ORDER BY name) AS n FROM c"
+    schema = {"c": {"name": "STRING", "city": "STRING"}}
+    assert find_targeted_difference(left, right, schema, dialect="duckdb", budget=5) is None
+    # a pair that differs without any collation is still found
+    assert find_targeted_difference("SELECT name FROM c", "SELECT city FROM c", schema, dialect="duckdb", budget=5) is not None

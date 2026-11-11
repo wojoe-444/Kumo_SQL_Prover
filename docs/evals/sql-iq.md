@@ -57,3 +57,17 @@ For reference, SQL-IQ's leaderboard lists language models between 69.9% and 78.4
 *Proofs the labels call non-equivalent (13).* Each was re-run on 3,000 random databases that respect the schema and 3,000 with no constraints at all (NULLs, duplicates, empty tables): no difference as bags. Twelve also agree row by row; the thirteenth differs only in the order of rows tied on `ORDER BY`. All 13 have an `ORDER BY`, so these are label noise or ordering on real data, not unsound proofs.
 
 *Prover refutations the labels call equivalent (23 of 45).* Counterexamples were loaded into SQLite and both queries run on them. 43 of 45 hold. One depends on SQLite's type affinity (`value > '100'` on a numeric column converts the text to a number, which the prover does not model), so a refutation under the SQLite dialect is a hint rather than a verdict; the harness lets SQLite itself decide. The other was a real prover bug: a counterexample row only listed the columns one query reads, and the other query read the missing key column as NULL, contradicting the declared NOT NULL key (`COUNT(DISTINCT id)` against `COUNT(*)` on a key). Counterexample rows now carry every column either query reads. The false refutation never produced a proof, so proof counts on the other evals are unaffected.
+
+## Audit of the remaining mistakes (2026-11-11)
+
+A rerun on commit `2d58b7a` reproduces 1,179/1,390 (84.82%; equivalent 80.58%, non-equivalent 89.06%, geometric mean 84.71%). The 211 answers the labels disagree with were sorted by what the harness holds for each:
+
+| Answer | Label | Pairs | What was checked |
+| --- | --- | ---: | --- |
+| proved | non-equivalent | 22 | Each rerun on 2,000 random databases that respect the keys and foreign keys and 2,000 more with keys only and 30% NULLs: no difference as bags on any. Four differ in the order of rows tied on the `ORDER BY`. 21 of the 22 have an `ORDER BY`. No false proof was found; these are label noise or tie order. |
+| a database on which SQLite returns different results (random 128, targeted 6, bounded 1) | equivalent | 135 | Of the 128 found by the random databases, 125 still differ when no value is NULL, so NULL handling is not the reason. The first differing database shows another number of rows for 48, other values for 71, the same columns in another order for 5 and the same rows in another order under a `LIMIT` for 4. These are counterexamples on databases the schema allows: label disputes, apart from any that rest on a rule of the real data the schema does not state. |
+| no difference found, answered "yes" | non-equivalent | 54 | The only guesses. Eight differ only in the order of rows tied on the `ORDER BY` of both queries; the rest are long queries (several CTEs, aggregates over joins) whose difference no generated database of at most ten rows per table showed. |
+
+Two changes were measured and not made, because they fit the labels and not the question. Answering "no" whenever both queries have an `ORDER BY` and the rows come back in another order would turn 12 mistakes right and 3 right answers wrong, but an order among tied rows is not a difference between two queries. Generating databases with no NULLs would turn 3 mistakes right and lose the difference on 14 pairs the labels call non-equivalent.
+
+So this score is not expected to move much: 157 of the 211 are answers the harness can defend with a proof or a database, and the 54 guesses are where a better search for a counterexample could still gain.
