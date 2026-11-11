@@ -16,10 +16,10 @@ SCHEMA = {"t": ["a", "b", "c", "d"], "u": ["a", "e"]}
 CONSTRAINTS = {"t": TableConstraints(not_null=frozenset({"a", "b"}), keys=(("a", "b"),))}
 
 
-def rewritten(sql, types=None, schema=SCHEMA, dialect="mysql"):
+def rewritten(sql, types=None, schema=SCHEMA):
     tree = sqlglot.parse_one(sql, read="mysql")
     text = tree.sql(dialect="mysql")
-    after = read_correlated_count_tests(tree, schema, types, dialect).sql(dialect="mysql")
+    after = read_correlated_count_tests(tree, schema, types).sql(dialect="mysql")
     return after if after != text else None
 
 
@@ -63,16 +63,12 @@ def test_several_ties_become_a_row_membership_test():
     )
 
 
-def test_a_row_equality_is_read_where_it_is_a_conjunction():
-    sql = "SELECT o.a FROM t AS o WHERE 1 = (SELECT COUNT(*) FROM t AS x WHERE (o.c, o.d) = (x.c, x.d)) AND o.b > 0"
-    after = "SELECT o.a FROM t AS o WHERE (o.c, o.d) IN (SELECT x.c, x.d FROM t AS x GROUP BY x.c, x.d HAVING COUNT(*) = 1) AND o.b > 0"
-    assert rewritten(sql) == after
-    assert rewritten(sql, dialect="bigquery") == after
-    # DuckDB finds (1, NULL) = (1, NULL): a row with a NULL key counts its partners there
-    assert rewritten(sql, dialect="duckdb") is None
-    assert rewritten(sql, dialect=None) is None
+def test_a_row_equality_is_not_read_as_ties():
+    # MySQL compares (o.c, o.d) = (x.c, x.d) column by column, DuckDB finds two NULLs in it equal: with a NULL key
+    # the count is 0 in one engine and the number of partners in the other, so the spelling is left alone
+    assert rewritten("SELECT o.a FROM t AS o WHERE 1 = (SELECT COUNT(*) FROM t AS x WHERE (o.c, o.d) = (x.c, x.d)) AND o.b > 0") is None
     assert rewritten("SELECT o.a FROM t AS o WHERE (SELECT COUNT(*) FROM t AS x WHERE (x.c, x.d) = (o.c, 1)) > 1") is None
-    assert rewritten("SELECT o.a FROM t AS o WHERE (SELECT COUNT(*) FROM t AS x WHERE (x.c, x.d) = (o.c)) > 1") is None
+    assert rewritten("SELECT o.a FROM t AS o WHERE (SELECT COUNT(*) FROM t AS x WHERE x.c = o.c AND (x.d, x.b) = (o.d, o.b)) > 1") is None
 
 
 @pytest.mark.parametrize("sql", [
@@ -141,7 +137,7 @@ PROOFS = [
         REFERENCE,
     ),
     (
-        "SELECT o.a, o.b FROM t AS o WHERE 1 < (SELECT COUNT(1) FROM t AS x WHERE o.c = x.c) AND 1 = (SELECT COUNT(x.c) FROM t AS x WHERE (x.c, x.d) = (o.c, o.d))",
+        "SELECT o.a, o.b FROM t AS o WHERE 1 < (SELECT COUNT(1) FROM t AS x WHERE o.c = x.c) AND 1 = (SELECT COUNT(x.c) FROM t AS x WHERE x.d = o.d AND o.c = x.c GROUP BY x.c, x.d)",
         REFERENCE,
     ),
     (
@@ -158,6 +154,11 @@ def test_pairs_that_are_proved(left, right):
 
 
 NOT_PROVED = [
+    # a row equality: with a NULL d the engines disagree on whether the row counts its partners
+    (
+        "SELECT o.a, o.b FROM t AS o WHERE (SELECT COUNT(*) FROM t AS x WHERE (x.c, x.d) = (o.c, o.d)) = 1",
+        "SELECT o.a, o.b FROM t AS o WHERE (o.c, o.d) IN (SELECT c, d FROM t GROUP BY c, d HAVING COUNT(*) = 1)",
+    ),
     # a count of 0: the rows with a NULL c, which are in no group, pass it
     (
         "SELECT o.a, o.b FROM t AS o WHERE (SELECT COUNT(*) FROM u WHERE u.a = o.c) = 0",
@@ -201,12 +202,14 @@ def test_the_refused_bounds_do_differ():
     """The near misses are real: one NULL key, or one row without a partner, tells the two spellings apart."""
 
     tables = {"t": [(1, 1, None, 5), (1, 2, 7, 5)], "u": [(7, 1), (7, 2), (7, 3)]}
-    for left, right in NOT_PROVED[:2]:
+    a, b = run({"t": [(1, 1, 7, None)]}, *NOT_PROVED[0])  # DuckDB, which runs this, finds (7, NULL) = (7, NULL)
+    assert a != b
+    for left, right in NOT_PROVED[1:3]:
         a, b = run(tables, left, right)
         assert a != b, (left, right)
-    a, b = run({"t": [(1, 1, 7, None), (1, 2, 7, None), (1, 3, 7, 1)]}, *NOT_PROVED[2])
+    a, b = run({"t": [(1, 1, 7, None), (1, 2, 7, None), (1, 3, 7, 1)]}, *NOT_PROVED[3])
     assert a != b
-    for left, right in NOT_PROVED[3:5]:
+    for left, right in NOT_PROVED[4:6]:
         a, b = run({"t": [(1, 1, 7, None)]}, left, right)
         assert a != b, (left, right)
 
@@ -226,11 +229,7 @@ CASES = [
 
 @pytest.mark.parametrize("sql", CASES)
 def test_the_rewritten_query_returns_the_same_rows(sql):
-    """The count test and the membership test on random tables whose tied columns hold NULLs and repeat.
-
-    The ties are written as column equalities: DuckDB, which runs the comparison, finds two NULLs of a row
-    equality equal, and the rule reads that spelling only for the dialects that do not.
-    """
+    """The count test and the membership test on random tables whose tied columns hold NULLs and repeat."""
 
     after = rewritten(sql)
     assert after is not None

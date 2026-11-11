@@ -4889,7 +4889,7 @@ def normalize(
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
         from .correlated_count_tests import read_correlated_count_tests
 
-        tree = read_correlated_count_tests(tree, schema, types, dialect)  # pre-pass: (SELECT COUNT(*) .. WHERE x.c = o.k) > 1 is o.k IN the groups counted so
+        tree = read_correlated_count_tests(tree, schema, types)  # pre-pass: (SELECT COUNT(*) .. WHERE x.c = o.k) > 1 is o.k IN the groups counted so
         from .aggregate_membership import read_aggregate_membership
 
         tree = read_aggregate_membership(tree, schema, dialect)  # pre-pass: (k, v) IN (SELECT k, MIN(v) .. GROUP BY k) compares with the group's aggregate

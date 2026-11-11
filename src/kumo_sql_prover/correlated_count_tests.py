@@ -35,11 +35,8 @@ type that is not a floating type, or neither declared (the prover's standing sam
 **What is read.** The subquery: a select with only a select list, ``FROM``, ``WHERE`` and optionally a
 ``GROUP BY``; one source, a plain base table whose columns the schema lists; one output, ``COUNT(*)``, ``COUNT``
 of a non-NULL literal, or ``COUNT`` of one of the tied columns (not NULL in every counted row). Its ``WHERE`` is
-a conjunction of ties (``x.c = o.k``, either order, or one row equality ``(o.k1, o.k2) = (x.c1, x.c2)``) and of
-conditions that read ``x`` alone and hold no subquery. The row equality is read only for the dialects where it
-is the conjunction of its column equalities (MySQL, BigQuery, PostgreSQL; DuckDB finds two NULLs in a row
-comparison equal, so there a NULL key would count its partners). A column is ``x``'s when it is qualified with ``x``'s name,
-or bare and listed for the table (the innermost select binds a bare name first); it is the outer row's when it is
+a conjunction of ties (``x.c = o.k``, either order) and of conditions that read ``x`` alone and hold no
+subquery. A column is ``x``'s when it is qualified with ``x``'s name, or bare and listed for the table (the innermost select binds a bare name first); it is the outer row's when it is
 qualified with the name of a source of the select whose ``WHERE`` holds the test, and ``x`` has another name.
 A ``GROUP BY`` in the subquery may list tied columns only: it then returns NULL instead of 0 when nothing
 matches and never more than one row, and the bound fails on NULL as it does on 0.
@@ -48,7 +45,10 @@ matches and never more than one row, and the bound fails on NULL as it does on 0
 ..)``, ``COUNT`` of another column, other aggregates; a subquery with a join, a derived table, ``DISTINCT``,
 ``HAVING``, ``LIMIT`` or a window; a tie that is not a plain column equality or whose outer side is an expression,
 a bare name or a name bound further out; a subquery without a tie; a bound that is not a lower bound of at
-least 1; ties between columns of different or floating declared types.
+least 1; ties between columns of different or floating declared types. A row equality ``(o.k1, o.k2) = (x.c1,
+x.c2)`` is not read as two ties: engines disagree on it when a component is NULL (MySQL and BigQuery compare
+column by column, so a NULL key matches nothing; DuckDB finds two NULLs of a row comparison equal, so there a
+row with a NULL key counts its partners and is not in the membership test).
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ def _scalar_select(node: exp.Expression) -> exp.Select | None:
     return node.this if type(node.this) is exp.Select else None
 
 
-def _membership(test: exp.Expression, outer: exp.Select, known: dict[str, set[str]], types: dict | None, row_ties: bool) -> exp.Expression | None:
+def _membership(test: exp.Expression, outer: exp.Select, known: dict[str, set[str]], types: dict | None) -> exp.Expression | None:
     """The ``IN`` test that ``test`` is, else ``None``."""
 
     kind = type(test)
@@ -118,23 +118,14 @@ def _membership(test: exp.Expression, outer: exp.Select, known: dict[str, set[st
     local: list[exp.Expression] = []
     where = body.args.get("where")
     for part in conjuncts(where.this) if where is not None else []:
-        pairs = None
         if type(part) is exp.EQ:
-            left, right = _unwrap(part.this), _unwrap(part.expression)
-            if type(left) is exp.Tuple or type(right) is exp.Tuple:
-                if row_ties and type(left) is type(right) and len(left.expressions) == len(right.expressions) and left.expressions:
-                    pairs = list(zip(left.expressions, right.expressions))
-            else:
-                pairs = [(left, right)]
-        found = []
-        for a, b in pairs or []:
+            a, b = _unwrap(part.this), _unwrap(part.expression)
             if inner(a) is not None and outside(b) is not None:
-                found.append((inner(a), outside(b)))
-            elif inner(b) is not None and outside(a) is not None:
-                found.append((inner(b), outside(a)))
-        if pairs and len(found) == len(pairs):
-            ties += found
-            continue
+                ties.append((inner(a), outside(b)))
+                continue
+            if inner(b) is not None and outside(a) is not None:
+                ties.append((inner(b), outside(a)))
+                continue
         # not a tie: it must read x alone
         if any(isinstance(n, (exp.Select, exp.Subquery, exp.AggFunc, exp.Window, *_VOLATILE)) for n in part.walk()):
             return None
@@ -171,10 +162,7 @@ def _membership(test: exp.Expression, outer: exp.Select, known: dict[str, set[st
     return exp.In(this=left, query=exp.Subquery(this=grouped))
 
 
-_ROW_TIES = frozenset({"mysql", "bigquery", "postgres"})  # (a, b) = (c, d) is a = c AND b = d there, NULLs included
-
-
-def read_correlated_count_tests(tree: exp.Expression, schema: dict[str, list[str]] | None, types: dict | None = None, dialect: str | None = None) -> exp.Expression:
+def read_correlated_count_tests(tree: exp.Expression, schema: dict[str, list[str]] | None, types: dict | None = None) -> exp.Expression:
     """``tree`` (changed in place) with each bounded correlated count in a ``WHERE`` written as a grouped membership test."""
 
     if not schema:
@@ -186,7 +174,7 @@ def read_correlated_count_tests(tree: exp.Expression, schema: dict[str, list[str
         if where is None or select.args.get("laterals"):
             continue
         parts = conjuncts(where.this)
-        rewritten = [_membership(part, select, known, kinds, dialect in _ROW_TIES) for part in parts]
+        rewritten = [_membership(part, select, known, kinds) for part in parts]
         if not any(r is not None for r in rewritten):
             continue
         where.set("this", _and_all([new if new is not None else part.copy() for part, new in zip(parts, rewritten)]))
