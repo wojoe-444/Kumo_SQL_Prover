@@ -16,6 +16,9 @@ import pytest
 
 pytest.importorskip("duckdb")
 
+# The file loads the QUITE bench script, so it is selected with the evals (pytest -m eval).
+pytestmark = pytest.mark.eval
+
 _TOOLS = Path(__file__).resolve().parent.parent / "tools"
 
 
