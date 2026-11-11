@@ -2,26 +2,26 @@
   "suite": "DLBench cross-dialect translations (pinned subset)",
   "order": 35,
   "size": 807,
-  "score": "156/604 exact pairs proved, 0 wrong; 799/807 parsed",
+  "score": "161/604 exact pairs proved, 0 wrong; 799/807 parsed",
   "metric": "Translations from SQLite, MySQL and PostgreSQL into six databases' dialects, proved equal to the source in the source's dialect after sqlglot reads both; parsed means both sides parse in their own dialect.",
   "evidence": "proof",
-  "correctness": "Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); 539 pairs where the two databases read the same text differently (LIKE case, MySQL collation, integer division, SQLite type conversion) are left unproved. 1/203 'approximate' pairs are proved (listed in the docs). 22 of the exact proofs are a MariaDB translation that is its MySQL source token for token, where the provers have nothing to read (an INSERT, a table with no published definition); statements whose answer can change between two runs are refused.",
+  "correctness": "Every BIRDTrans proof is re-run on 300 random SQLite databases (DuckDB translations also natively in DuckDB); 492 pairs where the two databases read the same text differently (LIKE case, string collations, integer and decimal division, Unix time ranges, row values, SQLite type conversion; the docs list every rule) are left unproved, and so are 12 that call the clock, a random value, a sequence or the session. With DLBENCH_NATIVE set, this run also replayed 138 of the 163 proofs on the databases themselves (mysql>clickhouse 11, mysql>duckdb 10, mysql>mariadb 29, mysql>postgresql 14, sqlite>clickhouse 19, sqlite>duckdb 26, sqlite>postgresql 29; clickhouse 26.9.2.1, duckdb 1.5.6, mariadb 10.11.14, mysql 8.0.46, postgresql 16.15, sqlite 3.53.1): 0 differences. Not replayed: 10 no MonetDB engine, 9 not a query, 6 not replayable. 2/203 'approximate' pairs are proved (listed in the docs). 10 of the exact proofs are a MariaDB translation that is its MySQL source token for token, where the provers have nothing to read (an INSERT, a table with no published definition); statements whose answer can change between two runs are refused.",
   "coverage": {
-    "proven": 157,
-    "unknown": 642,
+    "proven": 163,
+    "unknown": 636,
     "unsupported": 8
   },
-  "held_out": "27/103 exact pairs proved",
+  "held_out": "30/103 exact pairs proved",
   "docs": "docs/evals/dlbench.md",
   "command": "python tools/dlbench_bench.py --write-results",
   "date": "2026-11-11",
-  "caveats": "Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test). The 2026-11-11 harness changes (translated column and table spellings read back, the same-statement rule) were developed on the development split only.",
+  "caveats": "Pinned subset of the 6,402 pairs (every approximate pair, one in ten of the rest); run --data with a DLBench checkout for all. Labels are LLM plus human review, not proofs. Proofs are about sqlglot's reading of each dialect; MariaDB is read as MySQL and MonetDB as PostgreSQL. The 32-bit float, division-by-zero, decimal and ClickHouse rules were added after a first run on the whole subset showed two proofs contradicted natively in DuckDB (tuned on test). The 2026-11-11 harness changes (translated column and table spellings read back, the same-statement rule, the volatile-call refusal, and the gap rules that the native replay of every proof led to) were developed on the development split only; held-out pairs were replayed for their verdicts, never read.",
   "environment": {
     "python": "3.13.18",
     "sqlglot": "30.21.0",
     "sqlglotc": "30.21.0",
     "duckdb": "1.5.6",
     "z3-solver": "5.4.1.0",
-    "commit": "054d9e9"
+    "commit": "9a4f91e"
   }
 }
