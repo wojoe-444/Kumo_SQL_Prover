@@ -86,8 +86,8 @@ def eval_files() -> frozenset[str]:
     return frozenset(found)
 
 
-# The pull-request gate runs ``pytest -m "not eval" --quick``; the scheduled benchmark run
-# (``.github/workflows/benchmarks.yml``) runs ``pytest -m eval``, and a full run is plain ``pytest``.
+# The gate (run locally on the candidate) is ``pytest -m "not eval" --quick``; the periodic benchmark run
+# is ``pytest -m eval``, and a full run is plain ``pytest``.
 ORDER_FILE = Path(__file__).resolve().parent / "order.json"
 
 
