@@ -1,28 +1,29 @@
 {
   "suite": "Logos TPC-H, DSB, TPC-DS pairs (proofs)",
   "order": 22,
-  "score": "45/69 proved, 0 wrong",
+  "score": "42/69 proved, 0 wrong",
   "metric": "Pairs proved equivalent by the algebraic prover over every database meeting the declared NOT NULL columns and keys; pairs a database shows different (label failures) leave the denominator.",
   "evidence": "proof",
   "correctness": "0 false proofs: every proof's two queries return the same rows on the generated TPC-H or TPC-DS data and on 150 small random databases plus the targeted suite",
   "coverage": {
-    "proven": 45,
+    "proven": 42,
     "refuted": 4,
     "unknown": 18,
-    "unsupported": 6
+    "unsupported": 7,
+    "timeout": 2
   },
-  "caveats": "Logos 333d5275ac87; query text fetched at run time, never committed. By family: rbot-tpch 19/21 proved, 1 refuted; rbot-dsb 22/36 proved, 1 refuted; tpcds-variants 4/12 proved, 2 refuted. 14 TPC-DS variant pairs are adapted (TOP n read as LIMIT n, date + n days as an interval): 4 proved, 2 refuted among them. TPC-H data is scale 0.1 (tpchgen-cli); TPC-DS data is scale 1 from DSB's dsdgen, whose distributions differ from the official kit's. The TPC-H schema declares no keys, so proofs hold over every database with its NOT NULL columns. Prover routes time out after 120 s of wall-clock time, so a loaded machine can turn a few proofs into timeouts. Baseline before any harness fix: 23/69 proved, 4 refuted, 0 wrong (5/11 held out). The two harness fixes (moving Calcite's derived-table column lists into the derived table with KumoSQL's expand_alias_columns, and one renamed TPC-DS column on the generated data) were made on the dev split, but the baseline listing showed every pair's failure reason, held-out ones included (tuned on test, exposure only; the held-out score did not move). Measured on 550a27f. On 2026-11-11 rbot-dsb went from 17 to 22 proved (whole run, 0 wrong) with the rules written for QUITE's DSB development pairs (PR 19, docs/evals/quite.md); the rules were written on those pairs, not on these, but the LOGOS DSB queries are DSB templates, so rbot-dsb counts as tuned on test.",
+  "caveats": "Logos 333d5275ac87; query text fetched at run time, never committed. By family: rbot-tpch 19/21 proved, 1 refuted; rbot-dsb 19/36 proved, 1 refuted; tpcds-variants 4/12 proved, 2 refuted. 14 TPC-DS variant pairs are adapted (TOP n read as LIMIT n, date + n days as an interval): 4 proved, 2 refuted among them. TPC-H data is scale 0.1 (tpchgen-cli); TPC-DS data is scale 1 from DSB's dsdgen, whose distributions differ from the official kit's. The TPC-H schema declares no keys, so proofs hold over every database with its NOT NULL columns. Prover routes time out after 120 s of wall-clock time, so a loaded machine can turn a few proofs into timeouts. Baseline before any harness fix: 23/69 proved, 4 refuted, 0 wrong (5/11 held out). The two harness fixes (moving Calcite's derived-table column lists into the derived table with KumoSQL's expand_alias_columns, and one renamed TPC-DS column on the generated data) were made on the dev split, but the baseline listing showed every pair's failure reason, held-out ones included (tuned on test, exposure only; the held-out score did not move). Measured on 687c1d7. On 2026-11-11 rbot-dsb went from 17 to 19 proved with the rules written for QUITE's DSB development pairs (Kumo_SQL_Prover PR 19); an earlier whole run on the branch before main's later merges gave 45/69 (22 on rbot-dsb), and a run of main 0e94662 alone gave 39/69 against 41 on the earlier main, so the other batches' merges cost this eval proofs that the same branch had (the 2 timeouts, unknown and unsupported pairs moved; not diagnosed here). The rules were written on QUITE's pairs, not on these, but the LOGOS DSB queries are DSB templates, so rbot-dsb counts as tuned on test.",
   "size": 73,
   "docs": "docs/evals/logos.md",
   "command": "python tools/logos_bench.py --jobs 4",
-  "date": "2026-11-11",
-  "held_out": "8/11 proved, 1 refuted, 0 wrong (12 held-out pairs)",
+  "date": "2026-11-12",
+  "held_out": "7/11 proved, 1 refuted, 0 wrong (12 held-out pairs)",
   "environment": {
     "python": "3.13.18",
     "sqlglot": "30.21.0",
     "sqlglotc": "30.21.0",
     "duckdb": "1.5.6",
     "z3-solver": "5.4.1.0",
-    "commit": "550a27f"
+    "commit": "687c1d7"
   }
 }
