@@ -35,7 +35,7 @@ import sqlglot
 from sqlglot import exp
 from . import proof_columns
 from .clause_alias_reads import resolve_alias_reads
-from .ast_utils import FROM_KEY, UnmodeledConstruct, canonical_negation, check_modeled, distinct_on, drop_case_conflicts, expand_alias_columns, extended_grouping, faithful_sql, free_reads, parenthesize_is_operands, plain_distinct, same_table, select_sources as _sources_of, star_modified, strip_positions, visible_ctes
+from .ast_utils import inside, FROM_KEY, UnmodeledConstruct, canonical_negation, check_modeled, distinct_on, drop_case_conflicts, expand_alias_columns, extended_grouping, faithful_sql, free_reads, parenthesize_is_operands, plain_distinct, same_table, select_sources as _sources_of, star_modified, strip_positions, visible_ctes
 from .set_operations import positional_sql_pair
 from .literal_fold_rules import distribute_over_constant_union, fold_string_literals
 from .parse_check import refuse_misread_proofs
@@ -1570,7 +1570,11 @@ def _qualify_outer_join_columns(tree: exp.Expression, schema: dict[str, list[str
             if column.table or isinstance(column.this, exp.Star) or column.find_ancestor(exp.Select) is not select:
                 continue
             name = column.name.lower()
-            if name in outputs or len(owners.get(name, [])) != 1:
+            if len(owners.get(name, [])) != 1:
+                continue
+            # a select item cannot read another item's alias, so ``SUM(paid) AS paid`` reads the column; HAVING and ORDER BY may read the alias
+            listed = shape_fallback.enabled() and any(inside(column, item) for item in select.expressions)
+            if name in outputs and not listed:
                 continue
             column.set("table", exp.to_identifier(owners[name][0]))
     return tree
@@ -3839,7 +3843,11 @@ def _lateral_joins(tree: exp.Expression) -> exp.Expression:
                 for column in uses:
                     probe = body.copy()
                     probe.set("expressions", [values[column.name.lower()].copy()])
-                    column.replace(exp.Subquery(this=probe))
+                    scalar: exp.Expression = exp.Subquery(this=probe)
+                    if any(column is item for item in select.expressions):
+                        # a bare output keeps the name the query around this select reads it by
+                        scalar = exp.Alias(this=scalar, alias=column.this.copy())
+                    column.replace(scalar)
                 select.set("joins", [j for j in select.args["joins"] if j is not join] or None)
                 continue
             if aggregated or body.args.get("group") is not None or kind not in ("INNER", "") or side:
@@ -4960,8 +4968,13 @@ def normalize(
     tree = rewrite_bigquery_constructs(tree, schema, types, dialect)  # pre-pass: UNNEST of literals, STRUCT fields
     tree = inline_named_windows(tree)
     from .nonnull_any import rewrite_nonnull_any
+    from .join_distinct_aggregates import count_distinct_under_key, rewrite_join_distinct_select
+    from .keyed_group_filters import rewrite_keyed_group_filter
+    from .anti_membership_joins import rewrite_anti_membership
+    from .duplicate_values import rewrite_duplicate_values
 
     from .counted_subqueries import count_subquery_as_join
+    from .aggregate_presence import rewrite_aggregate_presence
     from .exists_disjunction import merge_exists_disjunction
     from .literal_like import literal_like_to_equality
     from .mysql_exists_casts import drop_mysql_exists_cast
@@ -4996,6 +5009,30 @@ def normalize(
         tree = sqlite_date_text_rules(tree, dialect)  # pre-pass: SQLite's STRFTIME digits as text or as a number
     if shapes:
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
+        from .aggregate_membership import read_aggregate_membership
+
+        tree = read_aggregate_membership(tree, schema, dialect)  # pre-pass: (k, v) IN (SELECT k, MIN(v) .. GROUP BY k) compares with the group's aggregate
+        from .rank_filters import read_rank_filters
+
+        tree = read_rank_filters(tree, schema, not_null, keys)  # pre-pass: RANK() .. = 1 keeps the rows holding the partition's MIN or MAX
+        from .extreme_joins import read_extreme_joins
+        from .extreme_rows import read_extreme_rows
+
+        tree = read_extreme_joins(tree, schema, not_null)  # pre-pass: a join with the table's own grouped MIN or MAX is that comparison
+        tree = read_extreme_rows(tree, schema, keys)  # pre-pass: under a key the rows holding a group's MIN or MAX are one row per group
+        from .join_distinct_aggregates import read_join_distinct_aggregates
+
+        tree = read_join_distinct_aggregates(tree, schema)  # pre-pass: a join that only asks for a match, under COUNT(DISTINCT), is an IN
+        from .key_group_choice import choose_key_groups
+
+        tree = choose_key_groups(tree, schema, keys, not_null)  # pre-pass: grouping by any NOT NULL key of a table is one grouping, so name the first
+    # Not shape rules: each reads a comparison the prover could not read at all, so the second attempt (shapes off, which
+    # drops merge_exists_disjunction) keeps them and can still match the separate EXISTS tests they produce.
+    from .absolute_values import read_absolute_values
+    from .keyed_lookups import read_keyed_lookups
+
+    tree = read_keyed_lookups(tree, schema, keys)  # pre-pass: a filter on a value looked up by key is an EXISTS
+    tree = read_absolute_values(tree, types)  # pre-pass: ABS(x) = n says x is n or -n
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
     tree = trim_redundant_row_clauses(tree)
@@ -5116,6 +5153,12 @@ def normalize(
         lambda sel: close_strict_bounds(sel, types_map, dialect),
         unnest_cased_sums,
         lambda sel: expand_row_membership(sel, dialect),
+        rewrite_aggregate_presence,  # (SELECT MIN(TRUE) FROM ..) IS NOT NULL asks whether a row exists
+        lambda sel: rewrite_join_distinct_select(sel, schema),  # a join under COUNT(DISTINCT) that only asks for a match is an IN
+        lambda sel: rewrite_keyed_group_filter(sel, schema, keys),  # a keyed table joined to a grouped table under HAVING is one join with the grouped subquery
+        lambda sel: rewrite_anti_membership(sel, schema, keys, not_null),  # k NOT IN (the same table's key joined to others) is NOT EXISTS over the others
+        lambda sel: rewrite_duplicate_values(sel, schema, keys, not_null),  # the values a table holds twice: a self join or a correlated count is a grouped count
+        lambda sel: count_distinct_under_key(sel, keys, not_null),  # COUNT(DISTINCT c) of a group whose columns and c hold a key is COUNT(c)
         count_column_bounds,
         read_extreme_group_source,
         merge_operand_sources,
@@ -5330,9 +5373,12 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
             dialect = kwargs.get("dialect", "bigquery")
             semi = semijoin_reading(left_sql, dialect), semijoin_reading(right_sql, dialect)
             if semi != (None, None):
-                retry = _prove_algebraic(semi[0] or left_sql, semi[1] or right_sql, 0, _normalization_cache=normalization_cache, **kwargs)
-                if retry.proven:
-                    return retry
+                for level in (0, 1, 2):  # the semijoin reading may leave a DISTINCT that only the later levels drop
+                    if level == 1 and not (kwargs.get("constraints") or {}):
+                        continue
+                    retry = _prove_algebraic(semi[0] or left_sql, semi[1] or right_sql, level, _normalization_cache=normalization_cache, **kwargs)
+                    if retry.proven:
+                        return retry
         return result
 
     with shape_fallback.tracking() as fired:

@@ -155,3 +155,49 @@ def test_optimizer_bugs_are_not_counterexamples():
     })
     for seed in range(2):  # without the recheck, both seeds report a false counterexample
         assert cx.find_counterexample(spec, EXISTS_SQL, COUNT_SQL, seed=seed) is None
+
+
+@pytest.mark.canary  # builds one hand-written case with the harness's schema reader; the family's floors stay in tests/test_verieql_benchmarks.py
+def test_each_primary_entry_of_a_verieql_schema_is_its_own_key():
+    """A table that declares two primary keys keeps both: the earlier one as a unique key over NOT NULL columns."""
+
+    import verieql_bench
+
+    case = {
+        "schema": {"SHOP": {"SHOP_ID": "INT", "TITLE": "VARCHAR", "CITY": "VARCHAR"}, "SALE": {"SALE_ID": "INT", "SHOP_ID": "INT"}},
+        "constraint": [
+            {"primary": [{"value": "SHOP__SHOP_ID"}]},
+            {"primary": [{"value": "SHOP__TITLE"}]},
+            {"primary": [{"value": "SALE__SALE_ID"}]},
+            {"foreign": [{"value": "SALE__SHOP_ID"}, {"value": "SHOP__SHOP_ID"}]},
+        ],
+    }
+    spec = verieql_bench.build_spec(case)
+    shop, sale = spec.tables["SHOP"], spec.tables["SALE"]
+    assert sorted([shop.primary_key, *shop.unique]) == [("SHOP_ID",), ("TITLE",)]
+    assert [c.name for c in shop.columns if c.not_null] == ["SHOP_ID", "TITLE"]
+    assert (sale.primary_key, sale.unique) == (("SALE_ID",), [])
+    rng = __import__("random").Random(0)
+    generator = cx._Generator(spec, cx.Constants(), rng)
+    seen_rows = 0
+    for _ in range(60):
+        rows = generator.database({"SHOP", "SALE"}, 5)["SHOP"]
+        seen_rows += len(rows)
+        for position in (0, 1):  # both declared keys hold in every generated table
+            values = [row[position] for row in rows]
+            assert None not in values and len(set(values)) == len(values)
+    assert seen_rows > 60
+
+
+def test_every_small_database_keeps_consecutive_ids():
+    # the "all small databases" step used to try seat ids 0 and 2 for a column declared consecutive
+    seats = cx.Table("SEATS", [cx.Column("ID", "INT", not_null=True), cx.Column("FREE", "INT")], primary_key=("ID",), sequential=("ID",))
+    spec = cx.Spec({"SEATS": seats})
+    # equal when the ids are 1..n (every seat but the last has a successor), different on ids 1 and 3
+    successor = "SELECT a.ID FROM SEATS AS a JOIN SEATS AS b ON b.ID = a.ID + 1"
+    not_last = "SELECT a.ID FROM SEATS AS a WHERE a.ID < (SELECT MAX(ID) FROM SEATS)"
+    outcome, found = cx.Searcher(spec, successor, not_last).exhaustive(2, 3000)
+    assert (outcome, found) == ("verified", None)
+    # a real difference is still found, on a database with ids 1..n
+    outcome, found = cx.Searcher(spec, "SELECT ID FROM SEATS", "SELECT ID FROM SEATS WHERE ID > 1").exhaustive(2, 3000)
+    assert outcome == "found"

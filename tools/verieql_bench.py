@@ -166,6 +166,8 @@ def build_spec(case: dict) -> cx.Spec:
         if kind == "primary":
             refs = [split(v["value"]) for v in body]
             table = refs[0][0]
+            if tables[table].primary_key:  # a second `primary` entry is a second key of the table, not a replacement
+                tables[table].unique.append(tables[table].primary_key)
             tables[table].primary_key = tuple(c for _, c in refs)
             for _, c in refs:
                 tables[table].column(c).not_null = True
