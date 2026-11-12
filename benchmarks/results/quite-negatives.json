@@ -24,6 +24,6 @@
     "sqlglotc": "30.21.0",
     "duckdb": "1.5.6",
     "z3-solver": "5.4.1.0",
-    "commit": "b01aa90+changes"
+    "commit": "951be35+changes"
   }
 }
