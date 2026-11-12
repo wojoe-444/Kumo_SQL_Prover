@@ -30,6 +30,7 @@ from __future__ import annotations
 import re
 
 from sqlglot import exp
+from .window_calls import is_window_function
 
 _TAIL = ("order", "limit")
 _ROW_MAKERS = (exp.UDTF, exp.Unnest, exp.Explode, exp.GenerateSeries, exp.Anonymous)
@@ -44,7 +45,7 @@ def _aggregates_outside_tail(select: exp.Select) -> bool:
     """Whether the select list or HAVING holds an aggregate of this select (not one inside a window)."""
 
     parts = list(select.expressions) + ([select.args["having"]] if select.args.get("having") is not None else [])
-    return any(_own(a, select) and a.find_ancestor(exp.Window) is None for part in parts for a in part.find_all(exp.AggFunc))
+    return any(_own(a, select) and not is_window_function(a) for part in parts for a in part.find_all(exp.AggFunc))
 
 
 def drop_one_row_tail(select: exp.Select) -> exp.Expression | None:

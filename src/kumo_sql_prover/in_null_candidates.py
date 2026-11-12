@@ -21,6 +21,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from .ast_utils import conjuncts
+from .window_calls import is_window_function
 
 _SCOPES = (exp.Select, exp.SetOperation, exp.Subquery)
 _ALWAYS_TRUE_UNLESS_NULL = (exp.GTE, exp.LTE, exp.EQ)
@@ -129,7 +130,7 @@ def _drop_one(in_node: exp.In, types: dict[str, dict[str, str]]) -> bool:
         return False
     if any(inner.args.get(k) for k in ("group", "having", "order", "limit", "offset", "windows", "with", "with_")):
         return False
-    if any(isinstance(n, exp.AggFunc) and not isinstance(n.parent, exp.Window) for n in _own_scope(inner)):
+    if any(isinstance(n, exp.AggFunc) and not is_window_function(n) for n in _own_scope(inner)):
         return False
     outputs = _outputs(inner)
     candidate = output.name.lower()

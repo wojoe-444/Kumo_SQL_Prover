@@ -21,6 +21,7 @@ This is a shape rule (see ``shape_fallback``).
 from __future__ import annotations
 
 from sqlglot import exp
+from .window_calls import is_window_function
 
 _INNER_ARGS = {"expressions", "from_", "from", "joins", "where"}
 _ROW_MAKERS = (exp.UDTF, exp.Unnest, exp.Explode, exp.GenerateSeries, exp.Anonymous)
@@ -62,7 +63,7 @@ def prune_windowed_derived(select: exp.Select, schema: dict | None = None) -> ex
             continue
         if any(isinstance(node, _ROW_MAKERS) or (isinstance(node, exp.Star) and not isinstance(node.parent, exp.Count)) for item in inner.expressions for node in item.walk()):
             continue
-        if any(_own(agg, inner) and agg.find_ancestor(exp.Window) is None for agg in inner.find_all(exp.AggFunc)):
+        if any(_own(agg, inner) and not is_window_function(agg) for agg in inner.find_all(exp.AggFunc)):
             continue  # an aggregate of its own: removing it could turn one row into a row per input row
         alias = source.alias.lower()
         # every read that could be of this source: qualified with its alias, or unqualified

@@ -35,6 +35,7 @@ import re
 from sqlglot import exp
 
 from .ast_utils import extended_grouping, select_sources, visible_ctes
+from .window_calls import is_window_function
 
 _INTEGER = {"INT", "INTEGER", "BIGINT", "INT64", "INT32", "SMALLINT", "INT16", "TINYINT", "INT8"}
 _JOIN_KINDS = {"", "INNER", "CROSS"}
@@ -99,7 +100,7 @@ def _pinned(source: exp.Expression, types: dict) -> dict[str, exp.Literal]:
         return {}
     if group is not None and extended_grouping(group):
         return {}
-    if group is None and any(a.find_ancestor(exp.Select) is inner and not isinstance(a.parent, exp.Window) for a in inner.find_all(exp.AggFunc)):
+    if group is None and any(a.find_ancestor(exp.Select) is inner and not is_window_function(a) for a in inner.find_all(exp.AggFunc)):
         return {}
     names = [(item.alias_or_name or "").lower() for item in inner.expressions]
     values: dict[str, exp.Literal] = {}

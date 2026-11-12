@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from sqlglot import exp
 
+from .window_calls import is_window_function
+
 
 def _is_star(node: exp.Expression) -> bool:
     return isinstance(node, exp.Star) or (isinstance(node, exp.Column) and isinstance(node.this, exp.Star))
@@ -31,7 +33,7 @@ def _global_aggregate(select: exp.Select) -> bool:
     no input, and dropping the column holding its only aggregate would leave a row per input row."""
 
     return not select.args.get("group") and any(
-        a.find_ancestor(exp.Select) is select and not isinstance(a.parent, exp.Window) for a in select.find_all(exp.AggFunc)
+        a.find_ancestor(exp.Select) is select and not is_window_function(a) for a in select.find_all(exp.AggFunc)
     )
 
 
