@@ -8,7 +8,7 @@ so it could not connect this with ``a.seat_id = b.seat_id + 1 OR a.seat_id = b.s
     .. ON (a.seat_id - b.seat_id = 1 OR a.seat_id - b.seat_id = -1)
 
 **Why it is the same.** For a number ``x``, ``ABS(x)`` is ``x`` or ``-x``, whichever is not negative, so for a
-literal ``n > 0`` it equals ``n`` exactly when ``x = n`` or ``x = -n``; for ``n = 0`` exactly when ``x = 0``.
+literal ``n > 0`` it equals ``n`` exactly when ``x = n`` or ``x = -n``. (``n = 0`` is left to the solver, which reads ``ABS(x - y) = 0`` as ``x = y`` itself.)
 When ``x`` is NULL both sides are unknown (``NULL = n OR NULL = -n``). The identity holds in every position, so
 no context is checked.
 
@@ -51,7 +51,7 @@ def read_absolute_values(tree: exp.Expression, types: dict[str, dict[str, str]] 
             except ValueError:
                 continue
             if zero:
-                replacement: exp.Expression = exp.EQ(this=inner(), expression=number.copy())
+                continue  # ABS(x - y) = 0 is read by the solver itself (smt_equivalence), which needs the ABS to be there
             else:
                 replacement = exp.Paren(
                     this=exp.Or(

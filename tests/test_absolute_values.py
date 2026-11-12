@@ -31,7 +31,7 @@ def test_abs_equal_to_a_number():
     assert rewritten("SELECT x.a FROM t AS x JOIN t AS y ON ABS(x.a - y.a) = 1") == "SELECT x.a FROM t AS x JOIN t AS y ON ((x.a - y.a) = 1 OR (x.a - y.a) = -1)"
     assert rewritten("SELECT x.a FROM t AS x WHERE 2 = ABS(x.b) AND x.a > 0") == "SELECT x.a FROM t AS x WHERE (x.b = 2 OR x.b = -2) AND x.a > 0"
     assert rewritten("SELECT ABS(x.b * 2 + 1) = 3 AS f FROM t AS x") == "SELECT ((x.b * 2 + 1) = 3 OR (x.b * 2 + 1) = -3) AS f FROM t AS x"
-    assert rewritten("SELECT x.a FROM t AS x WHERE ABS(x.b) = 0") == "SELECT x.a FROM t AS x WHERE x.b = 0"
+    assert rewritten("SELECT x.a FROM t AS x WHERE ABS(x.b) = 0") is None  # zero is the solver's own reading
     assert rewritten("SELECT x.a FROM t AS x WHERE NOT ABS(x.b) = 1.5", types=None) == "SELECT x.a FROM t AS x WHERE NOT (x.b = 1.5 OR x.b = -1.5)"
 
 
