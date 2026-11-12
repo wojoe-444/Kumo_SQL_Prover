@@ -68,6 +68,11 @@ the shape rules on and only after the solver has failed on those texts, so they 
 and only for a pair where it would have changed a query. On the first attempt it took three pairs out of the shape that other rules
 prove, and in the second it took two more.
 
+The rules of the hardest-cases batch (``grouped_source_filters``, ``rejected_null_filters``, ``tailed_regroups``, ``union_join_grouping``,
+``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence``) are also in the narrow tier below: one of them rewrote the
+SUM(CASE ..) > 0 side of a conditional LeetCode pair out of the shape main proves, and the whole second attempt cannot find that
+out for a pair that is too large for it.
+
 A new rule that rewrites queries the prover already read belongs in the list: guard its entry in ``normalize``
 with ``shape_fallback.enabled()``.
 

@@ -221,3 +221,20 @@ def test_the_conditional_verdict_names_the_column():
     result = prove(COUNTED, FILTERED, conditional=True)
     assert result.status.value == "proven_conditionally"
     assert sorted((c.kind, tuple(c.columns)) for c in result.conditions) == [("not_null", ("buyer",))]
+
+
+
+def test_the_rule_is_one_of_the_narrow_retry_rules():
+    """Rewriting the SUM(CASE ..) > 0 side took a conditional LeetCode pair (a MIN/MAX date range against counts of
+    in-range and out-of-range rows) out of the shape main proves; a pair left unproven is tried again with the rule off."""
+
+    from kumo_sql_prover import shape_fallback
+
+    with shape_fallback.tracking() as fired:
+        assert rewritten(COUNTED) == READ
+    assert fired == {"counted_presence"}
+    with shape_fallback.without("counted_presence"):
+        assert rewritten(COUNTED) is None
+    with shape_fallback.tracking() as fired:
+        assert rewritten("SELECT s.buyer FROM sales AS s GROUP BY s.buyer") is None
+    assert not fired

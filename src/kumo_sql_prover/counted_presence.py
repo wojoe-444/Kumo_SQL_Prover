@@ -43,7 +43,7 @@ from __future__ import annotations
 
 from sqlglot import exp
 
-from . import smt_values
+from . import shape_fallback, smt_values
 
 _BANNED = ("qualify", "windows", "with_", "with", "limit", "offset", "order", "laterals", "pivots", "into", "locks", "sample", "cluster", "distribute", "sort", "connect", "match", "kind", "hint")
 _JOIN_EXTRAS = ("method", "using", "match_condition", "global_", "hint", "directed", "expressions", "pivots")
@@ -210,6 +210,8 @@ def read_counted_presence(select: exp.Select, not_null: dict[str, frozenset[str]
     from .algebraic_equivalence import _conjuncts
     from .counted_membership import _unstable
 
+    if not shape_fallback.rule_enabled("counted_presence"):
+        return None
     group, having = select.args.get("group"), select.args.get("having")
     if not not_null or group is None or having is None or any(select.args.get(k) for k in _BANNED):
         return None
@@ -281,6 +283,7 @@ def read_counted_presence(select: exp.Select, not_null: dict[str, frozenset[str]
         exists = exp.Exists(this=probe)
         conditions.append(exists if has else exp.Not(this=exists))
     _filter(result, conditions)
+    shape_fallback.note_fired("counted_presence")  # a pair left unproven is tried again with this rule off (shape_fallback)
     return result
 
 
