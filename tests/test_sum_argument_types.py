@@ -113,3 +113,56 @@ def test_without_declared_types_the_assumption_stays():
         schema=SCHEMA,
     )
     assert result.status is SmtStatus.PROVEN_EQUIVALENT and ROW_ORDER in result.assumptions
+
+
+DECIMALS = {"t": {"x": "INT64", "d": "DECIMAL(7, 2)", "e": "NUMERIC(10, 4)", "n": "NUMERIC", "f": "FLOAT64"}}
+
+
+def _is_exact(sql: str) -> bool:
+    tree = sqlglot.parse_one(sql, read="bigquery")
+    call = next(node for node in tree.find_all(exp.Sum) if node.find_ancestor(exp.Sum) is None and node.find_ancestor(exp.Subquery, exp.CTE) is None)
+    return sum_argument_types.is_exact(call, DECIMALS)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT SUM(x) FROM t",
+        "SELECT SUM(d) FROM t",
+        "SELECT SUM(d + e) FROM t",
+        "SELECT SUM(d * e) FROM t",  # 2 + 4 places
+        "SELECT SUM(d * x) FROM t",
+        "SELECT SUM(d * (1 - d)) FROM t",
+        "SELECT SUM(d * 0.25) FROM t",
+        "SELECT SUM(n * x) FROM t",
+        "SELECT SUM(CAST(f AS DECIMAL(10, 2))) FROM t",
+        "SELECT SUM(v) FROM (SELECT d AS v FROM t UNION ALL SELECT e FROM t)",
+        "SELECT SUM(v) FROM (SELECT SUM(d * x) AS v FROM t GROUP BY x)",
+        "SELECT SUM(CASE WHEN x > 1 THEN d ELSE 0 END) FROM t",
+    ],
+)
+def test_exact_values_include_fixed_point(sql):
+    assert _is_exact(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT SUM(f) FROM t",
+        "SELECT SUM(d + f) FROM t",
+        "SELECT SUM(d / e) FROM t",
+        "SELECT SUM(x * 0.5) FROM t",
+        "SELECT SUM(0.5) FROM t",
+        "SELECT SUM(d * 0.25 * e * e) FROM t",  # 2 + 2 + 4 + 4 places
+        "SELECT SUM(n * n) FROM t",
+        "SELECT SUM(v) FROM (SELECT d AS v FROM t UNION ALL SELECT f FROM t)",
+        "SELECT SUM(d * 1e-1) FROM t",
+    ],
+)
+def test_values_that_may_round_are_not_exact(sql):
+    assert not _is_exact(sql)
+
+
+def test_is_int64_still_refuses_fixed_point():
+    tree = sqlglot.parse_one("SELECT SUM(d) FROM t", read="bigquery")
+    assert not sum_argument_types.is_int64(tree.find(exp.Sum), DECIMALS)
