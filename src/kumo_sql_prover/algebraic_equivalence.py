@@ -5238,9 +5238,12 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
             dialect = kwargs.get("dialect", "bigquery")
             semi = semijoin_reading(left_sql, dialect), semijoin_reading(right_sql, dialect)
             if semi != (None, None):
-                retry = _prove_algebraic(semi[0] or left_sql, semi[1] or right_sql, 0, _normalization_cache=normalization_cache, **kwargs)
-                if retry.proven:
-                    return retry
+                for level in (0, 1, 2):  # the semijoin reading may leave a DISTINCT that only the later levels drop
+                    if level == 1 and not (kwargs.get("constraints") or {}):
+                        continue
+                    retry = _prove_algebraic(semi[0] or left_sql, semi[1] or right_sql, level, _normalization_cache=normalization_cache, **kwargs)
+                    if retry.proven:
+                        return retry
         return result
 
     result = attempt()
