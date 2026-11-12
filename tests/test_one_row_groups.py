@@ -174,3 +174,18 @@ def test_the_projection_gives_the_same_rows(sql):
     for rows in [{}, ROWS] + [random_rows(rng) for _ in range(14)]:
         assert not differ_on_duckdb(sql, out, rows)
         assert not differ_on_duckdb(sql, normalized, rows)
+
+
+def test_the_narrow_second_attempt_can_switch_the_collapse_off():
+    """``one_row_groups`` records that it fired and stays off inside ``shape_fallback.without`` (a pair with a constant
+    column from a ``VALUES`` table is proved only when the collapse stays out of one query)."""
+
+    from kumo_sql_prover import shape_fallback
+
+    sql = f"SELECT d.a, MIN(d.s) AS s FROM {GROUPED} GROUP BY d.a"
+    with shape_fallback.tracking() as fired:
+        assert collapsed(sql) is not None
+        assert "one_row_groups" in fired
+        with shape_fallback.without("one_row_groups"):
+            assert collapsed(sql) is None
+        assert collapsed(sql) is not None

@@ -57,6 +57,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from .ast_utils import FROM_KEY
+from .window_calls import is_window_function
 
 _BANNED = ("group", "having", "distinct", "qualify", "order", "limit", "offset", "windows", "with_", "with")
 _INTEGER_TYPES = {"INT", "INTEGER", "BIGINT", "SMALLINT", "INT64", "INT32", "INT16", "INT8", "INT4", "INT2"}
@@ -383,7 +384,7 @@ def spell_windowed_input(select: exp.Select, types: dict | None = None) -> exp.S
         return None
     if not any(_own(w, select) for w in select.find_all(exp.Window)):
         return None
-    if any(_own(a, select) and a.find_ancestor(exp.Window) is None for a in select.find_all(exp.AggFunc)):
+    if any(_own(a, select) and not is_window_function(a) for a in select.find_all(exp.AggFunc)):
         return None
     from_ = select.args.get(FROM_KEY)
     if from_ is None or any(v for k, v in from_.args.items() if k != "this"):

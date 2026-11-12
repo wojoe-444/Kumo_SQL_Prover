@@ -41,6 +41,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from .ast_utils import select_sources
+from .window_calls import is_window_function
 
 _BODY_ARGS = frozenset({"expressions", "from_", "from", "joins", "where", "group", "having", "kind"})
 
@@ -58,9 +59,7 @@ def _aggregates(select: exp.Select, item: exp.Expression | None = None) -> bool:
     """Whether ``select`` (or one item of it) evaluates an aggregate of its own, outside any window function call."""
 
     for call in (item or select).find_all(exp.AggFunc):
-        if call.find_ancestor(exp.Select) is select and not isinstance(call.parent, exp.Window) and not (
-            isinstance(call.parent, (exp.IgnoreNulls, exp.RespectNulls, exp.Filter)) and isinstance(call.parent.parent, exp.Window)
-        ):
+        if call.find_ancestor(exp.Select) is select and not is_window_function(call):
             return True
     return False
 

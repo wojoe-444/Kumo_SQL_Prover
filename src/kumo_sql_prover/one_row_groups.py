@@ -46,13 +46,19 @@ Conditions, all checked:
   row, ``SELECT 1 FROM t`` is not);
 * integer ``SUM`` returns a wider type than its argument; the value is the same and, as elsewhere in the prover,
   the type of an output is not compared.
+
+This is a shape rule (see ``shape_fallback``), and a pair it changed that the prover cannot prove is tried again
+without it (the narrow second attempt, rule name ``one_row_groups``): in a pair with a constant column from a
+``VALUES`` table the collapse on one query only moved it away from the form the other shared.
 """
 
 from __future__ import annotations
 
 from sqlglot import exp
 
+from . import shape_fallback
 from .ast_utils import FROM_KEY, extended_grouping
+from .window_calls import is_window_function
 
 _BANNED = ("distinct", "qualify", "order", "limit", "offset", "windows", "with_", "with")
 _VALUE = (exp.Min, exp.Max, exp.Sum, exp.BitwiseAndAgg, exp.BitwiseOrAgg, exp.AnyValue)
@@ -114,6 +120,8 @@ def _over_one_row(call: exp.Expression) -> exp.Expression | None:
 def collapse_one_row_groups(select: exp.Select) -> exp.Select | None:
     """``select`` without its ``GROUP BY`` when each of its groups is one row of a grouped derived table (module doc)."""
 
+    if not shape_fallback.rule_enabled("one_row_groups"):
+        return None  # the narrow second attempt (``shape_fallback.without``)
     if any(select.args.get(key) for key in _BANNED) or select.args.get("having") is not None or select.args.get("joins"):
         return None
     if select.args.get("where") is not None:
@@ -159,7 +167,7 @@ def collapse_one_row_groups(select: exp.Select) -> exp.Select | None:
     else:
         if outer_keys or inner.args.get("having") is not None or not calls:
             return None
-        if not any(_own(a, inner) and a.find_ancestor(exp.Window) is None for a in inner.find_all(exp.AggFunc)):
+        if not any(_own(a, inner) and not is_window_function(a) for a in inner.find_all(exp.AggFunc)):
             return None
     copy = select.copy()
     for call in [
@@ -196,8 +204,9 @@ def collapse_one_row_groups(select: exp.Select) -> exp.Select | None:
             items.append(exp.Paren(this=value) if isinstance(value, (exp.Column, exp.Literal)) else value)
     result = inner.copy()
     result.set("expressions", items)
-    if not inner_keys and not any(_own(a, result) and a.find_ancestor(exp.Window) is None for item in items for a in item.find_all(exp.AggFunc)):
+    if not inner_keys and not any(_own(a, result) and not is_window_function(a) for item in items for a in item.find_all(exp.AggFunc)):
         return None  # without an aggregate the select would return a row per input row, not one
+    shape_fallback.note_fired("one_row_groups")
     return result
 
 
