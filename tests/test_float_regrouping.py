@@ -71,3 +71,15 @@ def test_a_sum_of_sums_of_nulls_still_proves():
     right = "SELECT d.k AS k, SUM(d.v) AS v FROM (SELECT x AS k, SUM(NULL) AS v FROM t GROUP BY x) AS d GROUP BY d.k"
     result = prove_equivalent_algebraic(left, right, schema={"t": ["x", "f"]}, types=types)
     assert result.status is SmtStatus.PROVEN_EQUIVALENT
+
+
+def test_a_sum_of_sums_over_integer_values_rows_still_proves():
+    # Calcite writes a constant column as (VALUES (2)) AS t (c); adding integer literals rounds nothing
+    types = {"emp": {"deptno": "INT64"}}
+    left = "SELECT d, SUM(c) AS s FROM (SELECT deptno AS d, 1 AS c FROM emp UNION ALL SELECT e.deptno, t.c FROM emp AS e, (VALUES (2)) AS t (c) GROUP BY e.deptno, t.c) AS u GROUP BY d"
+    right = (
+        "SELECT d, SUM(s) AS s FROM (SELECT deptno AS d, SUM(1) AS s FROM emp GROUP BY deptno UNION ALL "
+        "SELECT w.deptno, SUM(w.c) AS s FROM (SELECT e.deptno, t.c FROM emp AS e, (VALUES (2)) AS t (c) GROUP BY e.deptno, t.c) AS w GROUP BY w.deptno) AS u GROUP BY d"
+    )
+    result = prove_equivalent_algebraic(left, right, schema={"emp": ["deptno"]}, types=types, dialect="mysql")
+    assert result.status is SmtStatus.PROVEN_EQUIVALENT

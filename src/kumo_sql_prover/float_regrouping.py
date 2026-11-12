@@ -54,34 +54,70 @@ def _branches(query: exp.Expression) -> list[exp.Select]:
     return [query] if isinstance(query, exp.Select) else []
 
 
-def _null_valued(select: exp.Select, node: exp.Expression, depth: int = _DEPTH) -> bool:
-    """Whether ``node`` is NULL in every row: the literal, or a column of a derived table that outputs only it."""
+def _literal(node: exp.Expression) -> bool:
+    """An integer literal (also negated) or NULL: adding it rounds nothing."""
 
-    while isinstance(node, exp.Paren):
+    while isinstance(node, (exp.Paren, exp.Neg)):
         node = node.this
-    if isinstance(node, exp.Null):
+    return isinstance(node, exp.Null) or (
+        isinstance(node, exp.Literal) and not node.is_string and node.this.lstrip("-").isdigit()
+    )
+
+
+def _values_column(source: exp.Expression, name: str) -> bool | None:
+    """For ``(VALUES (..), ..) AS t (a, b)``: whether column ``name`` holds only integer literals or NULL; ``None``
+    when ``source`` is not such a table or has no column ``name``."""
+
+    values = source if isinstance(source, exp.Values) else source.this
+    alias = source.args.get("alias")
+    if not isinstance(values, exp.Values) or alias is None or not alias.args.get("columns"):
+        return None
+    names = [c.name.lower() for c in alias.args["columns"]]
+    if name not in names:
+        return None
+    position = names.index(name)
+    rows = values.expressions
+    return all(isinstance(r, exp.Tuple) and len(r.expressions) == len(names) and _literal(r.expressions[position]) for r in rows)
+
+
+def _literal_valued(select: exp.Select, node: exp.Expression, depth: int = _DEPTH) -> bool:
+    """Whether ``node`` is an integer literal or NULL in every row: the literal itself, or a column of a derived table
+    (also ``VALUES``) that outputs only such values."""
+
+    if _literal(node):
         return True
     if not isinstance(node, exp.Column) or depth <= 0:
         return False
+    qualifier, name = node.table.lower(), node.name.lower()
     sources = _sources(select)
-    candidates = [sources[node.table.lower()]] if node.table and node.table.lower() in sources else list(sources.values()) if not node.table else []
-    name = node.name.lower()
-    outputs = [
-        (branch, item)
-        for query in candidates
-        for branch in _branches(query)
-        for item in branch.expressions
-        if (item.alias_or_name or "").lower() == name
-    ]
-    return bool(outputs) and len(outputs) == len(candidates) and all(
-        _null_valued(branch, item.this if isinstance(item, exp.Alias) else item, depth - 1) for branch, item in outputs
-    )
+    found = []
+    for alias, query in sources.items():
+        if qualifier and alias != qualifier:
+            continue
+        holder = _holder(select, alias)
+        values = _values_column(holder, name) if holder is not None else None
+        if values is not None:
+            found.append(values)
+            continue
+        for branch in _branches(query):
+            for item in branch.expressions:
+                if (item.alias_or_name or "").lower() == name:
+                    found.append(_literal_valued(branch, item.this if isinstance(item, exp.Alias) else item, depth - 1))
+    return bool(found) and all(found)
+
+
+def _holder(select: exp.Select, alias: str) -> exp.Expression | None:
+    from_ = select.args.get("from_") or select.args.get("from")
+    for source in ([from_.this] if from_ is not None else []) + [j.this for j in select.args.get("joins") or []]:
+        if isinstance(source, (exp.Subquery, exp.Values)) and source.alias.lower() == alias:
+            return source
+    return None
 
 
 def _exact(select: exp.Select, call: exp.Expression, types) -> bool:
     """A SUM or AVG that adds only integers or only NULLs (nothing to round)."""
 
-    return sum_argument_types.is_int64(call, types) or (isinstance(call.this, exp.Expression) and _null_valued(select, call.this))
+    return sum_argument_types.is_int64(call, types) or (isinstance(call.this, exp.Expression) and _literal_valued(select, call.this))
 
 
 def _own(select: exp.Select, node: exp.Expression, types) -> list[exp.Expression]:
@@ -100,8 +136,8 @@ def _sources(select: exp.Select) -> dict[str, exp.Expression]:
     from_ = select.args.get("from_") or select.args.get("from")
     holders = ([from_.this] if from_ is not None else []) + [j.this for j in select.args.get("joins") or []]
     for source in holders:
-        if isinstance(source, exp.Subquery):
-            found[source.alias.lower() if source.alias else f"#{len(found)}"] = source.this
+        if isinstance(source, (exp.Subquery, exp.Values)):
+            found[source.alias.lower() if source.alias else f"#{len(found)}"] = source.this if isinstance(source, exp.Subquery) else source
         elif isinstance(source, exp.Table) and not source.args.get("db"):
             try:
                 body = sum_argument_types._cte_body(source.name.lower(), select)
