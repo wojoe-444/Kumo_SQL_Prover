@@ -24,12 +24,16 @@ aggregate, a window function or a function whose value can change between two re
 ordered or limited or has a star; a select with joins, where the filter may sit on the padded side of an outer
 join.
 
-This is a shape rule (see ``shape_fallback``).
+This is a shape rule (see ``shape_fallback``), and a pair it changed that the prover cannot prove is tried again
+without it (the narrow second attempt, rule name ``window_filters``): one pair of QUITE's SQLStorm development
+set is proved only when this filter stays above the window in the one query that has it.
 """
 
 from __future__ import annotations
 
 from sqlglot import exp
+
+from . import shape_fallback
 
 _INNER_ARGS = {"expressions", "from_", "from", "joins", "where"}
 _VOLATILE = (exp.Rand, exp.Randn, exp.Randstr, exp.Uuid, exp.Anonymous, exp.CurrentTimestamp, exp.CurrentDate, exp.CurrentTime)
@@ -58,6 +62,9 @@ def _text(node: exp.Expression) -> str:
 
 def push_filter_below_windows(select: exp.Select) -> exp.Expression | None:
     """``select`` with the conjuncts of its ``WHERE`` that qualify moved into its derived table, or ``None``."""
+
+    if not shape_fallback.rule_enabled("window_filters"):
+        return None  # the narrow second attempt (``shape_fallback.without``)
 
     where = select.args.get("where")
     from_ = select.args.get("from_") or select.args.get("from")
@@ -122,4 +129,5 @@ def push_filter_below_windows(select: exp.Select) -> exp.Expression | None:
     condition = exp.and_(*([exp.Paren(this=new_inner.args["where"].this)] if new_inner.args.get("where") is not None else []), *pushed)
     new_inner.set("where", exp.Where(this=condition))
     copy.set("where", exp.Where(this=exp.and_(*[k.copy() for k in kept])) if kept else None)
+    shape_fallback.note_fired("window_filters")
     return copy

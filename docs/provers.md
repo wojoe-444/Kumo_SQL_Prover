@@ -375,6 +375,39 @@ Every normalization rule is an identity, so applying one can never make a proof 
 
 `tests/test_shape_fallback.py` holds made-up pairs of both lost shapes, and shows each is unproven when the second attempt is switched off.
 
+### A narrower second attempt
+
+The attempt above switches every shape rule off at once and only for a pair of at most 4,000 characters. A rule that is right for most pairs can still hide the match of a larger one: reading a nested `IN` or `EXISTS` inside a membership test as a join (`membership_joins.py`) proves TPC-H Q20 and its rewrites, and hid the proof of one held-out DSB pair of LOGOS that is several thousand characters long. For such rules `shape_fallback` has a second, narrower tier: a rule records when it fires (`note_fired`), and when the pair is still unproved the prover tries it again with only the rules that fired switched off (`shape_fallback.without`), for pairs of up to 24,000 characters (`NARROW_MAX_CHARS`). Today two rules use it: `nested_membership` and `window_filters` (a filter on a partition key moved below a window, `window_filters.py`, which hid one SQLStorm development pair). It costs one more normalization of a pair the rule changed and the prover could not prove; a proof from the retry passes the same safeguards as any other.
+
+## Rules for QUITE's TPC-H, Calcite and SQLStorm pairs (2026-11-11)
+
+Written against the 329 development pairs of [QUITE](evals/quite.md) that the prover left unknown in those three parts (the DSB part has its own batch). Each rule is an exact rewrite in its own module, with a test file of rewrites, shapes it must leave alone, proofs, near misses a database separates and random replays against DuckDB; every one is a shape rule, so the second attempt above takes them away together. Directions agreed with the other batches: a conditional count is `COUNT(CASE WHEN p THEN 1 END)`, strict bounds on whole-valued columns become non-strict, and a pre-aggregated join is read as the aggregate over the flat join. **Any rule that reads a declared unique key requires every column of the key to be declared NOT NULL**: `UNIQUE (a, b)` allows two rows `(1, NULL)`, and a keyed join returns both where a `GROUP BY a, b` returns one. The conditional Singh eval, which hands the prover each condition alone, found that in the first version of `keyed_join_groups.py`.
+
+TPC-H:
+
+| Module | What it reads |
+| --- | --- |
+| `anti_join_exists.py` | `LEFT JOIN t ON .. WHERE t.c IS NULL` under an aggregate, and Calcite's indicator spelling, as `NOT EXISTS`, when the test is TRUE on a padded row and never on a matched one and nothing else reads `t` |
+| `expanded_not_in.py` | Calcite's expansion of `NOT IN` with its two counts: the guards go when both count every row of the same filtered table |
+| `counted_groups.py` | `COUNT(*)` over `GROUP BY g, x` regrouped by `g`, against `COUNT(DISTINCT x)`, when `x` is a NOT NULL column read through inner joins |
+| `membership_joins.py` | `IN` nested inside the query of an `IN` (or `EXISTS` inside an `IN`) as a join, since only the set of rows matters there; also tried again without it when it fired and the pair is not proved |
+| `computed_group_outputs.py` | `0.5 * SUM(x)` inside a grouped derived table as the bare aggregate, with the arithmetic at each read |
+| `keyed_join_groups.py` | keyed tables joined to a pre-aggregated table that carries a `HAVING`, a filter on an aggregate or a tail, as the aggregate over the flat join, grouped by a declared NOT NULL key of each table |
+| `own_group_filters.py` | `o.k IN (SELECT l.k FROM l GROUP BY l.k HAVING h)` in a query that already groups those lines, as `HAVING h` |
+| `exclusive_union_filters.py` | an `OR` split into `UNION ALL` branches that pin one column to different literals |
+| `one_row_sources.py`, `closed_scalar_filters.py`, `closed_scalar_outputs.py`, `group_total_windows.py` | a threshold computed once in a cross-joined one-row table of aggregates (or as `SUM(SUM(x)) OVER ()`) as a scalar subquery at each read |
+| `substring_casts.py` | `CAST(SUBSTRING(c FROM 1 FOR 2) AS VARCHAR(2))`: a cast wide enough for the bounded substring is dropped |
+| `discrete_bounds.py` | `x < c` as `x <= c - 1` on a column declared `DATE` or integer, so a half-open year meets `BETWEEN` (PostgreSQL, DuckDB, BigQuery, MySQL) |
+| `cased_group_sums.py` | `SUM(CASE WHEN c THEN d.total ELSE 0 END)` over a join with a pre-aggregated table |
+| `tuple_membership.py` | `(a, b) IN ((x, y), ..)` as an `OR` of `AND`ed equalities (PostgreSQL, MySQL) |
+| `counted_outer_groups.py`, `guarded_outer_counts.py` | counts per key under a `LEFT JOIN`, and a guard moved into the join condition, read as the count over the outer join |
+
+Calcite: `keyed_only_grouping.py` (a key-only `GROUP BY` over an outer join is `SELECT DISTINCT`), `windowed_inputs.py` (one spelling for the input of a windowed select), `plain_grouping_calls.py` and `one_row_groups.py` (regrouping a grouped table by all its keys is a projection), `key_expression_having.py`, `extremum_comparisons.py`, `tagged_union_groups.py`, `conditional_count_sums.py`, `constant_window_sums.py`, `counted_known_values.py`, `grouped_output_names.py`, `self_outer_join_columns.py`.
+
+SQLStorm: `timestamp_shifts.py` (a constant timestamp plus or minus a constant interval is the timestamp it evaluates to; PostgreSQL and DuckDB), `preserved_join_sources.py` and `derived_table_proofs.py` (an inner join, or a grouped, `DISTINCT` or `LIMIT` derived table, on the preserved side of `LEFT JOIN`s), `window_inputs.py`, `joined_key_restrictions.py`, `never_null_cases.py`, `counted_subqueries.py`, `preserved_counts.py`, `windowed_output_pruning.py`, `padded_sums.py`, `grouped_aggregate_spellings.py`, `quoted_names.py`, `equality_orientation.py`. `derived_table_proofs.py`, `window_inputs.py` and `grouped_aggregate_spellings.py` are not normalizations: they run on the two normalized texts after the solver has failed, on closed derived tables only, at most 4 sub-proofs per pair, 2 levels deep and 20 seconds, and cannot take a verdict away. An unread output of a windowed derived table is dropped (`windowed_output_pruning.py`, `window_pruning.py`) only when every column it reads is found in a source of that table: dropping an output that reads a column nothing provides would turn a query that fails into one that answers.
+
+Two things the batch learned the slow way. A shape rule that fires on one query of a pair only moves that side away from a form the two shared, and the second attempt cannot recover it for a pair over its size limit: twelve DSB development pairs of 6,000 to 14,000 characters lost the proof they had on main to `keyed_join_groups.py` (a plain pre-aggregated join read flat on one query while the other kept a CTE) and `membership_joins.py` (an `EXISTS` inside an `EXISTS`), which is why the first now fires only when something is carried over and the second leaves `EXISTS` inside `EXISTS` alone. The gate does not see such losses; `tools/eval_diff.py` and a whole [QUITE](evals/quite.md) run do.
+
 ## Proof search performance
 
 Algebraic fallback levels reuse normalization within a single query pair and fixed proof context. The cached value includes normalization assumptions. Recursive and conditional proofs create separate caches, so different constraints, schemas, types and dialects never reuse a result from another proof. Solver calls and proof safeguards still run.

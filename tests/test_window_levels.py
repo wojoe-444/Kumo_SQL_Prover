@@ -282,3 +282,16 @@ def test_the_rules_are_off_under_the_shape_fallback():
     assert proved(above, below)
     with shape_fallback.disabled():
         assert not proved(above, below)
+
+
+def test_the_narrow_second_attempt_can_switch_the_filter_push_off():
+    """``window_filters`` records that it fired and stays off inside ``shape_fallback.without`` (the retry for a pair
+    the filter push hid: one SQLStorm development pair of QUITE is proved only with the filter above the window)."""
+
+    sql = f"SELECT d.n, d.c FROM ({COUNTED}) AS d WHERE d.d > 0"
+    with shape_fallback.tracking() as fired:
+        assert applied(push_filter_below_windows, sql) is not None
+        assert "window_filters" in fired
+        with shape_fallback.without("window_filters"):
+            assert applied(push_filter_below_windows, sql) is None
+        assert applied(push_filter_below_windows, sql) is not None
