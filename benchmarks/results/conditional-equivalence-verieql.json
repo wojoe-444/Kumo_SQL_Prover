@@ -2,18 +2,18 @@
   "order": 27,
   "held_out": "none",
   "docs": "docs/evals/conditional-equivalence.md",
-  "date": "2026-10-04",
+  "date": "2026-11-12",
   "evidence": "proof",
   "suite": "Equivalent under conditions: VeriEQL LeetCode (every 8th case)",
-  "size": 2134,
-  "score": "297 cases proved only under conditions beyond the declared ones, 0 wrong",
-  "metric": "Of 3,000 cases (every eighth of 23,994), the 2,134 the prover does not prove outright with the spec's own types, keys, NOT NULL columns and foreign keys (866 are proved outright): 297 proved under a minimal set of extra NOT NULL, unique-key and foreign-key conditions, 1,837 unknown (5 more are conditional proofs that rest on a composite foreign key the executed check cannot impose; they are not scored).",
-  "correctness": "0 wrong, 0 crashed: every conditional proof re-run on 900 random DuckDB databases repaired to meet its conditions and on the executed counterexample search with the conditions in the spec, both with no difference; the prover loses each proof when any one condition is dropped; 70 are separated by a database that breaks the conditions",
+  "size": 2071,
+  "score": "374 cases proved only under conditions beyond the declared ones, 0 wrong",
+  "metric": "Of 3,000 cases (every eighth of 23,994), the 2,071 the prover does not prove outright with the spec's own types, keys, NOT NULL columns and foreign keys (929 are proved outright): 374 proved under a minimal set of extra NOT NULL, unique-key and foreign-key conditions, 1,697 unknown (1,690 with no proof, and 7 conditional proofs the executed check cannot re-check (not scored: 5 rest on a composite foreign key it cannot impose, 2 hold only when a column is NOT NULL and make both queries constant on every test database)).",
+  "correctness": "0 wrong, 0 crashed: every conditional proof re-run on 900 random DuckDB databases repaired to meet its conditions and on the executed counterexample search with the conditions in the spec, both with no difference; the prover loses each proof when any one condition is dropped; 101 are separated by a database that breaks the conditions",
   "coverage": {
-    "proven": 297,
+    "proven": 374,
     "refuted": 0,
-    "unknown": 1837
+    "unknown": 1697
   },
   "command": "python tools/conditional_bench.py verieql --every 8",
-  "caveats": "A sample, not the whole set (3,000 of 23,994 cases). Proof under assumed conditions beyond the declared ones. No held-out split reserved; the harness was developed against Singh dev pairs and an early 80-case sample (tuned on test). Conditions beyond the spec are rarer than on the Singh pairs because the declared keys already carry what the prover can use. Measured 2026-10-04. Against master on the same sample this is 23 fewer conditional proofs: the constant-result check used to stop on VeriEQL type names, which left it unable to run, and 24 proofs it now rejects hold only because the returned conditions make both queries return one result on every test database (a unique key on a self join that asks for two different rows); one proof was gained."
+  "caveats": "A sample, not the whole set (3,000 of 23,994 cases). Proof under assumed conditions beyond the declared ones. No held-out split reserved; the harness was developed against Singh dev pairs and an early 80-case sample (tuned on test). Conditions beyond the spec are rarer than on the Singh pairs because the declared keys already carry what the prover can use. Measured 2026-11-12 on commit 395b5c1 (hardest-cases batch 3, Kumo_SQL_Prover PR 20), with main 0e94662 measured the same way on the same sample as the baseline (879 outright, 335 conditional, 1,781 unknown, 5 not re-checkable): no pair moved the other way; 50 unknown pairs became outright proofs, 39 unknown pairs conditional, and two pairs that a database separated before (they differ only on a row whose column is NULL) now read as conditional on that column being NOT NULL and are not re-checkable. On the first measurement (2026-10-04) the count was 297."
 }

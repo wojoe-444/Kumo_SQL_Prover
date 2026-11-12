@@ -65,12 +65,14 @@ A pair scores proved when the prover shows it equivalent; it leaves the denomina
 | Benchmark | Pairs | Proved | Refuted | Unknown | Timeout or error | Score |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | TPC-H | 543 | 403 | 3 | 137 | 0 | 403/540 |
-| DSB | 1,319 | 809 | 1 | 503 | 6 | 809/1,318 |
+| DSB | 1,319 | 828 | 1 | 479 | 11 | 828/1,318 |
 | Calcite | 477 | 349 | 29 | 99 | 0 | 349/448 |
-| SQLStorm | 335 | 98 | 32 | 205 | 0 | 98/303 |
-| **All** | **2,674** | **1,659** | **65** | **944** | **6** | **1,659/2,609, 0 wrong** |
+| SQLStorm | 335 | 98 | 33 | 204 | 0 | 98/302 |
+| **All** | **2,674** | **1,678** | **66** | **919** | **11** | **1,678/2,608, 0 wrong** |
 
-* **Held out** (one query in five, 564 pairs, 70 queries): 346/555 proved, 0 wrong, 9 refuted. The development pairs score 1,313/2,054, 0 wrong, 56 refuted. The rules of 2026-11-10 were written on the development pairs, which went from 1,075 to 1,313 proved (+22%); the held-out fifth, never read, went from 279 to 346 (+24%), so the rules carry over to queries they were not written for. Two more pairs, flagged equal by one system and unequal by another, are not scored.
+Measured 2026-11-12 on commit `395b5c1` (Kumo_SQL_Prover draft PR 20, whole corpus, 4 cores). The measurement of 2026-11-10 was 1,659/2,609 (TPC-H 403, DSB 809, Calcite 349, SQLStorm 98).
+
+* **Held out** (one query in five, 564 pairs, 70 queries): 349/555 proved, 0 wrong, 9 refuted (346 on 2026-11-10; three held-out pairs gained from the rules of hardest-cases batch 3, none lost). The development pairs score 1,329/2,053 on 395b5c1, 0 wrong, 57 refuted; on 2026-11-10 they scored 1,313/2,054, 0 wrong, 56 refuted. The rules of 2026-11-10 were written on the development pairs, which went from 1,075 to 1,313 proved (+22%); the held-out fifth, never read, went from 279 to 346 (+24%), so the rules carry over to queries they were not written for. Two more pairs, flagged equal by one system and unequal by another, are not scored.
 * **Original and adapted apart.** 271 of the pairs needed a quoted name folded to lower case (the Calcite queries): 172 proved, 19 refuted, 80 unknown. The other 2,403 are scored as published: 1,487 proved, 46 refuted, 864 unknown, 6 timeouts (DSB pairs of 8,000 to 38,000 characters that pass the harness's 60-second limit).
 * **Errors.** None. The three TPC-H pairs that made the prover raise a z3 exception in October no longer do, on main as well.
 * **Why unknown.** Across all 1,241 unknown pairs (both flags) the commonest reasons are that no row-preserving mapping between the queries was found (876), a derived table that is not joined on all of its columns (43), a subquery expression the prover does not support (36), a column the harness's DSB schema does not list (`c_last_review_date_sk`, 30), a `UNION` whose branches differ in shape (26) and a `LIMIT` on one side only (23). The reasons of October (an aggregate over an outer join, 148; a query that could not be printed back faithfully, 111) are gone. The unknowns were not classified further.
@@ -111,6 +113,8 @@ The first run of this harness was the baseline; nothing was tuned on it. One har
 | `string_spelling_rules.py` | `CAST(c AS CHAR(n))` of a column declared `CHAR(n)`, `LEFT(x, n)` against `SUBSTRING(x, 1, n)` | reads both as the value itself |
 
 `string_number_compare.py` also stopped reading a date plus an interval as a number. Together: 1,354 of 2,608 to 1,659 of 2,609 proved (+305), by benchmark TPC-H 378 to 403, DSB 592 to 809, Calcite 345 to 349, SQLStorm 39 to 98. No pair proved on main is lost, development or held out. Other evals did lose four proofs to these rules firing on one query of a pair only, so a pair of up to 4,000 characters that they leave unproven is tried again without them ([a second attempt without the shape rules](../provers.md#a-second-attempt-without-the-shape-rules)); the numbers here are measured with that in place.
+
+**Hardest-cases batch 3 (2026-11-12, commit `395b5c1`, draft PR 20): 1,659 to 1,678 of 2,608.** The batch was written for LOGOS, Singh and conditional Singh, not for QUITE; the whole corpus was run against main to find what it moves. DSB 809 to 828, the other benchmarks unchanged; the new proofs come from the rules that move a filter into a joined grouped derived table and type the columns of such tables (the pairs were not classified further). No pair that main proves is lost, development or held out; the held-out fifth gains three. The comparison first found two development pairs lost (the matching of derived tables that differ only in a literal spent its six proofs on pairs that cannot match); `smt_equivalence._unify_opaque` now tries bodies with the same literals first. DSB timeouts read 11 against 6 on 2026-11-10, the 60-second wall-clock limit on very long pairs (the known load noise; none of them was a proof on main).
 
 **Exposure.** The development pairs are tuned on: the rules were written while reading them. The held-out queries were run for scoring only and never read one by one; their share of the gain is given above. The two harness changes of October came from development pairs.
 

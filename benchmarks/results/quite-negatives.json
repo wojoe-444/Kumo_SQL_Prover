@@ -9,21 +9,21 @@
   "coverage": {
     "proven": 25,
     "refuted": 134,
-    "unknown": 296,
-    "unsupported": 43
+    "unknown": 294,
+    "unsupported": 43,
+    "timeout": 2
   },
   "held_out": "31/106 refuted, 8 proved, 0 wrong",
   "caveats": "A flag of unequal is not a semantic label: timeouts and rewrites that failed to run are flagged too, so only replayed differences count as negatives. Refutations come from KumoSQL's own databases (the authors' instances are not public; TPC-H also runs on a generated scale-0.01 instance, and a difference there counts only if the unoptimized plan finishes in 30 s and agrees). Data downloaded at a pinned commit. The rules written on 2026-11-10 for the flagged-equal development pairs also prove 5 development pairs flagged only for a timeout (20 to 25 proofs); each was read by hand and is equivalent as written (a correlated average decorrelated into a grouped join, comma joins written as JOIN). The database search has an 8 s budget per pair, so a refutation near that limit is not found in every run (one SQLStorm pair: 135 refuted on main, 134 here; neither tree refutes it when run alone). The held-out pairs were never read one by one.",
   "docs": "docs/evals/quite.md",
   "command": "python tools/quite_bench.py --write-results",
-  "date": "2026-11-10",
+  "date": "2026-11-12",
   "environment": {
     "python": "3.13.18",
     "sqlglot": "30.21.0",
     "sqlglotc": "30.21.0",
     "duckdb": "1.5.6",
-    "z3-solver": "5.4.0.0",
-    "sqlfluff": "4.5.0",
-    "commit": "a861879+changes"
+    "z3-solver": "5.4.1.0",
+    "commit": "395b5c1+changes"
   }
 }
