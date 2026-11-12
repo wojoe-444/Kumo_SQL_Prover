@@ -43,8 +43,9 @@ the QUITE eval: ``renamed_join_heads``, ``spread_aggregates``, ``scalar_having_g
 ``typed_comparisons`` and ``sqlite_date_text``. Not in the list, because each only reads a query that was declined
 before it: ``listed_output_names`` and ``printed_spelling``.
 
-``self_key_membership`` is the other way round: it runs only on the second attempt, because on the first it took three pairs
-out of the shape that other rules prove.
+``self_key_membership`` is the other way round, a *late rule*: it runs in a third attempt only (the shape rules off, the late rules on),
+and only for a pair where it would have changed a query. On the first attempt it took three pairs out of the shape that other rules
+prove, and in the second it took two more.
 
 A new rule that rewrites queries the prover already read belongs in the list: guard its entry in ``normalize``
 with ``shape_fallback.enabled()``.
@@ -69,6 +70,47 @@ def worth_retrying(left_sql: str, right_sql: str) -> bool:
     """Whether a pair the first attempt left without a verdict gets the attempt without the shape rules."""
 
     return enabled() and len(left_sql) + len(right_sql) <= MAX_CHARS
+
+
+_LATE: ContextVar[bool] = ContextVar("kumo_sql_prover_late_rules", default=False)
+_LATE_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_late_seen", default=None)
+
+
+def late_enabled() -> bool:
+    """Whether the normalizer applies the late rules: the ones that run in a third attempt only."""
+
+    return _LATE.get()
+
+
+def note_late_candidate() -> None:
+    """A late rule would change a query: the third attempt is worth making."""
+
+    seen = _LATE_SEEN.get()
+    if seen is not None:
+        seen.append(True)
+
+
+@contextmanager
+def watching_late():
+    """Collect, while the block runs, whether a late rule would have changed a query. Yields the list."""
+
+    seen: list = []
+    token = _LATE_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _LATE_SEEN.reset(token)
+
+
+@contextmanager
+def late():
+    """Run the block with the late rules on."""
+
+    token = _LATE.set(True)
+    try:
+        yield
+    finally:
+        _LATE.reset(token)
 
 
 def enabled() -> bool:

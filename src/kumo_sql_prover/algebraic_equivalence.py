@@ -4966,10 +4966,13 @@ def normalize(
     tree = _bigquery_sugar(tree)
     tree = using_to_on_unqualified(_using_to_on(tree, schema))
     tree = drop_subsumed_like(tree)
-    if not shapes:
-        # pre-pass: a key looked up through its own table again. Only on the second attempt: on the first it takes the
-        # query out of the shape other rules prove (three conditional Singh pairs main proved were lost to it).
-        tree = read_self_key_membership(tree, schema, keys, not_null, types)
+    # pre-pass: a key looked up through its own table again. A late rule (``shape_fallback``): the third attempt only. On the
+    # first it took pairs main proves out of the shape other rules match, and so did it in the second.
+    candidate = read_self_key_membership(tree.copy(), schema, keys, not_null, types)
+    if candidate != tree:
+        shape_fallback.note_late_candidate()
+        if shape_fallback.late_enabled():
+            tree = candidate
     tree = _semi_joins_to_exists(tree)
     tree = exists_over_aggregate(tree)
     tree = fold_grouped_count_cases(tree, not_null)
@@ -5261,13 +5264,20 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
                     return retry
         return result
 
-    result = attempt()
+    with shape_fallback.watching_late() as late_seen:
+        result = attempt()
     if result.status is SmtStatus.NOT_PROVEN and shape_fallback.worth_retrying(left_sql, right_sql):
         # A shape rule that fires on one query only can hide a match: try the pair as it was read before them.
         with shape_fallback.disabled():
             plain = attempt()
         if plain.status is not SmtStatus.NOT_PROVEN:
             return plain
+        if late_seen:
+            # A late rule would have changed a query: try the pair with the shape rules off and the late rules on.
+            with shape_fallback.disabled(), shape_fallback.late():
+                last = attempt()
+            if last.status is not SmtStatus.NOT_PROVEN:
+                return last
     if search and result.status is SmtStatus.NOT_PROVEN:
         from . import executed_refutation
 
@@ -5305,7 +5315,7 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
         shapes = shape_fallback.enabled()
 
         def normalized(sql, level):
-            key = (sql, level, shapes)
+            key = (sql, level, shapes, shape_fallback.late_enabled())
             if key not in cache:
                 assumptions = set()
                 text = normalize(sql, schema=kwargs.get("schema"), dialect=dialect,
@@ -5327,8 +5337,9 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, float_regrouping.DECLINED, assumptions=tuple(sorted(normalization_assumptions)))
         if regrouping == "untyped":
             normalization_assumptions.add(float_regrouping.UNTYPED_ASSUMPTION)
-        if not shapes and (left, right) == tuple(cache.get((sql, keyed_distinct, True), (None,))[0] for sql in (left_sql, right_sql)):
-            # The attempt with the shape rules compared these same two texts.
+        earlier = [(True, False)] if shape_fallback.late_enabled() is False else [(True, False), (False, False)]
+        if not shapes and any((left, right) == tuple(cache.get((sql, keyed_distinct, *state), (None,))[0] for sql in (left_sql, right_sql)) for state in earlier):
+            # An earlier attempt (the one with the shape rules, and for the late attempt the one without them) compared these same two texts.
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, shape_fallback.SKIPPED, assumptions=tuple(sorted(normalization_assumptions)))
         if keyed_distinct and (left, right) == (normalized(left_sql, 0), normalized(right_sql, 0)):
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, "no keyed DISTINCT to drop", assumptions=tuple(sorted(normalization_assumptions)))

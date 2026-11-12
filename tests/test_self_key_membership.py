@@ -158,3 +158,22 @@ def test_a_pair_main_proves_without_the_rule_is_still_proved():
         "sales": TableConstraints(not_null=frozenset({"buyer_id"}), keys=(("buyer_id",),)),
     }
     assert prove_equivalent_algebraic(left, right, schema=schema, dialect="mysql", constraints=constraints).proven
+
+
+def test_a_not_in_proved_without_the_rule_is_not_rewritten_out_of_its_shape():
+    """The second attempt (shape rules off) does not apply the rule either: it rewrote the NOT IN on one side only."""
+
+    left = (
+        "SELECT DISTINCT sales.buyer_id AS buyer_id FROM product INNER JOIN sales ON sales.product_id = product.product_id "
+        "WHERE product_name = 'a' AND sales.buyer_id NOT IN (SELECT sales.buyer_id FROM product INNER JOIN sales ON sales.product_id = product.product_id WHERE product_name = 'b')"
+    )
+    right = (
+        "WITH a_buyers AS (SELECT DISTINCT s.buyer_id, s.product_id FROM sales s JOIN product p ON s.product_id = p.product_id WHERE p.product_name = 'a') "
+        "SELECT buyer_id FROM a_buyers WHERE buyer_id NOT IN (SELECT s.buyer_id FROM product p JOIN sales s ON p.product_id = s.product_id WHERE p.product_name = 'b')"
+    )
+    schema = {"product": ["product_id", "product_name"], "sales": ["product_id", "buyer_id"]}
+    constraints = {
+        "product": TableConstraints(keys=(("product_id",),)),
+        "sales": TableConstraints(not_null=frozenset({"buyer_id"}), keys=(("buyer_id",),)),
+    }
+    assert prove_equivalent_algebraic(left, right, schema=schema, dialect="mysql", constraints=constraints).proven
