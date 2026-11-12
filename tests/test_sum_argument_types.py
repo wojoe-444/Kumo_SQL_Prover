@@ -166,3 +166,13 @@ def test_values_that_may_round_are_not_exact(sql):
 def test_is_int64_still_refuses_fixed_point():
     tree = sqlglot.parse_one("SELECT SUM(d) FROM t", read="bigquery")
     assert not sum_argument_types.is_int64(tree.find(exp.Sum), DECIMALS)
+
+
+def test_an_average_is_exact_when_its_values_are():
+    def exact(sql):
+        return sum_argument_types.is_exact(sqlglot.parse_one(sql, read="bigquery").find(exp.Avg), DECIMALS)
+
+    assert exact("SELECT AVG(v) FROM (SELECT SUM(d * x) AS v FROM t GROUP BY x)")
+    assert not exact("SELECT AVG(v) FROM (SELECT SUM(f) AS v FROM t GROUP BY x)")
+    # an average is not itself a value that adds exactly
+    assert not _is_exact("SELECT SUM(v) FROM (SELECT AVG(d) AS v FROM t GROUP BY x)")

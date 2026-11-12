@@ -128,3 +128,4 @@ def test_a_product_with_eight_decimal_places_still_proves():
 def test_a_decimal_column_is_exact_only_when_declared_so():
     # the column is declared FLOAT64 here: nothing changes for it
     assert _prove_dec(_partial("d"), types={"t": {**DEC["t"], "d": "FLOAT64"}}).status is not SmtStatus.PROVEN_EQUIVALENT
+

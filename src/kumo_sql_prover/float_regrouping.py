@@ -12,7 +12,7 @@ The test is on the number of ``SUM`` and ``AVG`` calls: a rule that regroups add
 against as normalized, when some call of the written pair can add FLOAT64 values:
 
 * with declared column types, a call counts as exact only when ``sum_argument_types.is_exact`` places its
-  argument: INT64 values, and for a ``SUM`` also fixed-point (``NUMERIC``, ``DECIMAL``) values, whose additions are
+  argument: INT64 values, and also fixed-point (``NUMERIC``, ``DECIMAL``) values, whose additions are
   exact in any grouping (a product of them only while its decimal places stay within nine); if any other call
   exists and a side's number of calls changed, the proof is declined;
 * without declared types nothing is known about the columns, so the proof is kept and carries the assumption

@@ -263,6 +263,7 @@ def is_int64(call: exp.Expression, types: dict[str, dict[str, str]]) -> bool:
 
 def is_exact(call: exp.Expression, types: dict[str, dict[str, str]]) -> bool:
     """Whether aggregate ``call`` adds only values that add without rounding, in any grouping: INT64 as for
-    :func:`is_int64`, and fixed-point values (see the module doc). ``types`` is keyed in lower case."""
+    :func:`is_int64`, and fixed-point values (see the module doc). Also true for an ``AVG`` of such values: the sum is
+    exact and one division follows, whatever the grouping of the rows. ``types`` is keyed in lower case."""
 
-    return _argument(call, types, isinstance(call, exp.Sum)) is not None
+    return _argument(call, types, True) is not None
