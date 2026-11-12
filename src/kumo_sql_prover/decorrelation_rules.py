@@ -16,6 +16,8 @@ import itertools
 from sqlglot import exp
 
 from .ast_utils import FROM_KEY, extended_grouping, same_table
+from . import shape_fallback
+from .scalar_having_groups import read_scalar_having_groups
 
 _counter = itertools.count()
 _CLAUSES = ("distinct", "group", "having", "order", "limit", "offset", "qualify", "windows", "with_", "with", "laterals", "into", "locks", "sample", "prewhere", "connect", "match")
@@ -316,7 +318,10 @@ def decorrelation_step(select: exp.Select, not_null: dict[str, frozenset[str]] |
         from .algebraic_equivalence import _grouped_in_to_derived
 
         before = select.sql()
-        copy = _grouped_in_to_derived(select.copy())
+        copy = select.copy()
+        if shape_fallback.enabled():
+            copy = read_scalar_having_groups(copy, schema, _grouped_in_to_derived)  # a HAVING against an uncorrelated scalar subquery
+        copy = _grouped_in_to_derived(copy)
         if copy.sql() != before:
             return copy
     if any(isinstance(j.this, exp.Lateral) for j in select.args.get("joins") or []):

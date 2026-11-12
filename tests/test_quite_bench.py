@@ -71,6 +71,17 @@ def test_schema_reads_keys_not_null_and_foreign_keys():
     assert "mgr" not in tables["emp"].not_null
 
 
+def test_a_column_the_ddl_names_differently_takes_the_name_the_queries_use():
+    tables = bench.rename_columns(bench.load_schema(DDL), {"nation": {"n_regionkey": "n_region_sk"}, "missing": {"a": "b"}})
+    assert list(tables["nation"].columns) == ["n_nationkey", "n_name", "n_region_sk"]
+    assert tables["nation"].foreign == [(("n_region_sk",), "region", ("r_regionkey",))]
+    assert tables["nation"].keys == [("n_nationkey",)]
+    # a DDL that already has the newer name is left as it is
+    again = bench.rename_columns(tables, {"nation": {"n_regionkey": "n_region_sk"}})
+    assert list(again["nation"].columns) == ["n_nationkey", "n_name", "n_region_sk"]
+    assert bench.COLUMN_RENAMES["dsb"]["customer"] == {"c_last_review_date": "c_last_review_date_sk"}
+
+
 def test_replayed_databases_respect_the_schema():
     tables = bench.load_schema(DDL)
     orphan = {
