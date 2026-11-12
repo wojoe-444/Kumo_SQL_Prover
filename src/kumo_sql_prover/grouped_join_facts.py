@@ -15,6 +15,18 @@ _INTEGER = {"INT", "INTEGER", "BIGINT", "INT64", "INT32", "SMALLINT", "INT16", "
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
 
 
+def _spelled(predicate):
+    """The predicate's text with identifiers unquoted and lower-cased: ``"t"."k" >= 1`` and ``t.k >= 1`` are one fact.
+
+    A fact that is skipped because it is already there is only ever a redundant filter left out.
+    """
+
+    plain = predicate.copy()
+    for identifier in plain.find_all(exp.Identifier):
+        identifier.set("quoted", False)
+    return plain.sql().lower()
+
+
 def _column_id(column):
     if not isinstance(column, exp.Column) or not column.table or column.args.get("db") or column.args.get("catalog") or isinstance(column.this, exp.Star):
         return None
@@ -117,7 +129,7 @@ def propagate_grouped_join_facts(select: exp.Select, types: dict) -> exp.Express
         graph.setdefault(a, set()).add(b); graph.setdefault(b, set()).add(a)
         columns[a], columns[b] = predicate.this, predicate.expression
     facts = [fact for source in sources.values() for fact in _facts(source)]
-    existing = {p.sql() for p in predicates} | {p.sql() for _, p in facts}
+    existing = {_spelled(p) for p in predicates} | {_spelled(p) for _, p in facts}
     added = []
     for column, predicate in facts:
         key = _column_id(column)
@@ -134,8 +146,8 @@ def propagate_grouped_join_facts(select: exp.Select, types: dict) -> exp.Express
             rewritten = predicate.copy()
             for col in list(rewritten.find_all(exp.Column)):
                 col.replace(columns[target].copy())
-            if rewritten.sql() not in existing:
-                added.append(rewritten); existing.add(rewritten.sql())
+            if _spelled(rewritten) not in existing:
+                added.append(rewritten); existing.add(_spelled(rewritten))
     if not added:
         return None
     result = select.copy()

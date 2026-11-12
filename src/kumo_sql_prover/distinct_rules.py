@@ -452,7 +452,7 @@ def distinct_join_to_exists(select: exp.Select) -> exp.Select | None:
             result.set(FROM_KEY, exp.From(this=head.this))
         else:
             del new_joins[position - 1]
-            del kept_on[position - 1]
+            moved += kept_on.pop(position - 1)  # its ON may also hold conditions between the other sources
         for new_join, parts in zip(new_joins, kept_on):
             new_join.set("on", _and_all(parts))
             if not parts and (new_join.args.get("kind") or "").upper() == "INNER":
