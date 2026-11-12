@@ -157,6 +157,7 @@ def test_optimizer_bugs_are_not_counterexamples():
         assert cx.find_counterexample(spec, EXISTS_SQL, COUNT_SQL, seed=seed) is None
 
 
+@pytest.mark.canary  # builds one hand-written case with the harness's schema reader; the family's floors stay in tests/test_verieql_benchmarks.py
 def test_each_primary_entry_of_a_verieql_schema_is_its_own_key():
     """A table that declares two primary keys keeps both: the earlier one as a unique key over NOT NULL columns."""
 
