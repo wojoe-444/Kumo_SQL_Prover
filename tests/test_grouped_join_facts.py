@@ -151,3 +151,20 @@ def test_pivot_output_cannot_inherit_the_physical_integer_type(source):
         assert len(db.execute(sql).fetchall())==1
         assert db.execute(sql+" WHERE b.k>9007199254740992").fetchall()==[]
     finally:db.close()
+
+
+def test_a_fact_the_other_source_already_has_is_not_added_whatever_the_quoting():
+    # two grouped sources with the same filter on the joined key: nothing to add, quoted or not
+    plain = (
+        "SELECT g.k, h.k FROM (SELECT a.k FROM t a WHERE a.k > 7 GROUP BY a.k) g "
+        "JOIN (SELECT b.k FROM u b WHERE b.k > 7 GROUP BY b.k) h ON g.k = h.k"
+    )
+    quoted = (
+        'SELECT "g"."k", "h"."k" FROM (SELECT a.k FROM t a WHERE a.k > 7 GROUP BY a.k) AS "g" '
+        'JOIN (SELECT b.k FROM u b WHERE b.k > 7 GROUP BY b.k) AS "h" ON "g"."k" = "h"."k"'
+    )
+    assert rewrite(plain) is None
+    assert rewrite(quoted) is None
+    assert proves(plain, quoted)
+    # a fact the other source does not have is still added
+    assert rewrite(quoted.replace("WHERE b.k > 7 ", "")) is not None

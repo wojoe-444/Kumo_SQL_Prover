@@ -32,11 +32,16 @@ A larger pair gets the first attempt only.
 The shape rules: ``single_source_columns``, ``grouped_self_membership``, ``disjoint_union``,
 ``tailed_grouping_sets``, ``mysql_exists_casts``, ``case_arm_rules``, ``unmatched_outer_join``,
 ``having_count_rules``, ``semijoin_shapes``, ``string_spelling_rules``, ``tailed_outer_aggregates``,
-``wrapped_join_filters``, ``one_row_tails``, ``grouped_source_filters``, ``keyed_union``, ``self_key_membership``, ``tailed_regroups``, ``union_join_grouping``, ``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence`` (2026-11-11), and the derived-table and
-``JOIN .. ON`` sources that ``closed_sources`` lets the scalar-aggregate decorrelation read. Also added 2026-11-11: ``inline_rows``,
-``closed_queries``, ``counted_joins``, ``count_exists_rules``, ``subquery_absorption``, ``typed_comparisons``
-and ``sqlite_date_text``. Not in the list, because each only reads a
-query that was declined before it: ``listed_output_names`` and ``printed_spelling``.
+``wrapped_join_filters``, ``one_row_tails``, ``grouped_source_filters``, ``keyed_union``, ``self_key_membership``, ``tailed_regroups``, ``union_join_grouping``, ``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence`` (hardest-cases batch 3, 2026-11-11), and the derived-table and ``JOIN .. ON`` sources that
+``closed_sources`` lets the scalar-aggregate decorrelation read. Added on 2026-11-11 for the DSB rewrites of
+the QUITE eval: ``renamed_join_heads``, ``spread_aggregates``, ``scalar_having_groups``,
+``star_source_columns``, ``count_column_bounds``, ``extreme_group_sources``, ``setop_operand_sources``,
+``empty_union_operands``, ``counted_group_lists``, ``counted_group_sources``, ``existence_joins``,
+``integer_expression_bounds``, ``grouped_conditional_counts``, ``pinned_source_columns``, ``refuted_case_arms``,
+``single_value_joins`` and the pairing order of ``opaque_pairing`` in the solver. Also added 2026-11-11:
+``inline_rows``, ``closed_queries``, ``counted_joins``, ``count_exists_rules``, ``subquery_absorption``,
+``typed_comparisons`` and ``sqlite_date_text``. Not in the list, because each only reads a query that was declined
+before it: ``listed_output_names`` and ``printed_spelling``.
 
 A new rule that rewrites queries the prover already read belongs in the list: guard its entry in ``normalize``
 with ``shape_fallback.enabled()``.

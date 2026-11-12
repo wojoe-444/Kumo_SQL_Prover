@@ -15,6 +15,18 @@ _INTEGER = {"INT", "INTEGER", "BIGINT", "INT64", "INT32", "SMALLINT", "INT16", "
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
 
 
+def _spelled(predicate):
+    """The predicate's text with identifiers unquoted and lower-cased: ``"t"."k" >= 1`` and ``t.k >= 1`` are one fact.
+
+    A fact that is skipped because it is already there is only ever a redundant filter left out.
+    """
+
+    plain = predicate.copy()
+    for identifier in plain.find_all(exp.Identifier):
+        identifier.set("quoted", False)
+    return plain.sql().lower()
+
+
 def _column_id(column):
     if not isinstance(column, exp.Column) or not column.table or column.args.get("db") or column.args.get("catalog") or isinstance(column.this, exp.Star):
         return None
@@ -52,17 +64,6 @@ def _type(column, select, types, depth=0):
         if len(found) == 1 and isinstance(found[0], exp.Column):
             return _type(found[0], source.this, types, depth + 1)
     return None
-
-
-def _key(predicate):
-    """``predicate`` as text that does not depend on quoting or the letter case of names: a fact is built from bare
-    names, the query may quote them, and a fact not recognised as already there was added again on every pass."""
-
-    copy = exp.Paren(this=predicate.copy())
-    for identifier in copy.find_all(exp.Identifier):
-        identifier.set("quoted", False)
-        identifier.set("this", identifier.name.lower())
-    return copy.this.sql()
 
 
 def _comparisons(condition):
@@ -143,7 +144,7 @@ def propagate_grouped_join_facts(select: exp.Select, types: dict) -> exp.Express
         graph.setdefault(a, set()).add(b); graph.setdefault(b, set()).add(a)
         columns[a], columns[b] = predicate.this, predicate.expression
     facts = [fact for source in sources.values() for fact in _facts(source)]
-    existing = {_key(p) for p in predicates} | {_key(p) for _, p in facts}
+    existing = {_spelled(p) for p in predicates} | {_spelled(p) for _, p in facts}
     added = []
     for column, predicate in facts:
         key = _column_id(column)
@@ -160,8 +161,8 @@ def propagate_grouped_join_facts(select: exp.Select, types: dict) -> exp.Express
             rewritten = predicate.copy()
             for col in list(rewritten.find_all(exp.Column)):
                 col.replace(columns[target].copy())
-            if _key(rewritten) not in existing:
-                added.append(rewritten); existing.add(_key(rewritten))
+            if _spelled(rewritten) not in existing:
+                added.append(rewritten); existing.add(_spelled(rewritten))
     if not added:
         return None
     result = select.copy()
