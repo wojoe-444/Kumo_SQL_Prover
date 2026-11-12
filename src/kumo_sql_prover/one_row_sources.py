@@ -58,6 +58,12 @@ def _one_row(source: exp.Expression) -> dict[str, exp.Expression] | None:
     inner = source.this
     if any(value for key, value in inner.args.items() if key not in _ROW_ARGS) or _unstable(inner):
         return None
+    from .single_value_joins import single_value_argument
+
+    if len(inner.expressions) == 1:
+        only = inner.expressions[0]
+        if single_value_argument(only.this if isinstance(only, exp.Alias) else only) is not None:
+            return None  # Calcite's single value (``CASE COUNT(*) WHEN 0 ..``): ``single_value_joins`` reads it, with its error case
     outputs: dict[str, exp.Expression] = {}
     for item in inner.expressions:
         name = (item.alias_or_name or "").lower()

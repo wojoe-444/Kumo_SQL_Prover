@@ -92,6 +92,10 @@ def fold_scalar_filter(select: exp.Select, schema: dict | None) -> exp.Expressio
     where = select.args.get("where")
     if where is None or not schema or select.args.get("joins"):
         return None
+    if select.find_ancestor(exp.In, exp.Exists) is not None:
+        # the prover reads the query of an IN or EXISTS without grouping, and ``scalar_having_groups`` writes a
+        # grouped IN's scalar HAVING as exactly this filter: folding it back here made the two rules undo each other
+        return None
     from_ = select.args.get("from_") or select.args.get("from")
     if from_ is None or type(from_.this) is not exp.Subquery:
         return None

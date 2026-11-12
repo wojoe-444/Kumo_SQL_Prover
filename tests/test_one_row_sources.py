@@ -248,3 +248,18 @@ def test_the_rewrite_returns_the_same_rows(rule, sql):
         rows = {name: [tuple(value() for _ in columns) for _ in range(rng.randint(0, 4))] for name, columns in SCHEMA.items()}
         first, second = rows_on_duckdb([sql, after], rows)
         assert first == second, rows
+
+
+def test_a_filter_inside_the_query_of_an_in_is_not_folded_into_having():
+    """``scalar_having_groups`` writes a grouped IN's scalar HAVING as this filter; folding it back made the rules undo each other."""
+
+    inner = "SELECT v.k FROM (SELECT ps.k, SUM(ps.q) AS total FROM ps GROUP BY ps.k) AS v WHERE v.total > (SELECT MAX(h.y) FROM h)"
+    assert folded(inner) is not None
+    tree = sqlglot.parse_one(f"SELECT s.n FROM s WHERE s.sk IN ({inner})", read="postgres")
+    select = next(sel for sel in tree.find_all(exp.Select) if sel.find(exp.Subquery) is not None and isinstance(sel.parent, exp.Subquery) and isinstance(sel.parent.parent, exp.In))
+    assert fold_scalar_filter(select, SCHEMA) is None
+
+
+def test_calcites_single_value_source_is_left_to_single_value_joins():
+    source = "SELECT x.sk FROM s AS x JOIN (SELECT CASE COUNT(*) WHEN 0 THEN NULL WHEN 1 THEN MIN(t.q) ELSE (SELECT CAST(NULL AS INT) UNION ALL SELECT CAST(NULL AS INT)) END AS f FROM ps AS t WHERE t.k = 2) AS o ON x.n = o.f"
+    assert read(source) is None
