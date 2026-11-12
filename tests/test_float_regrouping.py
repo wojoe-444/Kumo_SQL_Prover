@@ -62,3 +62,12 @@ def test_the_same_pre_aggregation_over_integers_still_proves():
     types = {**JOINED_TYPES, "t": {"k": "INT64", "f": "INT64"}}
     result = prove_equivalent_algebraic(*JOINED, schema={"t": ["k", "f"], "u": ["k", "w"]}, types=types)
     assert result.status is SmtStatus.PROVEN_EQUIVALENT
+
+
+def test_a_sum_of_sums_of_nulls_still_proves():
+    # nothing to round: every addend is NULL (the QED pushSumNullConstantThroughUnion shape)
+    types = {"t": {"x": "INT64", "f": "FLOAT64"}}
+    left = "SELECT x AS k, SUM(NULL) AS v FROM t GROUP BY x"
+    right = "SELECT d.k AS k, SUM(d.v) AS v FROM (SELECT x AS k, SUM(NULL) AS v FROM t GROUP BY x) AS d GROUP BY d.k"
+    result = prove_equivalent_algebraic(left, right, schema={"t": ["x", "f"]}, types=types)
+    assert result.status is SmtStatus.PROVEN_EQUIVALENT

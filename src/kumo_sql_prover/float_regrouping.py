@@ -54,12 +54,42 @@ def _branches(query: exp.Expression) -> list[exp.Select]:
     return [query] if isinstance(query, exp.Select) else []
 
 
+def _null_valued(select: exp.Select, node: exp.Expression, depth: int = _DEPTH) -> bool:
+    """Whether ``node`` is NULL in every row: the literal, or a column of a derived table that outputs only it."""
+
+    while isinstance(node, exp.Paren):
+        node = node.this
+    if isinstance(node, exp.Null):
+        return True
+    if not isinstance(node, exp.Column) or depth <= 0:
+        return False
+    sources = _sources(select)
+    candidates = [sources[node.table.lower()]] if node.table and node.table.lower() in sources else list(sources.values()) if not node.table else []
+    name = node.name.lower()
+    outputs = [
+        (branch, item)
+        for query in candidates
+        for branch in _branches(query)
+        for item in branch.expressions
+        if (item.alias_or_name or "").lower() == name
+    ]
+    return bool(outputs) and len(outputs) == len(candidates) and all(
+        _null_valued(branch, item.this if isinstance(item, exp.Alias) else item, depth - 1) for branch, item in outputs
+    )
+
+
+def _exact(select: exp.Select, call: exp.Expression, types) -> bool:
+    """A SUM or AVG that adds only integers or only NULLs (nothing to round)."""
+
+    return sum_argument_types.is_int64(call, types) or (isinstance(call.this, exp.Expression) and _null_valued(select, call.this))
+
+
 def _own(select: exp.Select, node: exp.Expression, types) -> list[exp.Expression]:
     """The SUM and AVG calls of ``select`` under ``node`` that may add FLOAT64 values (a window's own call is not one)."""
 
     return [
         call for call in node.find_all(exp.Sum, exp.Avg)
-        if call.find_ancestor(exp.Select) is select and not is_window_function(call) and not sum_argument_types.is_int64(call, types)
+        if call.find_ancestor(exp.Select) is select and not is_window_function(call) and not _exact(select, call, types)
     ]
 
 
