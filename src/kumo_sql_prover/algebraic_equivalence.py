@@ -106,6 +106,7 @@ from .constant_correlation import propagate_constant_correlations
 from .constant_regroup_rules import collapse_constant_regroup
 from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
+from . import float_regrouping
 from . import shape_fallback
 from . import union_source_names
 from .union_rollup import roll_up_grouped_union
@@ -224,7 +225,7 @@ def _global_aggregate(select: exp.Select) -> bool:
     """
 
     return not select.args.get("group") and any(
-        a.find_ancestor(exp.Select) is select and not isinstance(a.parent, exp.Window) for a in select.find_all(exp.AggFunc)
+        a.find_ancestor(exp.Select) is select and not is_window_function(a) for a in select.find_all(exp.AggFunc)
     )
 
 
@@ -5297,6 +5298,15 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
             return text
 
         left, right = normalized(left_sql, keyed_distinct), normalized(right_sql, keyed_distinct)
+        regrouping = float_regrouping.regrouped(
+            [sqlglot.parse_one(sql, read=dialect) for sql in (left_sql, right_sql)],
+            [sqlglot.parse_one(sql, read=dialect) for sql in (left, right)],
+            types,
+        )
+        if regrouping == "declined":
+            return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, float_regrouping.DECLINED, assumptions=tuple(sorted(normalization_assumptions)))
+        if regrouping == "untyped":
+            normalization_assumptions.add(float_regrouping.UNTYPED_ASSUMPTION)
         if not shapes and (left, right) == tuple(cache.get((sql, keyed_distinct, True), (None,))[0] for sql in (left_sql, right_sql)):
             # The attempt with the shape rules compared these same two texts.
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, shape_fallback.SKIPPED, assumptions=tuple(sorted(normalization_assumptions)))

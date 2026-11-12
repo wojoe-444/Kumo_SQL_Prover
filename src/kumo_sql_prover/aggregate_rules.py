@@ -32,6 +32,7 @@ from decimal import Decimal
 from sqlglot import exp
 
 from .ast_utils import FROM_KEY, extended_grouping
+from .window_calls import is_window_function
 
 # Aggregates that skip NULL inputs, so a NULL argument is the same as a missing row.
 _NULL_IGNORING = (exp.Sum, exp.Min, exp.Max, exp.Avg, exp.Count, exp.LogicalAnd, exp.LogicalOr)
@@ -79,7 +80,7 @@ def rewrite_aggregates(select: exp.Select) -> exp.Expression | None:
 def _own(select: exp.Select, kind=exp.AggFunc) -> list[exp.Expression]:
     """Aggregate calls of ``select`` itself: not of its subqueries, and not window functions."""
 
-    return [n for n in select.find_all(kind) if n.find_ancestor(exp.Select) is select and not isinstance(n.find_ancestor(exp.Window, exp.Select), exp.Window)]
+    return [n for n in select.find_all(kind) if n.find_ancestor(exp.Select) is select and not is_window_function(n)]
 
 
 def _plain(select: exp.Select, *, group: bool) -> bool:
