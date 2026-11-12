@@ -31,6 +31,7 @@ from sqlglot import exp
 from . import volatile_calls
 from .domain_join_rules import lateral_aggregates
 from .solver_lock import bounded_solver, serialized
+from .window_calls import is_window_function
 
 _OPS = {exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<=", exp.EQ: "=", exp.NEQ: "<>"}
 _CLASS = {op: cls for cls, op in _OPS.items()}
@@ -248,7 +249,7 @@ def _global_aggregate(select: exp.Select) -> bool:
     if any(select.args.get(k) for k in ("group", "having", "qualify", "limit", "offset", "windows")):
         return False
     return any(
-        agg.find_ancestor(exp.Select) is select and agg.find_ancestor(exp.Window) is None
+        agg.find_ancestor(exp.Select) is select and not is_window_function(agg)
         for item in select.expressions
         for agg in item.find_all(exp.AggFunc)
     )

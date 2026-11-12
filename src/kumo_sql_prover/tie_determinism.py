@@ -39,6 +39,7 @@ from sqlglot import exp
 from .ast_utils import conjuncts
 from .named_windows import inline_named_windows
 from .smt_equivalence import TableConstraints
+from .window_calls import is_window_function
 
 DETERMINISTIC = "deterministic"
 UNKNOWN = "unknown"
@@ -348,7 +349,7 @@ class _Analysis:
             yield self._window_site(select, window, live)
         for part in live:
             for node in part.find_all(exp.AggFunc, exp.AnyValue, exp.ArgMax, exp.ArgMin):
-                if node.find_ancestor(exp.Select) is not select or node.find_ancestor(exp.Window) is not None or id(node) in seen:
+                if node.find_ancestor(exp.Select) is not select or is_window_function(node) or id(node) in seen:
                     continue
                 seen.add(id(node))
                 site = self._aggregate_site(select, node)
@@ -875,7 +876,7 @@ class _Analysis:
         return True
 
     def _indistinguishable(self, select: exp.Select, keys: list[exp.Expression], live: list[exp.Expression]) -> bool:
-        if select.args.get("group") is not None or any(n.find_ancestor(exp.Window) is None for part in live for n in part.find_all(exp.AggFunc) if n.find_ancestor(exp.Select) is select):
+        if select.args.get("group") is not None or any(not is_window_function(n) for part in live for n in part.find_all(exp.AggFunc) if n.find_ancestor(exp.Select) is select):
             return False
         reads = []
         for part in live:

@@ -39,6 +39,7 @@ import itertools
 from sqlglot import exp
 
 from .ast_utils import FROM_KEY
+from .window_calls import is_window_function
 
 _ORDER_BLIND = (exp.Sum, exp.Count, exp.Min, exp.Max, exp.Avg)
 _NAVIGATION = (exp.FirstValue, exp.LastValue, exp.NthValue)
@@ -211,10 +212,7 @@ def _own_aggregates(select: exp.Select, node: exp.Expression) -> list[exp.AggFun
 def _window_function(call: exp.Expression) -> bool:
     """Whether ``call`` is the function a window computes (``SUM`` of ``SUM(x) OVER (..)``)."""
 
-    node = call
-    while isinstance(node.parent, (exp.Filter, exp.IgnoreNulls, exp.RespectNulls)) and node.arg_key == "this":
-        node = node.parent
-    return isinstance(node.parent, exp.Window) and node.arg_key == "this"
+    return is_window_function(call)
 
 
 def _alias_clash(select: exp.Select, parts: list[exp.Expression]) -> bool:
