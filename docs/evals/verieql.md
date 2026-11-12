@@ -51,7 +51,7 @@ The Calcite-397 queries are printed by Calcite, and some of its spellings mean n
 
 Literature pairs call uninterpreted predicates on whole rows (`B1(X)` where `X` names a FROM item). The harness spells each out over the row's columns (`B1(X.a, X.b)`): the prover reads it as an uninterpreted function, and DuckDB runs it as a macro with one fixed, arbitrary interpretation (a hash of the arguments). A difference under that interpretation refutes the pair, since an equivalent pair must agree under every interpretation.
 
-The prover gets the schema's foreign keys on a second attempt, after a first attempt with keys and NOT NULL columns alone (the foreign-key rules can rewrite one side out of the shape the other side's proof needs).
+Each `primary` entry of a schema is its own key: a table that declares two (an id and a name that is also unique, say) keeps both, the earlier one as a unique key over NOT NULL columns, for the prover and for the generated databases alike. The prover gets the schema's foreign keys on a second attempt, after a first attempt with keys and NOT NULL columns alone (the foreign-key rules can rewrite one side out of the shape the other side's proof needs).
 
 Left unknown on purpose: 5 pairs whose Calcite text lost a correlated column (`WHERE * = t5.DEPTNO`), 2 with a subquery in an outer join's `ON` (DuckDB cannot run it), 1 comparing VARCHAR with INT (MySQL coerces, DuckDB refuses), 1 that names a renamed lateral column (`$cor0.SAL0`), and 2 malformed Literature pairs.
 
@@ -72,13 +72,31 @@ python tools/verieql_bench.py leetcode --jobs 4 --audit              # all cases
 
 The suites carry no labels, but four pairs are known to differ and `tests/test_verieql_benchmarks.py` runs the prover on them directly (so a counterexample the harness finds first cannot hide a proof): Calcite-397 positions 12 and 231 (0-based; indexes 13 and 232 in the artifact), which are `testAggregateCaseToFilter` ([CALCITE-5578](https://issues.apache.org/jira/browse/CALCITE-5578): `SUM(CASE WHEN c THEN x ELSE 0 END)` is 0 where `SUM(x) FILTER (WHERE c)` is NULL, on a table without a row for `c`) and `testReduceWithNonTypePredicate` ([CALCITE-5516](https://issues.apache.org/jira/browse/CALCITE-5516): `AVG` against an integer cast of the `SUM`/`COUNT` quotient), and Literature positions 46 and 47, which the paper says need more than 1,000 tuples to tell apart. The harness runs DuckDB, where `AVG` of an integer is a double, so it refutes the second Calcite pair; under Calcite's own typing (`AVG(INTEGER)` is `INTEGER`) the two sides can agree, and that pair is counted only as refuted, never as a label. The two Literature pairs come out `agrees`: no database of the sizes the generator reaches separates them. None is proved. `tests/test_known_nonequivalences.py` pins the same two Calcite rewrites on plain SQL with DuckDB witnesses. The current Calcite rule tests (the mined set) already carry the fixed form of `testAggregateCaseToFilter`, which is equivalent and proves.
 
-## Results (Literature 2026-10-04, Calcite-397 2026-11-10, LeetCode 2026-10-02 less 6 proofs on 2026-10-04)
+## Results (Literature 2026-10-04, Calcite-397 and LeetCode 2026-11-12)
 
 | Suite | Pairs | Proven equivalent | Refuted (executed) | Agree on random databases | Not run | Wrong |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Literature | 64 | 28 | 25 | 9 | 2 | 0 |
-| Calcite-397 | 397 | 337 | 29 | 22 | 9 | 0 |
-| LeetCode (all pairs) | 23,994 | 4,787 | 5,676 | 12,460 | 1,071 | 0 |
+| Calcite-397 | 397 | 342 | 29 | 17 | 9 | 0 |
+| LeetCode (all pairs) | 23,994 | 9,022 | 5,129 | 8,772 | 1,071 | 0 |
+
+### The 2026-11-12 LeetCode batch (commit 97e4a0e)
+
+Both suites were rerun whole on commit 97e4a0e (and, after main moved again, Calcite-397 and Literature whole and every 24th LeetCode pair on the merged commit e7ad6b7: the same statuses, no proof lost) (LeetCode in six chunks of 4,000 pairs with `--audit`). LeetCode went from 4,787 to 9,022 proved with 0 wrong, and Calcite-397 from 337 to 342. Most of that is the rules of this batch, but the number also contains every prover rule merged since 2026-10-02 and the harness fixes since then; the two were not measured apart. Several of the 52 LeetCode problems have one reference query and hundreds of spellings of it, so each rule below reads one family of spellings. Each is a new module, written against the problem named and tested on made-up queries:
+
+| Problem | What the spellings do | Rule | Pairs proved before and after |
+| --- | --- | --- | --- |
+| 1084 | `COUNT(DISTINCT ..)` over a join that only asks for a match | `join_distinct_aggregates` | 9 to 178 of 918 |
+| 614 | a keyed table joined to a grouped table under `HAVING` | `keyed_group_filters` | 96 to 340 of 544 |
+| 1677, 1587 | grouping by the key or by any key-equal column | `key_group_choice` | 0 to 282 of 437; 475 to 531 of 774 |
+| 182 | a self join or a correlated count for the values held twice | `duplicate_values` | 84 to 150 of 265 |
+| 1809 | `NOT IN` over the table's own key joined to another table | `anti_membership_joins` | 192 to 496 of 575 |
+
+The counts are prover-only passes over every pair of the problem on the batch's earlier commit, with the whole-run totals above measured on the last one. Every newly proved pair of these problems (1,134) was run through the harness's 1,000-database re-check: all came back equivalent, or unknown because DuckDB rejects the query, and none wrong.
+
+The proofs read declared keys, so each rule requires the key columns to be NOT NULL. A pair stays unknown when it agrees with the reference on every generated database but differs on a NULL that no generated database contains (a nullable foreign key or `CHECK` column): problems 183 and 1715 are mostly like that. The remaining unproved pairs are mostly in 1045 (division over a product table), 585, 1783 and 1435 (an unpivot against `CASE` sums), where no rule was written.
+
+Every fifth pair (index 0, 5, 10, ..) was never read while writing these rules. In the whole run 1,789 of its 4,799 pairs are proved (37.3%) against 7,233 of the other 19,195 (37.7%), so the gain does not look tuned to the pairs that were read.
 
 Calcite-397 was 335 proved and 24 agreeing when measured on 2026-10-04. Re-measured on 2026-11-10 it is 334 and 25: pairs 147 and 204 are now declined by soundness guards (a string compared with a column whose type the prover does not carry through a derived table, and a string compared with a number), and no database separates either pair, so both moved to the agreeing column, while pair 280 is proved since the rules merged that day (#861) and was admitted through the executed search. The row went uncorrected for a month; both Calcite-397 and Literature now have an [admission ledger](../proof-admission.md), so the gate fails when a count and its list of proved pairs disagree. Literature re-measured the same day is unchanged. Later that day pair 147 was recovered (335 and 24): a bare column that only one derived table in scope can supply is now tied to that derived table's column, so the VARCHAR declared underneath is followed through the projection and the guard no longer declines the pair. Pair 204 stays declined, rightly: its right side lines up `ENAME` with `DEPTNO` by position, a string against a number.
 
