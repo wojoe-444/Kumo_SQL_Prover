@@ -77,10 +77,12 @@ The suites carry no labels, but four pairs are known to differ and `tests/test_v
 | Suite | Pairs | Proven equivalent | Refuted (executed) | Agree on random databases | Not run | Wrong |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Literature | 64 | 28 | 25 | 9 | 2 | 0 |
-| Calcite-397 | 397 | 335 | 29 | 24 | 9 | 0 |
+| Calcite-397 | 397 | 337 | 29 | 22 | 9 | 0 |
 | LeetCode (all pairs) | 23,994 | 4,787 | 5,676 | 12,460 | 1,071 | 0 |
 
 Calcite-397 was 335 proved and 24 agreeing when measured on 2026-10-04. Re-measured on 2026-11-10 it is 334 and 25: pairs 147 and 204 are now declined by soundness guards (a string compared with a column whose type the prover does not carry through a derived table, and a string compared with a number), and no database separates either pair, so both moved to the agreeing column, while pair 280 is proved since the rules merged that day (#861) and was admitted through the executed search. The row went uncorrected for a month; both Calcite-397 and Literature now have an [admission ledger](../proof-admission.md), so the gate fails when a count and its list of proved pairs disagree. Literature re-measured the same day is unchanged. Later that day pair 147 was recovered (335 and 24): a bare column that only one derived table in scope can supply is now tied to that derived table's column, so the VARCHAR declared underneath is followed through the projection and the guard no longer declines the pair. Pair 204 stays declined, rightly: its right side lines up `ENAME` with `DEPTNO` by position, a string against a number.
+
+On 2026-11-11 (commit 3a4b514) Calcite-397 moved to 337 proved and 22 agreeing: pairs 140 and 293 push `COUNT` below a `UNION ALL` under `GROUP BY ROLLUP`, and the roll-up rule written for mined Calcite's tests of the same Calcite rule ([sqlsolver.md](sqlsolver.md#tests-the-conversions-used-to-skip)) reads the grand total as one total per branch. Neither pair was read before it proved; both went through the admission search.
 
 Calcite-397 pair 394 reads `CURRENT_TIMESTAMP`. Since 2026-11-11 the prover answers it `proven_conditionally` (equivalent when both queries run at the same statement time, see [calls fixed for the statement](../provers.md#calls-fixed-for-the-statement-conditional-proofs)). A conditional proof is not a proof: the pair stays in the agreeing column and the proved count is unchanged. That was measured by running that pair alone.
 

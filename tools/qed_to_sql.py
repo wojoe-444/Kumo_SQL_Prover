@@ -41,6 +41,9 @@ except Exception:  # pragma: no cover
     _RESERVED = set()
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # tools/calcite_plan_to_sql.py, for convert_from_plans
+
+
 class Skip(Exception):
     """Raised when a construct cannot be converted faithfully."""
 
@@ -509,7 +512,85 @@ HELP_SKIPS = [
 ]
 
 
+def ir_root_types(q, schemas: list[dict]) -> list[str] | None:
+    """The column types QED's IR gives the root of a query, or ``None`` for a root this does not read."""
+
+    (kind, body), = q.items()
+    if kind == "scan":
+        return list(schemas[body]["types"])
+    if kind == "project":
+        return [t["type"] for t in body["target"]]
+    if kind == "group":
+        return [k["type"] for k in body["keys"]] + [f["type"] for f in body["function"]]
+    if kind in ("filter", "sort", "distinct"):
+        return ir_root_types(body["source"], schemas)
+    return None
+
+
+def convert_from_plans(doc: dict) -> dict:
+    """Translate the two Calcite plan dumps a QED file records in ``help`` (``tools/calcite_plan_to_sql.py``).
+
+    QED's IR drops an aggregate's FILTER, its grouping sets and the second argument of a COUNT(DISTINCT a, b),
+    so such a case cannot be reproduced from the IR; the plan text beside it is the Calcite test itself. The
+    route is taken only when the plans name tables whose columns, types and nullability are the ones the QED
+    file declares, and the translated root has the column types the IR gives it (a test run under a custom
+    type system fails that check). Raises ``Skip`` otherwise.
+    """
+
+    import calcite_plan_to_sql as plans
+
+    texts = doc.get("help") or []
+    if len(texts) != 2 or len(doc["queries"]) != 2:
+        raise Skip("no plan text to translate")
+    try:
+        before, after = plans.parse_plan(texts[0]), plans.parse_plan(texts[1])
+        left = plans.Converter()
+        left_rel = left.top(before)
+        right = plans.Converter(root_types_hint=left_rel.types)
+        right_rel = right.top(after)
+    except (plans.Skip, plans.NeedHint) as error:
+        raise Skip(f"plan text: {error}") from None
+    except RecursionError:
+        raise Skip("plan text: recursion limit") from None
+    declared = {}
+    for s in doc["schemas"]:
+        declared[table_name(s).upper()] = [(f.replace('"', "").upper(), t, bool(n)) for f, t, n in zip(s["fields"], s["types"], s["nullable"])]
+    tables = {**left.tables, **right.tables}
+    entries = sorted(tables.values(), key=lambda e: e[0])
+    if len({e[0] for e in entries}) != len(entries):
+        raise Skip("plan text: two catalogs' tables share a name")
+    for name, cols, _keys in entries:
+        if declared.get(name.upper()) != [(c.upper(), t.base, bool(nullable)) for c, t, nullable in cols]:
+            raise Skip(f"plan text: table {name} is not the table the QED file declares")
+    for rel, q in ((left_rel, doc["queries"][0]), (right_rel, doc["queries"][1])):
+        expected = ir_root_types(q, doc["schemas"])
+        if expected is None or expected != [t.base for t in rel.types]:
+            raise Skip("plan text: the translated root's column types are not the IR's")
+    if left_rel.sql == right_rel.sql:
+        raise Skip("plan text: both plans translate to the same SQL")
+    return {"sql_a": left_rel.sql, "sql_b": right_rel.sql, "ddl": "\n".join(plans.table_ddl(e) for e in entries),
+            "schemas": plans.tables_struct(entries), "translated_from": "plan text"}
+
+
+# Skip reasons that say the IR lost part of the plan (or this converter does not model an aggregate the plan
+# converter does): only for these is the plan text tried.
+PLAN_TEXT_REASONS = ("aggregate FILTER clause", "multi-column COUNT(DISTINCT)", "unsupported aggregate LITERAL_AGG",
+                     "unsupported aggregate GROUPING", "unsupported aggregate SINGLE_VALUE", "window function")
+
+
 def convert_case(doc: dict) -> dict:
+    try:
+        return convert_ir(doc)
+    except Skip as skip:
+        if not str(skip).startswith(PLAN_TEXT_REASONS):
+            raise
+        try:
+            return convert_from_plans(doc)
+        except Skip:
+            raise skip from None
+
+
+def convert_ir(doc: dict) -> dict:
     schemas = doc["schemas"]
     help_text = "".join(doc.get("help", []))
     for pat, why in HELP_SKIPS:
@@ -574,6 +655,7 @@ def main() -> int:
     except Exception:
         pass
     summary = {"source_commit": commit, "files": len(files), "converted": len(cases),
+               "converted_from_plan_text": sum(c.get("translated_from") == "plan text" for c in cases),
                "skipped": len(skipped), "skip_reasons": dict(reasons.most_common())}
     (args.out / "summary.json").write_text(json.dumps(summary, indent=1, ensure_ascii=False) + "\n")
     print(json.dumps(summary, indent=1, ensure_ascii=False))

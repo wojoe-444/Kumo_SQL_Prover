@@ -212,7 +212,9 @@ def differential_case(case: dict, trials: int = 12) -> Counter:
             except Exception as error:
                 status = f"error: {type(error).__name__}"
                 break
-            if cx._bag(mine) != cx._bag(theirs):
+            if '"$empty"' in duck and all(len(row) == 0 for row in mine):
+                theirs = [() for _ in theirs]  # ``SELECT FROM t`` runs with one constant column: only the row count is comparable
+            if cx._bag(_days(mine)) != cx._bag(_days(theirs)):
                 # an ungrouped column or a LIMIT tie has an arbitrary answer: only a stable result counts
                 if _stable(searcher, spec, data, duck):
                     status = "MISMATCH"
@@ -221,6 +223,18 @@ def differential_case(case: dict, trials: int = 12) -> Counter:
                     break
         out[status or "agree"] += 1
     return out
+
+
+def _days(rows):
+    """Rows with a TIMESTAMP at midnight read as its DATE: MySQL's ``d + INTERVAL 1 DAY`` on a DATE is a DATE (and so is
+    the encoding's), DuckDB's is a TIMESTAMP, and the oracle query here is not the replay's, which casts it back."""
+
+    def cell(value):
+        if hasattr(value, "hour") and hasattr(value, "date") and not (value.hour or value.minute or value.second or value.microsecond):
+            return value.date()
+        return value
+
+    return [tuple(cell(value) for value in row) for row in rows]
 
 
 def _stable(searcher, spec, data, duck) -> bool:

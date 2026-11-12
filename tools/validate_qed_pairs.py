@@ -96,7 +96,10 @@ def main() -> int:
         rng = random.Random(f"{args.seed}:{case['name']}")
         ok = True
         diff = False
-        for _ in range(args.dbs):
+        ran = attempts = several_rows = 0
+        # a pair with a scalar subquery draws further databases (up to 25 times as many) until enough of them run
+        while attempts < args.dbs or (several_rows and ran < args.dbs and attempts < 25 * args.dbs):
+            attempts += 1
             try:
                 con = make_db(case, rng)
                 (ca, ra), (cb, rb) = run(con, case["sql_a"]), run(con, case["sql_b"])
@@ -104,13 +107,26 @@ def main() -> int:
                 unsupported.append((case["name"], str(e).splitlines()[0][:120]))
                 ok = False
                 break
+            except duckdb.InvalidInputException as e:
+                if "More than one row returned by a subquery" not in str(e):
+                    errors.append((case["name"], f"{type(e).__name__}: {str(e)[:160]}"))
+                    ok = False
+                    break
+                # a scalar subquery (Calcite's keyless SINGLE_VALUE) met several rows: an error in Calcite too.
+                # The pair is compared on the databases where both queries run.
+                several_rows += 1
+                continue
             except Exception as e:  # noqa: BLE001
                 errors.append((case["name"], f"{type(e).__name__}: {str(e)[:160]}"))
                 ok = False
                 break
+            ran += 1
             nonempty += bool(ra)
             if ca != cb:
                 diff = True
+        if ok and not ran and several_rows:
+            errors.append((case["name"], "no database on which both queries run"))
+            ok = False
         if ok:
             if diff:
                 differ.append(case["name"])

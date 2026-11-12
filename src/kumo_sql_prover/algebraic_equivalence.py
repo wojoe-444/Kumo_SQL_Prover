@@ -106,6 +106,14 @@ from .constant_regroup_rules import collapse_constant_regroup
 from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
 from . import shape_fallback
+from . import union_source_names
+from .union_rollup import roll_up_grouped_union
+from .one_row_joins import cross_join_one_row
+from .window_sources import inline_windowed_source
+from .window_pruning import prune_windowed_derived
+from .window_filters import push_filter_below_windows
+from .window_levels import settle_window_levels
+from .expansion_layers import collapse_layered_expansion
 from .closed_sources import closed_derived_source, inner_join_conditions, plain_inner_join
 from .listed_output_names import name_listed_outputs
 from .membership_dedup import relax_membership_dedup
@@ -2360,8 +2368,11 @@ def _canonicalize_union_source(node: exp.Subquery) -> exp.Expression | None:
             targets.append(column)
         elif column.name.lower() in renames:
             return None  # ambiguous unqualified use: leave it alone
+    clashing = union_source_names.select_aliases(outer) if shape_fallback.enabled() else set()
     for column in targets:
-        column.set("this", exp.to_identifier(renames[column.name.lower()]))
+        old_name = column.name
+        column.set("this", exp.to_identifier(renames[old_name.lower()]))
+        union_source_names.qualify(column, old_name, node.alias, clashing)  # a new name that is also a select alias
     canonical.sort(key=lambda b: b.sql(dialect="bigquery"))
     union: exp.Expression = canonical[0]
     for branch in canonical[1:]:
@@ -4905,6 +4916,8 @@ def normalize(
     from .duplicate_values import rewrite_duplicate_values
 
     from .aggregate_presence import rewrite_aggregate_presence
+    from .exists_disjunction import merge_exists_disjunction
+    from .literal_like import literal_like_to_equality
     from .mysql_exists_casts import drop_mysql_exists_cast
     from .single_source_columns import qualify_single_source_columns
 
@@ -4971,7 +4984,7 @@ def normalize(
         tree = separate_disjoint_unions(tree)
     tree = expand_grouping_sets(tree)
     for select in list(tree.find_all(exp.Select))[::-1]:
-        replacement = collapse_grouping_expansion(select) or collapse_counted_intersection(select)
+        replacement = collapse_grouping_expansion(select) or (collapse_layered_expansion(select) if shapes else None) or collapse_counted_intersection(select)
         if replacement is not None:
             if select is tree:
                 tree = replacement
@@ -4994,6 +5007,8 @@ def normalize(
     if schema:
         tree = _expand_stars(tree, schema)
     tree = resolve_alias_reads(tree, schema, dialect)
+    if shapes:
+        tree = settle_window_levels(tree)
     tree = _isolate_windows(canonical_windows(drop_unread_windows(tree), types))
     if schema:
         # name each bare column's source before any rewrite reads a derived table as its base table, whose
@@ -5028,6 +5043,13 @@ def normalize(
         lambda sel: rewrite_anti_membership(sel, schema, keys, not_null),  # k NOT IN (the same table's key joined to others) is NOT EXISTS over the others
         lambda sel: rewrite_duplicate_values(sel, schema, keys, not_null),  # the values a table holds twice: a self join or a correlated count is a grouped count
         lambda sel: count_distinct_under_key(sel, keys, not_null),  # COUNT(DISTINCT c) of a group whose columns and c hold a key is COUNT(c)
+        roll_up_grouped_union,
+        cross_join_one_row,
+        inline_windowed_source,
+        prune_windowed_derived,
+        push_filter_below_windows,
+        lambda sel: literal_like_to_equality(sel, types_map, dialect),
+        merge_exists_disjunction,
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
@@ -5312,6 +5334,11 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
     except sqlglot.errors.SqlglotError:
         replaced = False
     result = prove_equivalent_smt(left, right, types=types, **kwargs)
+    if result.proven:
+        from . import normalized_disclosure
+
+        # the error comparison and the FLOAT64 sum pairing were read off the normalized text
+        result = normalized_disclosure.settle(result, (left_sql, right_sql), (left, right), {**kwargs, "types": types})
     if normalization_assumptions:
         result = dataclasses.replace(result, assumptions=tuple(dict.fromkeys((*result.assumptions, *sorted(normalization_assumptions)))))
     if result.status is SmtStatus.NOT_PROVEN and not replaced:

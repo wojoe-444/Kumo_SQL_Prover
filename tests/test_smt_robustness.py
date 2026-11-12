@@ -189,6 +189,9 @@ def test_bounded_solver_checks_carry_the_work_cap(monkeypatch):
     created = []
     real = bounded_equivalence.bounded_solver
     monkeypatch.setattr(bounded_equivalence, "bounded_solver", lambda ms: created.append(ms) or real(ms))
+    # the bounded question itself goes through ``prepared_solver``, which applies the same cap with ``apply_limits``
+    real_limits = bounded_equivalence.apply_limits
+    monkeypatch.setattr(bounded_equivalence, "apply_limits", lambda solver, ms: created.append(ms) or real_limits(solver, ms))
     schema = schema_from_prover({"t": ["a"]}, types={"t": {"a": "INT64"}})
     check_bounded("SELECT a FROM t", "SELECT a FROM t WHERE a = a OR a IS NULL", schema, rows=1)
     bounded_equivalence.evaluate("SELECT a FROM t", schema, {"t": [(1,)]})
