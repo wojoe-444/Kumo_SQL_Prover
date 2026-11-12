@@ -8,7 +8,7 @@ Some examples preserve results. Others are invalid or change meaning: splitting 
 
 ## How it decides
 
-The algebraic prover uses the supplied keys and non-NULL facts under exact arithmetic for these integer schemas. Otherwise, a confirmed DuckDB difference can refute the pair. Cases that cannot be decided stay unknown.
+The algebraic prover uses the supplied keys and non-NULL facts under exact arithmetic for these integer schemas. Otherwise, a confirmed DuckDB difference can refute the pair. Cases that cannot be decided stay unknown. As of 2026-11-12 all 30 equivalent cases are proved, the last one by rules written for other benchmarks; the full guide has the history.
 
 Two of the examples needed a new rule each: `LIKE 'abc'` with no wildcard means `= 'abc'` for an ordinary text column, and `EXISTS (...) OR EXISTS (...)` over the same tables is one `EXISTS` with an `OR` inside. Both rules were written after reading the examples, so the score is "tuned on test".
 

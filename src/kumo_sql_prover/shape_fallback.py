@@ -43,7 +43,28 @@ the QUITE eval: ``renamed_join_heads``, ``spread_aggregates``, ``scalar_having_g
 ``typed_comparisons`` and ``sqlite_date_text``. Not in the list, because each only reads a query that was declined
 before it: ``listed_output_names`` and ``printed_spelling``.
 
-``self_key_membership`` is the other way round, a *late rule*: it runs in a third attempt only (the shape rules off, the late rules on),
+The batch of 2026-11-11, written for QUITE's TPC-H and Calcite development pairs, is in the list too:
+``anti_join_exists``, ``expanded_not_in``, ``counted_groups``, ``membership_joins``, ``computed_group_outputs``,
+``keyed_join_groups``, ``own_group_filters``, ``exclusive_union_filters``, ``one_row_sources``,
+``closed_scalar_filters``, ``closed_scalar_outputs``, ``substring_casts``, ``discrete_bounds``,
+``cased_group_sums``, ``tuple_membership``, ``counted_outer_groups``, ``guarded_outer_counts``,
+``group_total_windows``, and from the Calcite pairs ``keyed_only_grouping``, ``windowed_inputs``,
+``plain_grouping_calls``, ``one_row_groups``, ``key_expression_having``, ``extremum_comparisons``,
+``tagged_union_groups``, ``conditional_count_sums``, ``constant_window_sums``, ``counted_known_values``,
+``grouped_output_names`` and ``self_outer_join_columns``. Several of these prove a pair only together, and the
+second attempt switches all of them off at once: a shape rule that fires on one query of a pair and not on the
+other loses the proofs the other shape rules gave that pair. Rerun the development pairs after adding one.
+
+From QUITE's SQLStorm development pairs, the same day: ``quoted_names``, ``joined_key_restrictions``,
+``timestamp_shifts``, ``equality_orientation`` (passes over the whole query), ``preserved_counts``,
+``preserved_join_sources``, ``windowed_output_pruning``, ``never_null_cases`` and ``counted_subqueries`` (rules of
+one select; the last also runs as a pass before ``counted_outer_groups``, so that a ``COUNT`` subquery and a left
+join to counts written by hand take one road). Three
+more modules of that batch are not normalizations. ``window_inputs``, ``derived_table_proofs`` and
+``grouped_aggregate_spellings`` run in ``_prove_algebraic`` on the two normalized texts, only on the attempt with
+the shape rules on and only after the solver has failed on those texts, so they cannot take a verdict away.
+
+``self_key_membership`` is the other way round, a *late rule*: it runs in a third and a fourth attempt only (the late rules on, first beside the shape rules and then without them),
 and only for a pair where it would have changed a query. On the first attempt it took three pairs out of the shape that other rules
 prove, and in the second it took two more.
 
@@ -128,3 +149,57 @@ def disabled():
         yield
     finally:
         _ENABLED.reset(token)
+
+
+# A narrower second attempt: one rule off, the rest of the shape rules on. The attempt above switches every shape
+# rule off at once and, for cost, only for a small pair. A rule that is right for most pairs but hides the match of a
+# few larger ones (reading an ``EXISTS`` inside an ``IN`` as a join helps TPC-H Q20 and breaks one DSB pair of
+# 12,000 characters) is named here, and the pair is tried again with only that rule off when the rule fired.
+
+NARROW_MAX_CHARS = 24000
+
+_OFF: ContextVar[frozenset] = ContextVar("kumo_sql_prover_rules_off", default=frozenset())
+_FIRED: ContextVar[set | None] = ContextVar("kumo_sql_prover_rules_fired", default=None)
+
+
+def rule_enabled(name: str) -> bool:
+    """Whether the named narrow-fallback rule may fire in the current attempt."""
+
+    return name not in _OFF.get()
+
+
+def off() -> frozenset:
+    """The rules switched off for the current attempt (part of any normalization cache key)."""
+
+    return _OFF.get()
+
+
+def note_fired(name: str) -> None:
+    """Record that the named rule rewrote something in the current attempt."""
+
+    fired = _FIRED.get()
+    if fired is not None:
+        fired.add(name)
+
+
+@contextmanager
+def tracking():
+    """Collect the names of the narrow-fallback rules that fire inside the block."""
+
+    fired: set = set()
+    token = _FIRED.set(fired)
+    try:
+        yield fired
+    finally:
+        _FIRED.reset(token)
+
+
+@contextmanager
+def without(name: str):
+    """Run the block with the named narrow-fallback rule off."""
+
+    token = _OFF.set(_OFF.get() | {name})
+    try:
+        yield
+    finally:
+        _OFF.reset(token)

@@ -29,9 +29,9 @@ Every DuckDB difference is confirmed with the optimizer off (`kumo_sql_prover.du
 | --- | ---: | ---: | ---: | --- |
 | 2026-10-03 | 24/30 | 3/3 | 0 | baseline on master, default arithmetic |
 | 2026-10-03 | 27/30 | 3/3 | 0 | exact arithmetic for these integer schemas (`a+1+2` against `a+3`, `a+1=2` against `a=1`, `-a=3` against `a=-3`) |
-
 | 2026-11-11 | 29/30 | 3/3 | 0 | `LIKE` with no wildcard as `=` on a column declared VARCHAR or TEXT (15, `literal_like.py`), and an `OR` of `EXISTS` over one `FROM` as one `EXISTS` (29, `exists_disjunction.py`); the eval now passes the declared column types |
+| 2026-11-12 | 30/30 | 3/3 | 0 | case 35 (a correlated `COUNT(*)` in the select list against a grouped `LEFT JOIN` with `CASE WHEN cnt IS NULL THEN 0`) is proved by the counted-subquery and outer-count rules written for QUITE's TPC-H, Calcite and SQLStorm pairs; no rule was written for this eval |
 
-Still unknown: 35 (a correlated `COUNT(*)` in the select list against a grouped LEFT JOIN with `CASE WHEN cnt IS NULL THEN 0`).
+Nothing is left unknown: case 35, unknown on 2026-11-11, is proved since 2026-11-12.
 
-**Tuned on test.** The 36 cases are all there is: the labels, schemas and the exact-arithmetic setting were chosen with every case in view, the two rules of 2026-11-11 were written for cases 15 and 29 after reading them, and there is no held-out split.
+**Tuned on test.** The 36 cases are all there is: the labels, schemas and the exact-arithmetic setting were chosen with every case in view, the two rules of 2026-11-11 were written for cases 15 and 29 after reading them, and there is no held-out split. The gain of 2026-11-12 came from rules written for other benchmarks, but the case was read before, so it counts as tuned on test too.
