@@ -19,6 +19,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from .ast_utils import distinct_on, grouping_elements, inside, select_sources
+from .window_calls import is_window_function
 
 
 def _false(node: exp.Expression | None) -> bool:
@@ -64,7 +65,7 @@ def _global_aggregate(select: exp.Select) -> bool:
     if select.args.get("having") is not None:
         return True
     return any(
-        agg.find_ancestor(exp.Select) is select and not isinstance(agg.parent, exp.Window)
+        agg.find_ancestor(exp.Select) is select and not is_window_function(agg)
         for agg in select.find_all(exp.AggFunc)
     )
 

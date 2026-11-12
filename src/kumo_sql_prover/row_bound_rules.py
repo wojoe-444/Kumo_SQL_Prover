@@ -1,6 +1,7 @@
 """Remove limits/orderings that a structural row bound makes redundant."""
 
 from sqlglot import exp
+from .window_calls import is_window_function
 
 
 def row_bound(query):
@@ -26,7 +27,7 @@ def row_bound(query):
         return row_bound(query.left)
     if not isinstance(query, exp.Select) or query.args.get("group") or query.args.get("joins") or query.args.get("laterals"):
         return None
-    if any(a.find_ancestor(exp.Select) is query and not a.find_ancestor(exp.Window) for a in query.find_all(exp.AggFunc)):
+    if any(a.find_ancestor(exp.Select) is query and not is_window_function(a) for a in query.find_all(exp.AggFunc)):
         return 1
     source = query.args.get("from_") or query.args.get("from")
     if source is None:

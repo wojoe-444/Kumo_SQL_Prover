@@ -30,6 +30,7 @@ from typing import Callable
 from sqlglot import exp
 
 from .ast_utils import extended_grouping
+from .window_calls import is_window_function
 
 Key = tuple[str, str]
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Like, exp.ILike)
@@ -212,7 +213,7 @@ def _plain_grouping(select: exp.Select) -> bool:
 
 def _aggregates(select: exp.Select) -> bool:
     return any(
-        node.find_ancestor(exp.Select) is select and node.find_ancestor(exp.Window) is None
+        node.find_ancestor(exp.Select) is select and not is_window_function(node)
         for projection in select.expressions
         for node in projection.find_all(exp.AggFunc)
     )

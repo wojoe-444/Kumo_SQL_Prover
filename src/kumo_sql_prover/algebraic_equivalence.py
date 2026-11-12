@@ -55,6 +55,7 @@ from .grouping_expansion import collapse_grouping_expansion
 from .grouping_sets import expand_grouping_sets, grouping_sets_to_union
 from .named_windows import inline_named_windows
 from .having_rules import key_having_to_where
+from .window_calls import is_window_function
 from .window_canonical import canonical_windows
 from .unread_windows import drop_unread_windows
 from .window_rules import window_rules
@@ -105,6 +106,7 @@ from .constant_correlation import propagate_constant_correlations
 from .constant_regroup_rules import collapse_constant_regroup
 from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
+from . import float_regrouping
 from . import shape_fallback
 from . import union_source_names
 from .union_rollup import roll_up_grouped_union
@@ -223,7 +225,7 @@ def _global_aggregate(select: exp.Select) -> bool:
     """
 
     return not select.args.get("group") and any(
-        a.find_ancestor(exp.Select) is select and not isinstance(a.parent, exp.Window) for a in select.find_all(exp.AggFunc)
+        a.find_ancestor(exp.Select) is select and not is_window_function(a) for a in select.find_all(exp.AggFunc)
     )
 
 
@@ -2918,7 +2920,7 @@ def _isolate_windows(tree: exp.Expression) -> exp.Expression:
                 else:
                     select.replace(wrapped)
             continue
-        own_calls = [c for c in select.find_all(exp.AggFunc) if c.find_ancestor(exp.Select) is select and c.find_ancestor(exp.Window) is None]
+        own_calls = [c for c in select.find_all(exp.AggFunc) if c.find_ancestor(exp.Select) is select and not is_window_function(c)]
         if own_calls or select.args.get("distinct") and select.args["distinct"].args.get("on"):
             continue
         if any(isinstance(e, exp.Star) or (isinstance(e, exp.Column) and isinstance(e.this, exp.Star)) for e in select.expressions):
@@ -5296,6 +5298,15 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
             return text
 
         left, right = normalized(left_sql, keyed_distinct), normalized(right_sql, keyed_distinct)
+        regrouping = float_regrouping.regrouped(
+            [sqlglot.parse_one(sql, read=dialect) for sql in (left_sql, right_sql)],
+            [sqlglot.parse_one(sql, read=dialect) for sql in (left, right)],
+            types,
+        )
+        if regrouping == "declined":
+            return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, float_regrouping.DECLINED, assumptions=tuple(sorted(normalization_assumptions)))
+        if regrouping == "untyped":
+            normalization_assumptions.add(float_regrouping.UNTYPED_ASSUMPTION)
         if not shapes and (left, right) == tuple(cache.get((sql, keyed_distinct, True), (None,))[0] for sql in (left_sql, right_sql)):
             # The attempt with the shape rules compared these same two texts.
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, shape_fallback.SKIPPED, assumptions=tuple(sorted(normalization_assumptions)))

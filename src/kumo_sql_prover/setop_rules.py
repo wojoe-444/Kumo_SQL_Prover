@@ -31,6 +31,7 @@ from sqlglot import exp
 from .ast_utils import FROM_KEY, distinct_on, star_modified
 from .canonical import canonical_copy
 from .empty_rules import is_empty
+from .window_calls import is_window_function
 
 _COUNTER = itertools.count()
 _EXTRAS = ("where", "group", "having", "order", "limit", "offset", "qualify", "windows", "with_", "with", "joins", "laterals", "pivots", "prewhere", "connect", "match", "sample", "locks", "kind", "into", "settings", "format", "options")
@@ -70,7 +71,7 @@ def _global_aggregate(select: exp.Select) -> bool:
     if select.args.get("group"):
         return False
     return any(
-        agg.find_ancestor(exp.Select) is select and agg.find_ancestor(exp.Window) is None
+        agg.find_ancestor(exp.Select) is select and not is_window_function(agg)
         for item in select.expressions
         for agg in item.find_all(exp.AggFunc)
     )
