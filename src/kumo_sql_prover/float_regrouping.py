@@ -11,8 +11,10 @@ The test is on the number of ``SUM`` and ``AVG`` calls: a rule that regroups add
 (the partial sum), and the rules that only reorder or refilter keep the count. Applied to each side, as written
 against as normalized, when some call of the written pair can add FLOAT64 values:
 
-* with declared column types, a call counts as exact only when ``sum_argument_types.is_int64`` places its
-  argument; if any other call exists and a side's number of calls changed, the proof is declined;
+* with declared column types, a call counts as exact only when ``sum_argument_types.is_exact`` places its
+  argument: INT64 values, and also fixed-point (``NUMERIC``, ``DECIMAL``) values, whose additions are
+  exact in any grouping (a product of them only while its decimal places stay within nine); if any other call
+  exists and a side's number of calls changed, the proof is declined;
 * without declared types nothing is known about the columns, so the proof is kept and carries the assumption
   :data:`UNTYPED_ASSUMPTION` (the old behaviour of every untyped corpus; a regrouped integer sum is exact).
 """
@@ -117,7 +119,7 @@ def _holder(select: exp.Select, alias: str) -> exp.Expression | None:
 def _exact(select: exp.Select, call: exp.Expression, types) -> bool:
     """A SUM or AVG that adds only integers or only NULLs (nothing to round)."""
 
-    return sum_argument_types.is_int64(call, types) or (isinstance(call.this, exp.Expression) and _literal_valued(select, call.this))
+    return sum_argument_types.is_exact(call, types) or (isinstance(call.this, exp.Expression) and _literal_valued(select, call.this))
 
 
 def _own(select: exp.Select, node: exp.Expression, types) -> list[exp.Expression]:

@@ -83,3 +83,49 @@ def test_a_sum_of_sums_over_integer_values_rows_still_proves():
     )
     result = prove_equivalent_algebraic(left, right, schema={"emp": ["deptno"]}, types=types, dialect="mysql")
     assert result.status is SmtStatus.PROVEN_EQUIVALENT
+
+
+# Fixed-point columns add exactly in any grouping, so a regrouped decimal sum is a proof (not a FLOAT64 hazard).
+DEC = {"t": {"x": "INT64", "d": "DECIMAL(7, 2)", "e": "DECIMAL(7, 2)", "n": "NUMERIC", "f": "FLOAT64"}}
+DEC_SCHEMA = {"t": list(DEC["t"])}
+
+
+def _prove_dec(pair, types=DEC):
+    return prove_equivalent_algebraic(*pair, schema=DEC_SCHEMA, types=types)
+
+
+def _partial(argument):
+    return (
+        f"SELECT SUM({argument}) AS v FROM t",
+        f"SELECT SUM(s) AS v FROM (SELECT SUM({argument}) AS s FROM t GROUP BY x)",
+    )
+
+
+@pytest.mark.parametrize("argument", ["d", "d - e", "d + 1", "d * x", "d * e", "d * (1 - e)", "d * 0.9", "n", "n + n", "n * x"])
+def test_a_sum_of_fixed_point_partial_sums_still_proves(argument):
+    assert _prove_dec(_partial(argument)).status is SmtStatus.PROVEN_EQUIVALENT
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "f",
+        "d + f",  # a FLOAT64 beside a decimal
+        "x * 0.5",  # beside an INT64 a decimal literal is a FLOAT64 in BigQuery
+        "d / e",  # a division is rounded
+        "n * n",  # unknown decimal places on both factors: the product may be rounded
+        "d * e * d * e * d",  # ten decimal places: a product is rounded beyond nine
+    ],
+)
+def test_a_sum_of_partial_sums_that_may_round_is_not_proven(argument):
+    assert _prove_dec(_partial(argument)).status is not SmtStatus.PROVEN_EQUIVALENT
+
+
+def test_a_product_with_eight_decimal_places_still_proves():
+    assert _prove_dec(_partial("d * e * d * e")).status is SmtStatus.PROVEN_EQUIVALENT
+
+
+def test_a_decimal_column_is_exact_only_when_declared_so():
+    # the column is declared FLOAT64 here: nothing changes for it
+    assert _prove_dec(_partial("d"), types={"t": {**DEC["t"], "d": "FLOAT64"}}).status is not SmtStatus.PROVEN_EQUIVALENT
+
