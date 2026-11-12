@@ -2,19 +2,18 @@
   "suite": "DB-GPT rewrite examples",
   "order": 36,
   "size": 33,
-  "score": "29/30 proved, 3/3 refuted, 0 wrong",
+  "score": "30/30 proved, 3/3 refuted, 0 wrong",
   "metric": "DB-GPT's PostgreSQL rewrite demonstrations, labelled by hand and checked on DuckDB: equivalent rewrites proved, broken ones refuted by a database.",
   "evidence": "proof",
   "correctness": "Labels checked on DuckDB by the test suite (random databases for equivalent cases, a stored counterexample for the others, confirmed with the optimizer off); wrong is a proof against a not-equivalent label or a refutation against an equivalent one.",
   "coverage": {
-    "proven": 29,
-    "refuted": 3,
-    "unknown": 1
+    "proven": 30,
+    "refuted": 3
   },
   "held_out": "none",
   "docs": "docs/evals/dbgpt-rules.md",
   "command": "python tools/dbgpt_rules_bench.py --write-results",
-  "date": "2026-11-11",
+  "date": "2026-11-12",
   "caveats": "The source has no labels or schemas: both were written for this eval (tuned on test; 36 cases, no held-out split). 3 cases are not valid SQL and are left out; 4 are adapted (a PostgreSQL internal function, two DDL fragments, a table-name typo). Two rules were written for cases of this eval after reading them (LIKE with no wildcard as equality, and an OR of EXISTS over one FROM as one EXISTS), and the eval now passes the column types its schema file declares.",
   "environment": {
     "python": "3.13.18",
@@ -22,6 +21,6 @@
     "sqlglotc": "30.21.0",
     "duckdb": "1.5.6",
     "z3-solver": "5.4.1.0",
-    "commit": "e2ea888+changes"
+    "commit": "951be35+changes"
   }
 }
