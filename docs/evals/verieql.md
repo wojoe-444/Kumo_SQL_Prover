@@ -82,7 +82,7 @@ The suites carry no labels, but four pairs are known to differ and `tests/test_v
 
 ### The 2026-11-12 LeetCode batch (commit 97e4a0e)
 
-Both suites were rerun whole on commit 97e4a0e (LeetCode in six chunks of 4,000 pairs with `--audit`). LeetCode went from 4,787 to 9,022 proved with 0 wrong, and Calcite-397 from 337 to 342. Most of that is the rules of this batch, but the number also contains every prover rule merged since 2026-10-02 and the harness fixes since then; the two were not measured apart. Several of the 52 LeetCode problems have one reference query and hundreds of spellings of it, so each rule below reads one family of spellings. Each is a new module, written against the problem named and tested on made-up queries:
+Both suites were rerun whole on commit 97e4a0e (and, after main moved again, Calcite-397 and Literature whole and every 24th LeetCode pair on the merged commit e7ad6b7: the same statuses, no proof lost) (LeetCode in six chunks of 4,000 pairs with `--audit`). LeetCode went from 4,787 to 9,022 proved with 0 wrong, and Calcite-397 from 337 to 342. Most of that is the rules of this batch, but the number also contains every prover rule merged since 2026-10-02 and the harness fixes since then; the two were not measured apart. Several of the 52 LeetCode problems have one reference query and hundreds of spellings of it, so each rule below reads one family of spellings. Each is a new module, written against the problem named and tested on made-up queries:
 
 | Problem | What the spellings do | Rule | Pairs proved before and after |
 | --- | --- | --- | --- |
