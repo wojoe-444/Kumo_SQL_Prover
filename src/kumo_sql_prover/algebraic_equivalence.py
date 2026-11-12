@@ -4935,19 +4935,16 @@ def limit_rule(select: exp.Select, types: dict[str, dict[str, str]] | None = Non
 
 
 @serialized
-def _narrow(name: str, rule):
-    """``rule`` as a narrow-retry rule (``shape_fallback``): it records that it fired, and a pair left unproven is tried
+def _narrow(name: str, rule, select):
+    """Apply ``rule`` as a narrow-retry rule (``shape_fallback``): it records that it fired, and a pair left unproven is tried
     again with only it off, so that a rule right for most pairs cannot hide the match of a few."""
 
-    def run(select):
-        if not shape_fallback.rule_enabled(name):
-            return None
-        result = rule(select)
-        if result is not None:
-            shape_fallback.note_fired(name)
-        return result
-
-    return run
+    if not shape_fallback.rule_enabled(name):
+        return None
+    result = rule(select)
+    if result is not None:
+        shape_fallback.note_fired(name)
+    return result
 
 
 def normalize(
@@ -5160,12 +5157,12 @@ def normalize(
         wrap_tailed_outer_join_aggregate,
         push_filter_into_wrapped_join,
         drop_one_row_tail,
-        _narrow("grouped_source_filters", push_filter_into_grouped_source),
-        _narrow("rejected_null_filters", drop_rejected_null_filter),
-        _narrow("tailed_regroups", lambda sel: regroup_under_tail(sel, (_collapse_aggregate, _roll_up_aggregate, _regroup_distinct))),
-        _narrow("union_join_grouping", group_over_union_join_to_distinct),
-        _narrow("own_group_joins", lambda sel: inner_join_own_groups(sel, not_null, types_map)),
-        _narrow("duplicate_self_joins", lambda sel: regroup_duplicate_self_join(sel, keys, not_null, types_map)),
+        lambda sel: _narrow("grouped_source_filters", push_filter_into_grouped_source, sel),
+        lambda sel: _narrow("rejected_null_filters", drop_rejected_null_filter, sel),
+        lambda sel: _narrow("tailed_regroups", lambda s: regroup_under_tail(s, (_collapse_aggregate, _roll_up_aggregate, _regroup_distinct)), sel),
+        lambda sel: _narrow("union_join_grouping", group_over_union_join_to_distinct, sel),
+        lambda sel: _narrow("own_group_joins", lambda s: inner_join_own_groups(s, not_null, types_map), sel),
+        lambda sel: _narrow("duplicate_self_joins", lambda s: regroup_duplicate_self_join(s, keys, not_null, types_map), sel),
         lambda sel: read_counted_presence(sel, not_null, types_map, schema),
         merge_preserved_join_source,
         lambda sel: prune_windowed_outputs(sel, schema),
