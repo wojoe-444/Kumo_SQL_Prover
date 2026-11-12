@@ -5319,7 +5319,12 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
         if plain.status is not SmtStatus.NOT_PROVEN:
             return plain
         if late_seen:
-            # A late rule would have changed a query: try the pair with the shape rules off and the late rules on.
+            # A late rule would have changed a query: try the pair with the late rules on, first beside the shape rules and
+            # then without them.
+            with shape_fallback.late():
+                third = attempt()
+            if third.status is not SmtStatus.NOT_PROVEN:
+                return third
             with shape_fallback.disabled(), shape_fallback.late():
                 last = attempt()
             if last.status is not SmtStatus.NOT_PROVEN:
@@ -5383,9 +5388,10 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, float_regrouping.DECLINED, assumptions=tuple(sorted(normalization_assumptions)))
         if regrouping == "untyped":
             normalization_assumptions.add(float_regrouping.UNTYPED_ASSUMPTION)
-        earlier = [(True, False)] if shape_fallback.late_enabled() is False else [(True, False), (False, False)]
-        if not shapes and any((left, right) == tuple(cache.get((sql, keyed_distinct, *state), (None,))[0] for sql in (left_sql, right_sql)) for state in earlier):
-            # An earlier attempt (the one with the shape rules, and for the late attempt the one without them) compared these same two texts.
+        order = [(True, False), (False, False), (True, True), (False, True)]  # (shape rules, late rules): the attempts in the order made
+        earlier = order[: order.index((shapes, shape_fallback.late_enabled()))]
+        if any((left, right) == tuple(cache.get((sql, keyed_distinct, *state), (None,))[0] for sql in (left_sql, right_sql)) for state in earlier):
+            # An earlier attempt compared these same two texts.
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, shape_fallback.SKIPPED, assumptions=tuple(sorted(normalization_assumptions)))
         if keyed_distinct and (left, right) == (normalized(left_sql, 0), normalized(right_sql, 0)):
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, "no keyed DISTINCT to drop", assumptions=tuple(sorted(normalization_assumptions)))

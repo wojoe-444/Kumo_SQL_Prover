@@ -177,3 +177,21 @@ def test_a_not_in_proved_without_the_rule_is_not_rewritten_out_of_its_shape():
         "sales": TableConstraints(not_null=frozenset({"buyer_id"}), keys=(("buyer_id",),)),
     }
     assert prove_equivalent_algebraic(left, right, schema=schema, dialect="mysql", constraints=constraints).proven
+
+
+def test_the_late_attempts_are_made_only_when_the_rule_would_change_a_query(monkeypatch):
+    from kumo_sql_prover import shape_fallback
+
+    attempts = []
+    real = shape_fallback.late
+
+    def counted():
+        attempts.append(1)
+        return real()
+
+    monkeypatch.setattr(shape_fallback, "late", counted)
+    prove = lambda sql: prove_equivalent_algebraic(sql, sql.replace("id = 1", "id = 2"), schema=SCHEMA, dialect="mysql", constraints=KEYED)  # noqa: E731
+    assert not prove("SELECT id FROM students WHERE id = 1").proven
+    assert not attempts  # nothing for the rule to rewrite: no extra attempt
+    assert not prove(ROUNDABOUT.replace("SELECT s.id", "SELECT s.id").replace("WHERE NOT id IN", "WHERE id = 1 AND NOT id IN")).proven
+    assert attempts  # the rule would rewrite the NOT IN: the late attempts are made
