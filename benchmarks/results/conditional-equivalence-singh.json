@@ -1,19 +1,19 @@
 {
   "order": 26,
-  "held_out": "126/580 conditional, 0 wrong (held-out fifth, by hash of the pair)",
+  "held_out": "166/580 conditional, 0 wrong (held-out fifth, by hash of the pair)",
   "docs": "docs/evals/conditional-equivalence.md",
-  "date": "2026-11-11",
+  "date": "2026-11-12",
   "evidence": "proof",
   "suite": "Equivalent under conditions: Singh & Bedathur LeetCode pairs",
   "size": 1930,
-  "score": "590 pairs proved only under named conditions, 0 wrong",
-  "metric": "Of the 2,800 pairs, the 1,930 this harness does not prove outright (870 are proved with no condition): 590 proved equal under a minimal set of NOT NULL, unique-key and foreign-key conditions, 357 refuted by a database that meets every candidate condition, 983 unknown. Reported apart from the unconditional proofs; the published labels are not ground truth for a conditional pair.",
-  "correctness": "0 wrong, 0 crashed: every conditional proof re-run on 900 random DuckDB databases repaired to meet its conditions with no difference, and the prover loses each proof when any one condition is dropped; for 543 of the 590 a database that breaks the conditions separates the queries",
+  "score": "783 pairs proved only under named conditions, 0 wrong",
+  "metric": "Of the 2,800 pairs, the 1,930 this harness does not prove outright (870 are proved with no condition): 783 proved equal under a minimal set of NOT NULL, unique-key and foreign-key conditions, 357 refuted by a database that meets every candidate condition, 790 unknown. Reported apart from the unconditional proofs; the published labels are not ground truth for a conditional pair.",
+  "correctness": "0 wrong, 0 crashed: every conditional proof re-run on 900 random DuckDB databases repaired to meet its conditions with no difference (783/783), and the prover loses each proof when any one condition is dropped; for 737 of the 783 a database that breaks the conditions separates the queries",
   "coverage": {
-    "proven": 590,
+    "proven": 783,
     "refuted": 357,
-    "unknown": 983
+    "unknown": 790
   },
   "command": "python tools/conditional_bench.py singh",
-  "caveats": "Proof under assumed conditions, never counted as an unconditional proof. Minimal means minimal for the prover. The catalog is NOT NULL, unique keys and single-column foreign keys read off the queries; CHECK, non-empty tables, filtered keys and functional dependencies are outside it. Held-out fifth (hash of the pair): 126 of 580 conditional, 0 wrong; development used the dev split. 163 of the 590 are labelled equivalent and 427 labelled different in the files. Singh data downloaded from a pinned commit. Measured 2026-10-04 on master plus the follow-up that adds the last-condition deletion, the proof-specific assumptions and the failing-closed constant-result check; the constant-result check now runs on every sampled Singh pair, so no proof was lost to it. Re-measured on 2026-11-11 on commit c52406f, with main 9231bd9 measured the same way on the same machine as the baseline (842 proved outright, 597 conditional, 357 refuted, 1,004 unknown; held-out fifth 128 conditional): the count falls from 597 to 590 because the rule modules written for the Singh eval prove 9 conditional pairs with no condition at all (2 of them held out); 19 unknown pairs are also proved outright (3 held out), 2 unknown pairs become conditional, 4 conditional proofs need one condition fewer, and no pair moved the other way. Main's own distance from the October record (610 conditional, 854 outright) predates this change and was not traced."
+  "caveats": "Proof under assumed conditions, never counted as an unconditional proof. Minimal means minimal for the prover. The catalog is NOT NULL, unique keys and single-column foreign keys read off the queries; CHECK, non-empty tables, filtered keys and functional dependencies are outside it. Held-out fifth (hash of the pair): 166 of 580 conditional, 0 wrong; development used the dev split. 222 of the 783 are labelled equivalent and 561 labelled different in the files. Singh data downloaded from a pinned commit. Measured 2026-10-04 on master plus the follow-up that adds the last-condition deletion, the proof-specific assumptions and the failing-closed constant-result check; the constant-result check now runs on every sampled Singh pair, so no proof was lost to it. Re-measured on 2026-11-12 on the merged QUITE rule batch (commit b01aa90): 870 proved outright (unchanged), 783 conditional (590 on 2026-11-11), 357 refuted, 790 unknown. The 193 new conditional proofs come from the rules written for the QUITE pairs (window filters and pruning, nested membership, keyed join groups, scalar and one-row joins); they were written for QUITE pairs, not for this eval (this eval was run as a soundness guard, and the held-out fifth, never read, went from 126 to 166 conditional). Conditions by kind: 1,403 NOT NULL, 432 unique, 51 foreign key; conditions per proof 1 to 7 (197, 202, 280, 82, 16, 5, 1 proofs). Running it as a guard showed that a rule reading declared unique keys must require NOT NULL on every key column."
 }

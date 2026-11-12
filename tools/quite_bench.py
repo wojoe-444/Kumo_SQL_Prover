@@ -1236,6 +1236,13 @@ def results_rows(report: Report, date: str) -> dict[str, dict]:
             "Before that batch (main 22fed36): 1659/2609 proved with 65 refuted. The directed search has a time budget "
             "(8 s for an unproved pair), so the refuted count can move by a few pairs between runs and machines; "
             "KUMOSQL_DIRECTED=0 turns it off."
+            + (
+                " On 2026-11-12 about seventy more rule modules were written against the 329 unknown TPC-H, Calcite and "
+                "SQLStorm development pairs (docs/provers.md, shape rules; the DSB batch of the day before had left them "
+                "alone), again with the held-out fifth run for scoring only and never read one by one. With both batches: "
+                "2042/2487 proved (the DSB batch alone: 1827/2479, main 7ce683c; before either: 1659/2609), held out 409/529 "
+                "(376/528 with the DSB batch alone), and no pair that either main proved is lost on the whole corpus."
+            )
         ),
         **common,
     }
@@ -1266,7 +1273,10 @@ def results_rows(report: Report, date: str) -> dict[str, dict]:
             "plan finishes in 30 s and agrees). Data downloaded at a pinned commit. The rules written on 2026-11-10 for the "
             "flagged-equal development pairs also prove 5 development pairs flagged only for a timeout (20 to 25 proofs); each "
             "was read by hand and is equivalent as written (a correlated average decorrelated into a grouped join, comma joins "
-            "written as JOIN). On 2026-11-11 the directed search of tools/witness_search.py added refutations (134 refuted on 2026-11-10, 204 now; "
+            "written as JOIN). The rules written on 2026-11-12 for the TPC-H, Calcite and SQLStorm development pairs prove 6 more "
+            "pairs flagged only for a failed run or a timeout (25 to 31 proofs: 2 TPC-H pairs flagged for a timeout and 1 for a "
+            "failed run, TPC-H Q20 and Q11 rewrites with the same rows as written, and 3 Calcite window-function rewrites whose "
+            "output alias is spelled with a digit); each was read by hand and is equivalent as written. On 2026-11-11 the directed search of tools/witness_search.py added refutations (134 refuted on 2026-11-10, 204 now; "
             "a rerun of main in the same container as this run refutes 114). The database search has an 8 s budget "
             "per pair, so a refutation near that limit is not found in every run. The held-out pairs were never read one by one."
         ),

@@ -23,22 +23,23 @@ Every conditional proof is checked three ways, and a failure of the first or the
 
 ## Singh and Bedathur LeetCode pairs
 
-All 2,800 pairs, MySQL dialect, table and column names only (the [Singh page](singh-bedathur.md) has the data and its licence note). Measured 2026-11-11 on commit c52406f, about 40 minutes on 4 cores.
+All 2,800 pairs, MySQL dialect, table and column names only (the [Singh page](singh-bedathur.md) has the data and its licence note). Measured 2026-11-12 on commit b01aa90 (2026-11-11: c52406f, 590 conditional), about 50 minutes on 4 cores.
 
 | Count | Pairs |
 | --- | ---: |
 | Proved outright | 870 |
-| **Proved under named conditions** | **590** |
+| **Proved under named conditions** | **783** |
 | Refuted with every candidate holding | 357 |
-| Unknown | 983 |
+| Unknown | 790 |
 | Wrong | 0 |
 | Harness crashes | 0 |
 
-- The 590 conditional proofs use 1,251 conditions: 806 NOT NULL, 396 unique keys, 49 single-column foreign keys. One condition alone suffices for 194 pairs, two for 186, three for 178, and four to six for 32.
-- All 590 were re-checked on 900 databases each (531,000 in total) with 0 differences, and each is minimal for the prover. For 543 of them a random database that breaks the conditions separates the queries; for the other 47 no separating database turned up in 300 tries, which does not mean there is none.
-- Against the files' labels: 163 conditional pairs are labelled equivalent (the published answer assumed a key or NOT NULL rule the file does not state), 427 are labelled different (the labelled difference is a NULL or a duplicate; the pair is equal once it is excluded).
-- Held-out fifth (hash of the pair divisible by 5, 580 pairs): **126 conditional, 0 wrong**; the development split has 464 of 2,220 conditional.
-- **The count fell because pairs left for the better.** Main without the rule modules of 2026-11-10 (9231bd9), measured the same way on the same machine, gives 842 proved outright, 597 conditional, 357 refuted and 1,004 unknown (held-out fifth 128 conditional). Those rules, written for the [Singh eval](singh-bedathur.md), prove 9 of the conditional pairs with no condition at all (2 of them held out). They also prove 19 unknown pairs outright (3 held out), make 2 unknown pairs conditional and let 4 conditional proofs drop one condition. No pair moved the other way, and no rule was written for this eval. The first measurement (2026-10-04) had 854 outright, 610 conditional, 357 refuted and 979 unknown; main's distance from it predates these rules and was not traced.
+- The 783 conditional proofs use 1,886 conditions: 1,403 NOT NULL, 432 unique keys, 51 single-column foreign keys. One condition alone suffices for 197 pairs, two for 202, three for 280, and four to seven for 104.
+- All 783 were re-checked on 900 databases each (704,700 in total) with 0 differences, and each is minimal for the prover. For 737 of them a random database that breaks the conditions separates the queries; for the other 46 no separating database turned up in 300 tries, which does not mean there is none.
+- Against the files' labels: 222 conditional pairs are labelled equivalent (the published answer assumed a key or NOT NULL rule the file does not state), 561 are labelled different (the labelled difference is a NULL or a duplicate; the pair is equal once it is excluded).
+- Held-out fifth (hash of the pair divisible by 5, 580 pairs): **166 conditional, 0 wrong**; the development split has 617 of 2,220 conditional.
+- **The count rose from 590 to 783 on 2026-11-12.** The rule batch of 2026-11-11/12 (window filters and pruning, nested membership, keyed join groups, scalar and one-row joins; see the [QUITE page](quite.md)) was written for QUITE pairs, not for this eval, and moved 193 pairs from unknown to conditional; the 870 proved outright did not change. This eval was run as a soundness guard: it showed that a rule reading declared unique keys must require NOT NULL on every key column, which was fixed before merging. The held-out fifth was never read; it went from 126 to 166 conditional.
+- **The count fell on 2026-11-11 because pairs left for the better.** Main without the rule modules of 2026-11-10 (9231bd9), measured the same way on the same machine, gives 842 proved outright, 597 conditional, 357 refuted and 1,004 unknown (held-out fifth 128 conditional). Those rules, written for the [Singh eval](singh-bedathur.md), prove 9 of the conditional pairs with no condition at all (2 of them held out). They also prove 19 unknown pairs outright (3 held out), make 2 unknown pairs conditional and let 4 conditional proofs drop one condition. No pair moved the other way, and no rule was written for this eval. The first measurement (2026-10-04) had 854 outright, 610 conditional, 357 refuted and 979 unknown; main's distance from it predates these rules and was not traced.
 
 ```bash
 python tools/conditional_bench.py singh                  # all 2,800 pairs, about 40 minutes on 4 cores
