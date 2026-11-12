@@ -137,3 +137,24 @@ def test_the_roundabout_anti_join_is_the_plain_one_under_the_key():
     unkeyed = {**KEYED, "students": TableConstraints(not_null=frozenset({"id", "department_id"}))}
     assert not prove(unkeyed).proven
     assert not prove(None).proven
+
+
+def test_a_pair_main_proves_without_the_rule_is_still_proved():
+    """The rule works on the second attempt only: on the first it rewrote the NOT IN of this pair to a NOT EXISTS,
+    and the other rules no longer matched it with the CTE spelling (three conditional Singh pairs were lost)."""
+
+    left = (
+        "SELECT DISTINCT sales.buyer_id AS buyer_id FROM product INNER JOIN sales ON sales.product_id = product.product_id "
+        "WHERE product_name = 'a' AND sales.buyer_id NOT IN (SELECT sales.buyer_id FROM product INNER JOIN sales ON sales.product_id = product.product_id WHERE product_name = 'b')"
+    )
+    right = (
+        "WITH x AS (SELECT DISTINCT sales.buyer_id AS ba FROM sales LEFT JOIN product ON sales.product_id = product.product_id WHERE product_name = 'a'), "
+        "y AS (SELECT DISTINCT sales.buyer_id AS bb FROM sales LEFT JOIN product ON sales.product_id = product.product_id WHERE product_name = 'b') "
+        "SELECT x.ba AS buyer_id FROM x LEFT JOIN y ON y.bb = x.ba WHERE bb IS NULL"
+    )
+    schema = {"product": ["product_id", "product_name"], "sales": ["product_id", "buyer_id"]}
+    constraints = {
+        "product": TableConstraints(keys=(("product_id",),)),
+        "sales": TableConstraints(not_null=frozenset({"buyer_id"}), keys=(("buyer_id",),)),
+    }
+    assert prove_equivalent_algebraic(left, right, schema=schema, dialect="mysql", constraints=constraints).proven

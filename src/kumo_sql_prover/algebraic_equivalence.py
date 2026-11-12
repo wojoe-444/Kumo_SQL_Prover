@@ -4964,8 +4964,10 @@ def normalize(
     tree = _bigquery_sugar(tree)
     tree = using_to_on_unqualified(_using_to_on(tree, schema))
     tree = drop_subsumed_like(tree)
-    if shapes:
-        tree = read_self_key_membership(tree, schema, keys, not_null, types)  # pre-pass: a key looked up through its own table again
+    if not shapes:
+        # pre-pass: a key looked up through its own table again. Only on the second attempt: on the first it takes the
+        # query out of the shape other rules prove (three conditional Singh pairs main proved were lost to it).
+        tree = read_self_key_membership(tree, schema, keys, not_null, types)
     tree = _semi_joins_to_exists(tree)
     tree = exists_over_aggregate(tree)
     tree = fold_grouped_count_cases(tree, not_null)
