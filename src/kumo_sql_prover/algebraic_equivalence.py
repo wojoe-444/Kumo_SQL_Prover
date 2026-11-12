@@ -4955,17 +4955,19 @@ def normalize(
 
         tree = read_extreme_joins(tree, schema, not_null)  # pre-pass: a join with the table's own grouped MIN or MAX is that comparison
         tree = read_extreme_rows(tree, schema, keys)  # pre-pass: under a key the rows holding a group's MIN or MAX are one row per group
-        from .absolute_values import read_absolute_values
-        from .keyed_lookups import read_keyed_lookups
-
-        tree = read_keyed_lookups(tree, schema, keys)  # pre-pass: a filter on a value looked up by key is an EXISTS
-        tree = read_absolute_values(tree, types)  # pre-pass: ABS(x) = n says x is n or -n
         from .join_distinct_aggregates import read_join_distinct_aggregates
 
         tree = read_join_distinct_aggregates(tree, schema)  # pre-pass: a join that only asks for a match, under COUNT(DISTINCT), is an IN
         from .key_group_choice import choose_key_groups
 
         tree = choose_key_groups(tree, schema, keys, not_null)  # pre-pass: grouping by any NOT NULL key of a table is one grouping, so name the first
+    # Not shape rules: each reads a comparison the prover could not read at all, so the second attempt (shapes off, which
+    # drops merge_exists_disjunction) keeps them and can still match the separate EXISTS tests they produce.
+    from .absolute_values import read_absolute_values
+    from .keyed_lookups import read_keyed_lookups
+
+    tree = read_keyed_lookups(tree, schema, keys)  # pre-pass: a filter on a value looked up by key is an EXISTS
+    tree = read_absolute_values(tree, types)  # pre-pass: ABS(x) = n says x is n or -n
     tree = rewrite_quantified(tree, schema, not_null, keys)
     tree = _peel_star_wrappers(tree)
     tree = trim_redundant_row_clauses(tree)
