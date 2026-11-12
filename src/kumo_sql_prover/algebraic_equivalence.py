@@ -55,6 +55,7 @@ from .grouping_expansion import collapse_grouping_expansion
 from .grouping_sets import expand_grouping_sets, grouping_sets_to_union
 from .named_windows import inline_named_windows
 from .having_rules import key_having_to_where
+from .window_calls import is_window_function
 from .window_canonical import canonical_windows
 from .unread_windows import drop_unread_windows
 from .window_rules import window_rules
@@ -2918,7 +2919,7 @@ def _isolate_windows(tree: exp.Expression) -> exp.Expression:
                 else:
                     select.replace(wrapped)
             continue
-        own_calls = [c for c in select.find_all(exp.AggFunc) if c.find_ancestor(exp.Select) is select and c.find_ancestor(exp.Window) is None]
+        own_calls = [c for c in select.find_all(exp.AggFunc) if c.find_ancestor(exp.Select) is select and not is_window_function(c)]
         if own_calls or select.args.get("distinct") and select.args["distinct"].args.get("on"):
             continue
         if any(isinstance(e, exp.Star) or (isinstance(e, exp.Column) and isinstance(e.this, exp.Star)) for e in select.expressions):

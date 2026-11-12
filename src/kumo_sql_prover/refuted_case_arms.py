@@ -45,6 +45,7 @@ from decimal import Decimal
 from sqlglot import exp
 
 from .ast_utils import extended_grouping
+from .window_calls import is_window_function
 
 _STRICT = (exp.Paren, exp.Div, exp.Mul, exp.Add, exp.Sub, exp.Neg)
 _PLAIN = (
@@ -233,7 +234,7 @@ def drop_refuted_case_arm(select: exp.Select) -> exp.Expression | None:
         return None
     per_row = {key for key in (_ruled_out(part) for part in (_conjuncts(where.this) if where is not None else [])) if key}
     per_group = {key for key in (_ruled_out(part) for part in (_conjuncts(having.this) if having is not None else [])) if key}
-    if group is None and any(a.find_ancestor(exp.Select) is select for a in select.find_all(exp.AggFunc) if not isinstance(a.parent, exp.Window)):
+    if group is None and any(a.find_ancestor(exp.Select) is select for a in select.find_all(exp.AggFunc) if not is_window_function(a)):
         per_row = set()  # an aggregate without GROUP BY returns a row for no input: nothing passed the WHERE
     if not per_row and not per_group:
         return None

@@ -30,6 +30,7 @@ This is a shape rule (see ``shape_fallback``).
 from __future__ import annotations
 
 from sqlglot import exp
+from .window_calls import is_window_function
 
 _INNER_ARGS = {"expressions", "from_", "from", "joins", "where"}
 _VOLATILE = (exp.Rand, exp.Randn, exp.Randstr, exp.Uuid, exp.Anonymous, exp.CurrentTimestamp, exp.CurrentDate, exp.CurrentTime)
@@ -80,7 +81,7 @@ def push_filter_below_windows(select: exp.Select) -> exp.Expression | None:
             return None
         values[name] = item.this if isinstance(item, exp.Alias) else item
     windows = [w for w in inner.find_all(exp.Window) if w.find_ancestor(exp.Select) is inner]
-    if any(a.find_ancestor(exp.Select) is inner and a.find_ancestor(exp.Window) is None for a in inner.find_all(exp.AggFunc)):
+    if any(a.find_ancestor(exp.Select) is inner and not is_window_function(a) for a in inner.find_all(exp.AggFunc)):
         return None
     partitions: list[set[str]] = []
     for window in windows:
