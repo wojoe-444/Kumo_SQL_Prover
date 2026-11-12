@@ -31,6 +31,7 @@ This is a shape rule (see ``shape_fallback``).
 from __future__ import annotations
 
 from sqlglot import exp
+from .window_calls import is_window_function
 
 _VOLATILE = (exp.Rand, exp.Randn, exp.Randstr, exp.Uuid, exp.Anonymous, exp.CurrentTimestamp, exp.CurrentDate, exp.CurrentTime)
 _NESTED = (exp.Subquery, exp.Select, exp.Exists, exp.SetOperation)
@@ -74,7 +75,7 @@ def inline_windowed_source(select: exp.Select) -> exp.Expression | None:
                 windowed = True
                 if isinstance(node.args.get("alias"), exp.Identifier) or not isinstance(node.this, exp.Expression):
                     return None
-            elif isinstance(node, exp.AggFunc) and not isinstance(node.parent, exp.Window):
+            elif isinstance(node, exp.AggFunc) and not is_window_function(node):
                 return None  # an aggregate of the select itself: one row per group, not per row
     if not windowed:
         return None
@@ -88,7 +89,7 @@ def inline_windowed_source(select: exp.Select) -> exp.Expression | None:
             return None
         if any(isinstance(node, (*_NESTED, *_VOLATILE)) or _star(node) for node in value.walk()):
             return None
-        if any(isinstance(node, exp.AggFunc) and node.find_ancestor(exp.Window) is None for node in value.walk()):
+        if any(isinstance(node, exp.AggFunc) and not is_window_function(node) for node in value.walk()):
             return None
         for window in value.find_all(exp.Window):
             if isinstance(window.args.get("alias"), exp.Identifier) or not isinstance(window.this, exp.Expression):

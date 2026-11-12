@@ -186,6 +186,16 @@ So the newest group of rules is now tried first, and if the prover reaches no an
 
 The limit: this protects only against the rules in that group. A rule added later needs to be put in the group to get the same protection. The second attempt also takes extra time on pairs the prover cannot decide, so it is only made when the two queries together are at most 4,000 characters long; a very large pair gets the first attempt only. The evidence is the comparison of every benchmark before and after the group was added (four proofs had been lost, all four are back) and a small set of made-up test pairs. Details: [Full reference](../docs/provers.md#a-second-attempt-without-the-shape-rules).
 
+## Rewrites a query planner prints
+
+**What it is for.** Some tools rewrite SQL by machine, and the result looks unlike anything a person would write. KumoSQL could not read several of these spellings, so it answered "unknown" for rewrites that were in fact fine. Seventeen rules now read them.
+
+**Example.** A planner may compute a smallest value early: `SELECT MIN(g.m) FROM (SELECT k, MIN(x) AS m FROM s GROUP BY k) AS g, o WHERE g.k = o.k`. The smallest of the group minimums is the smallest value, so KumoSQL now reads this as the plain `SELECT MIN(s.x) FROM s, o WHERE s.k = o.k`. Other spellings now read: a `SELECT *` over a join that uses one table twice, a table whose columns are renamed inside brackets (`d AS x (k0, v0)`), a `HAVING` that compares with a separate one-value subquery, and `STDDEV` or `VARIANCE` (treated as "the same whenever the sums underneath are the same", with nothing else assumed).
+
+More examples: a join that only checks whether a matching row exists (`a LEFT JOIN d ON a.x = d.k WHERE d.k IS NULL`) is read as `NOT EXISTS`; a `UNION ALL` branch that can never return a row is dropped; a count pushed below a join and multiplied back above it is read as the plain count; and `x - y > 30` over whole numbers is read as `x - y >= 31`.
+
+**Limits.** Each rule only fires in the exact situation where it is safe, and stays silent otherwise: the `MIN` rule does nothing if the query also counts or sums, because those would notice the extra rows. For `STDDEV` the answer assumes the database computes it from exact sums, which it records as an assumption. The evidence is made-up test pairs for each rule (ones it must prove and close ones it must not), plus running each rewrite on small random tables with empty and missing values. While reading these rewrites one older rule was found to drop a join condition, which made a wrong "equal" answer possible; it is fixed and has a test. See the [full reference](../docs/provers.md#shape-rules-for-planner-written-rewrites-2026-11-11).
+
 ## Avoiding repeated work
 
 When a proof tries several fallback rules, it keeps the earlier normalization result for that same proof. It also keeps the assumptions attached to it. A different proof, such as one with different declared keys, starts fresh.

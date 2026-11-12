@@ -67,19 +67,21 @@ Without the generated databases, the data check falls back to the small database
 
 ## Scores
 
-Measured on 2026-11-10 on commit a861879 with this harness (`--jobs 4`, 4 cores, nothing else running), with both generated databases.
+Measured on 2026-11-11 on commit 687c1d7 of the QUITE DSB branch (Kumo_SQL_Prover PR 19; whole run, `--jobs 4`) and on 2026-11-10 on commit a861879 with this harness (`--jobs 4`, 4 cores, nothing else running), with both generated databases.
 
 | Results file | Score | Held out |
 | --- | --- | --- |
-| `logos-core-proof` | **40/69 proved, 0 wrong** (4 label failures set aside; 21 unknown, 7 unsupported, 1 timeout) | 7/11 proved, 1 refuted, 0 wrong |
+| `logos-core-proof` | **42/69 proved, 0 wrong** (4 label failures set aside; 18 unknown, 7 unsupported, 2 timeouts) | 7/11 proved, 1 refuted, 0 wrong |
 | `logos-core-executed` | **4/73 shown different, 0 wrong** (3 on a small database, 1 on the generated data) | 1/12 |
+
+On 2026-11-11 `rbot-dsb` went from 17 to 19 proved (the 40 of 2026-11-10 became 42) with the rules written for QUITE's DSB development pairs, which carry over; no rule was written for this eval, but the LOGOS DSB queries are DSB templates, so this family counts as tuned on test. An earlier whole run of the branch, before the other batches' merges into main, gave 45/69 (22 on `rbot-dsb`); main alone without PR 19 measured 41/69 then and 39/69 after those merges (not diagnosed), so the 42 here is not a loss against main. The family split of the unproved `rbot-dsb` pairs below is inferred from the totals.
 
 By family:
 
 | Family | Proved | Refuted | Unknown | Unsupported | Timeout |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `rbot-tpch` (22) | 19/21 | 1 | 1 | 1 | 0 |
-| `rbot-dsb` (37) | 17/36 | 1 | 16 | 2 | 1 |
+| `rbot-dsb` (37) | 19/36 | 1 | 14 | 2 | 1 |
 | `tpcds-variants` (14, all adapted) | 4/12 | 2 | 4 | 4 | 0 |
 
 Every proof's two queries also return the same rows on the generated data and on every small database.

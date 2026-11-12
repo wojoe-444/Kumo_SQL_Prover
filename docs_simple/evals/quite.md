@@ -7,7 +7,7 @@ Several research systems ask a language model to rewrite a slow SQL query into a
 ## What it checks
 
 - **Flagged equal.** Can the prover show the rewrite is equivalent to the original for every possible database? A proof is the strongest answer. When the prover cannot decide, the answer is "unknown", which is allowed.
-- **Flagged unequal.** The authors' flag says the rewrite failed. KumoSQL must not prove such a pair equal when a database exists that separates the two queries. Where it can build a small database on which DuckDB returns different rows, with DuckDB's optimizer turned off to rule out an optimizer bug, the pair counts as refuted.
+- **Flagged unequal.** The authors' flag says the rewrite failed. KumoSQL must not prove such a pair equal when a database exists that separates the two queries. Where it can build a small database on which DuckDB returns different rows, with DuckDB's optimizer turned off to rule out an optimizer bug, the pair counts as refuted. The small databases come from several places. The last one is a search that reads both queries and fills the tables with the values the queries themselves compare against (for `d_year = 1999` it tries 1999, 1998, 2000 and NULL), with rows that repeat, and with pairs of rows that differ in a single column. It never uses a zero divisor, because PostgreSQL would stop with an error there, and it does not count a difference that could come from a `LIMIT` choosing among tied rows.
 - **Zero wrong.** A proof that a replayed database contradicts would be a wrong answer. None is allowed.
 
 ## A concrete example
@@ -21,6 +21,7 @@ The flag comes from running both queries once, on one database. Two queries can 
 ## Limits of the evidence
 
 - The authors' databases are not public. A refutation uses a database KumoSQL builds, so a flagged-equal pair that is refuted is a disagreement about one database, not a mistake by either side.
+- The total a score is divided by is the number of pairs the authors flagged equal minus the pairs where KumoSQL found a database that separates the two queries. When the search for such databases gets better, that total shrinks (it went from 2,609 to 2,479 on 2026-11-11) and the same proofs read as a higher share. The full reference lists the pairs that left the total and why, and the score against all flagged pairs.
 - Most pairs that are not proved end as "unknown", which is not a failure: many LLM rewrites need reasoning the prover does not have.
 - Results are compared as bags of rows. Where a query keeps only the first rows by a sort key that has ties, either answer can be correct, and the full reference counts the pairs this applies to.
 - The data has no licence. It is downloaded from a pinned version when the eval runs and is never stored in this repository.

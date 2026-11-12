@@ -55,6 +55,7 @@ from .grouping_expansion import collapse_grouping_expansion
 from .grouping_sets import expand_grouping_sets, grouping_sets_to_union
 from .named_windows import inline_named_windows
 from .having_rules import key_having_to_where
+from .window_calls import is_window_function
 from .window_canonical import canonical_windows
 from .unread_windows import drop_unread_windows
 from .window_rules import window_rules
@@ -105,6 +106,7 @@ from .constant_correlation import propagate_constant_correlations
 from .constant_regroup_rules import collapse_constant_regroup
 from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
+from . import float_regrouping
 from . import shape_fallback
 from . import union_source_names
 from .union_rollup import roll_up_grouped_union
@@ -126,6 +128,22 @@ from .disjoint_union import separate_disjoint_unions
 from .one_row_tails import drop_one_row_tail
 from .string_spelling_rules import string_spelling_rules
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
+from .scalar_having_groups import read_scalar_having_groups
+from .count_column_bounds import count_column_bounds
+from .renamed_join_heads import read_back_renamed_join_heads
+from .counted_group_sources import read_counted_group_sources
+from .counted_group_lists import list_keys_of_counted_groups
+from .empty_union_operands import drop_empty_union_operand
+from .setop_operand_sources import merge_operand_sources
+from .spread_aggregates import rewrite_spread_aggregates
+from .star_source_columns import list_read_star_columns
+from .existence_joins import read_existence_joins, read_existence_joins_everywhere
+from .grouped_conditional_counts import grouped_conditional_counts
+from .integer_expression_bounds import integer_expression_bounds
+from .extreme_group_sources import read_extreme_group_source
+from .pinned_source_columns import read_pinned_source_columns
+from .refuted_case_arms import drop_refuted_case_arm
+from .single_value_joins import read_single_value_join
 from .printed_spelling import spell_as_printed
 from .tailed_grouping_sets import isolate_tailed_grouping_sets
 from .wrapped_join_filters import push_filter_into_wrapped_join
@@ -207,7 +225,7 @@ def _global_aggregate(select: exp.Select) -> bool:
     """
 
     return not select.args.get("group") and any(
-        a.find_ancestor(exp.Select) is select and not isinstance(a.parent, exp.Window) for a in select.find_all(exp.AggFunc)
+        a.find_ancestor(exp.Select) is select and not is_window_function(a) for a in select.find_all(exp.AggFunc)
     )
 
 
@@ -925,18 +943,19 @@ _merge_counter = itertools.count()
 _OUTER = {"SEMI", "ANTI", "LEFT", "RIGHT", "FULL"}
 
 
-def _merge_spj_source(select: exp.Select) -> exp.Expression | None:
+def _merge_spj_source(select: exp.Select, *, plain: bool = False) -> exp.Expression | None:
     """Fold a filtering or joining derived table into the grouped select that reads it.
 
     ``SELECT SUM(x) FROM (SELECT k, x FROM t WHERE c) AS d GROUP BY k`` is
     ``SELECT SUM(x) FROM t WHERE c GROUP BY k``: the derived table keeps one row per row of its
     own sources, so the aggregate sees the same rows. Only selects that group or aggregate are
-    rewritten (the prover flattens the others itself), and only through inner joins.
+    rewritten (the prover flattens the others itself), and only through inner joins. ``plain``
+    also reads a select that neither groups nor aggregates (``setop_operand_sources``).
     """
 
     from .eager_aggregation import _own_aggregates
 
-    if not (select.args.get("group") or _own_aggregates(select)) or not _no_extras(select, allow_group=True):
+    if not (plain or select.args.get("group") or _own_aggregates(select)) or not _no_extras(select, allow_group=True):
         return None
     if any(isinstance(star, exp.Star) and not isinstance(star.parent, exp.Count) for star in select.find_all(exp.Star)):
         return None
@@ -2905,7 +2924,7 @@ def _isolate_windows(tree: exp.Expression) -> exp.Expression:
                 else:
                     select.replace(wrapped)
             continue
-        own_calls = [c for c in select.find_all(exp.AggFunc) if c.find_ancestor(exp.Select) is select and c.find_ancestor(exp.Window) is None]
+        own_calls = [c for c in select.find_all(exp.AggFunc) if c.find_ancestor(exp.Select) is select and not is_window_function(c)]
         if own_calls or select.args.get("distinct") and select.args["distinct"].args.get("on"):
             continue
         if any(isinstance(e, exp.Star) or (isinstance(e, exp.Column) and isinstance(e.this, exp.Star)) for e in select.expressions):
@@ -4923,6 +4942,8 @@ def normalize(
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
+        tree = read_back_renamed_join_heads(tree, schema)  # pre-pass: a column list on the first table of a parenthesized join
+        tree = rewrite_spread_aggregates(tree, dialect, _assumptions)  # pre-pass: STDDEV and VARIANCE as a function of three sums
         from .closed_queries import fold_closed_query
         from .inline_rows import inline_struct_rows
 
@@ -4980,11 +5001,14 @@ def normalize(
     tree = _left_join_indicator_to_exists(tree, keys)
     if shapes:
         tree = read_grouped_self_membership(tree, dialect)  # before the groups of an IN subquery become a derived table
+        tree = read_scalar_having_groups(tree, schema, _grouped_in_to_derived)  # a HAVING against an uncorrelated scalar subquery
     tree = _grouped_in_to_derived(tree)
     tree = _in_over_union(tree)
     if shapes:
         tree = separate_disjoint_unions(tree)
     tree = expand_grouping_sets(tree)
+    if shapes:
+        tree = list_keys_of_counted_groups(tree)  # pre-pass: a counted intersection under a list that is not its keys
     for select in list(tree.find_all(exp.Select))[::-1]:
         replacement = collapse_grouping_expansion(select) or (collapse_layered_expansion(select) if shapes else None) or collapse_counted_intersection(select)
         if replacement is not None:
@@ -5003,6 +5027,8 @@ def normalize(
     tree = _name_derived_columns(tree)
     if schema:
         tree = _using_to_on(_expand_stars(tree, schema), schema)  # USING over a derived table read once its stars are known
+        if shapes:
+            tree = list_read_star_columns(tree, schema)  # pre-pass: a star over repeated names lists the columns read from it
     tree = _except_of_same_table_filters(tree, schema, dialect)
     tree = _probe_and_nth_value(tree)
     tree = _name_derived_columns(_lateral_joins(tree))
@@ -5018,7 +5044,11 @@ def normalize(
         tree = _checked_qualification(
             tree, lambda t: _qualify_correlated_columns(_qualify_outer_join_columns(t, schema), schema), schema, dialect, "algebraic_qualification"
         )
+    if shapes:
+        tree = read_existence_joins_everywhere(tree, schema)  # pre-pass: anti-, semi- and marker joins as EXISTS tests
     tree = merge_distinct_partitions(tree)
+    if shapes:
+        tree = read_counted_group_sources(tree)  # pre-pass: COUNT(*) pushed below a chain of joins, from the inside
 
     types_map = {k.lower(): {c.lower(): t for c, t in v.items()} for k, v in (types or {}).items()}
 
@@ -5045,6 +5075,15 @@ def normalize(
         lambda sel: rewrite_anti_membership(sel, schema, keys, not_null),  # k NOT IN (the same table's key joined to others) is NOT EXISTS over the others
         lambda sel: rewrite_duplicate_values(sel, schema, keys, not_null),  # the values a table holds twice: a self join or a correlated count is a grouped count
         lambda sel: count_distinct_under_key(sel, keys, not_null),  # COUNT(DISTINCT c) of a group whose columns and c hold a key is COUNT(c)
+        count_column_bounds,
+        read_extreme_group_source,
+        merge_operand_sources,
+        lambda sel: read_existence_joins(sel, schema),
+        lambda sel: integer_expression_bounds(sel, types_map, dialect),
+        grouped_conditional_counts,
+        lambda sel: read_pinned_source_columns(sel, types_map),
+        drop_refuted_case_arm,
+        lambda sel: read_single_value_join(sel, dialect),
         roll_up_grouped_union,
         cross_join_one_row,
         inline_windowed_source,
@@ -5058,7 +5097,7 @@ def normalize(
         if isinstance(node, exp.Subquery):
             return _inline_projection(node, schema) or node
         if isinstance(node, exp.SetOperation):
-            return merge_same_source(node) or set_operation_to_exists(node) or node
+            return merge_same_source(node) or set_operation_to_exists(node) or (shapes and drop_empty_union_operand(node)) or node
         if isinstance(node, exp.Select):
             sweep()  # every rule below works on copies, which only a collection frees
             # a derived table's output names are how the query around it reads it, so a rule that renames
@@ -5305,6 +5344,15 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
             return text
 
         left, right = normalized(left_sql, keyed_distinct), normalized(right_sql, keyed_distinct)
+        regrouping = float_regrouping.regrouped(
+            [sqlglot.parse_one(sql, read=dialect) for sql in (left_sql, right_sql)],
+            [sqlglot.parse_one(sql, read=dialect) for sql in (left, right)],
+            types,
+        )
+        if regrouping == "declined":
+            return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, float_regrouping.DECLINED, assumptions=tuple(sorted(normalization_assumptions)))
+        if regrouping == "untyped":
+            normalization_assumptions.add(float_regrouping.UNTYPED_ASSUMPTION)
         if not shapes and (left, right) == tuple(cache.get((sql, keyed_distinct, True), (None,))[0] for sql in (left_sql, right_sql)):
             # The attempt with the shape rules compared these same two texts.
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, shape_fallback.SKIPPED, assumptions=tuple(sorted(normalization_assumptions)))
