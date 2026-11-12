@@ -50,6 +50,11 @@ Conditions, all checked:
   proof on main to this);
 * the select is not inside an ``IN`` or ``EXISTS``: the prover reads a membership query without grouping, so there
   the pre-aggregated table is the better spelling.
+
+This is a shape rule (see ``shape_fallback``), and a pair it changed that the prover cannot prove is tried again
+without it (the narrow second attempt, rule name ``keyed_join_groups``): ``keyed_group_filters`` reads the same
+shapes in the other direction (a keyed table grouped under ``HAVING`` as a join with the grouped subquery), and a
+pair with one query in each spelling is proved only when this rule stays out.
 """
 
 from __future__ import annotations
@@ -58,6 +63,7 @@ import itertools
 
 from sqlglot import exp
 
+from . import shape_fallback
 from .ast_utils import FROM_KEY, extended_grouping, select_sources
 from .unmatched_outer_join import _columns_of, _conjuncts, _inside, _plain_column, _plain_table
 
@@ -220,6 +226,8 @@ def _owner(column: exp.Column, names: list[str], owned: list[set[str]], visible:
 def pull_up_keyed_join(select: exp.Select, schema: dict | None, keys: dict | None, not_null: dict | None = None) -> exp.Expression | None:
     """``select`` (keyed tables joined to one grouped derived table) as the aggregate over the flat join, or ``None``."""
 
+    if not shape_fallback.rule_enabled("keyed_join_groups"):
+        return None  # the narrow second attempt (``shape_fallback.without``)
     if not schema or not keys or not select.args.get("joins"):
         return None
     if select.find_ancestor(exp.In, exp.Exists) is not None:
@@ -368,4 +376,5 @@ def pull_up_keyed_join(select: exp.Select, schema: dict | None, keys: dict | Non
     for key in ("order", "limit", "offset"):
         if copy.args.get(key) is not None:
             result.set(key, copy.args[key].copy())
+    shape_fallback.note_fired("keyed_join_groups")
     return result

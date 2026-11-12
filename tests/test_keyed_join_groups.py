@@ -242,3 +242,18 @@ def test_a_plain_pre_aggregated_join_still_meets_the_cte_spelling_of_the_other_q
     )
     assert proved(left, right)
     assert proved(right, left)
+
+
+def test_the_narrow_second_attempt_can_switch_the_pull_up_off():
+    """``keyed_join_groups`` records that it fired and stays off inside ``shape_fallback.without`` (``keyed_group_filters``
+    reads the same pair in the other direction)."""
+
+    from kumo_sql_prover import shape_fallback
+
+    sql = "SELECT o.k, o.price FROM o JOIN (SELECT l.k, SUM(l.q) AS total FROM l GROUP BY l.k HAVING SUM(l.q) > 300) AS g ON o.k = g.k"
+    with shape_fallback.tracking() as fired:
+        assert pulled(sql) is not None
+        assert "keyed_join_groups" in fired
+        with shape_fallback.without("keyed_join_groups"):
+            assert pulled(sql) is None
+        assert pulled(sql) is not None
