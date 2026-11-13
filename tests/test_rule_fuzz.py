@@ -80,3 +80,18 @@ def test_seeded_generated_run_finds_no_unsound_rewrite():
         result = fuzz.check_case(generated, seed=5)
         bugs += [(generated["sql"], f["rule"]) for f in result["fires"] if f["status"] == "differs"]
     assert not bugs
+
+
+def test_an_alias_that_bigquery_reads_and_duckdb_does_not_is_unchecked():
+    # QUALIFY reads the select alias ``id`` on BigQuery and the source column ``id`` on DuckDB (seed 77062, case 415):
+    # ``resolve_alias_reads`` is right for BigQuery, and a DuckDB run of either side is not BigQuery's answer.
+    sql = "SELECT 'MONTH' AS id FROM t AS c QUALIFY ROW_NUMBER() OVER (PARTITION BY id) = 1"
+    result = fuzz.check_case(case(sql), only={"resolve_alias_reads"})
+    assert [f["status"] for f in result["fires"]] == ["unchecked"]
+    assert "select alias" in result["fires"][0]["reason"]
+
+
+def test_an_alias_that_is_no_column_is_still_checked():
+    sql = "SELECT t.x AS a FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY a ORDER BY t.id) = 1"
+    result = fuzz.check_case(case(sql), only={"resolve_alias_reads"})
+    assert [f["status"] for f in result["fires"]] == ["equal"]

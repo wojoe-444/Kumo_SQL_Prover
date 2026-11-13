@@ -973,6 +973,32 @@ _merge_counter = itertools.count()
 _OUTER = {"SEMI", "ANTI", "LEFT", "RIGHT", "FULL"}
 
 
+def _grouping_sets_split_by_merge(select: exp.Select, reads: list[exp.Column], names: list[str], inner: exp.Select) -> bool:
+    """Whether folding the derived table into a select with GROUPING SETS / ROLLUP / CUBE could change which
+    grouping columns are NULL in a subtotal row.
+
+    A grouping column is NULL in a set that does not list it, and two outer columns that are different columns of
+    the derived table stay different grouping expressions even when both read the same inner expression:
+    ``SELECT x AS c1, x AS c2 FROM t`` grouped by ``ROLLUP (c1, c2)`` has ``c2`` NULL in the set ``(c1)``, but once
+    both names are replaced by ``t.x`` the set ``(t.x)`` lists it. The merge also writes one expression where the
+    query spelled the same derived column twice (``c1`` and ``a.c1``), which DuckDB does not read as one grouping
+    expression, so a subtotal row's NULLs can differ. Found by ``tools/rule_fuzz.py`` (seed 77062, case 1306).
+    Declined when two names read here share an inner expression or one name is read bare and qualified.
+    """
+
+    group = select.args.get("group")
+    if group is None or not (any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube")) or group.find(exp.GroupingSets, exp.Rollup, exp.Cube)):
+        return False
+    inner_text = {name: (e.this if isinstance(e, exp.Alias) else e).sql().lower() for name, e in zip(names, inner.expressions)}
+    spellings: dict[str, set[bool]] = {}
+    for column in reads:
+        spellings.setdefault(column.name.lower(), set()).add(bool(column.table))
+    if any(len(forms) > 1 for forms in spellings.values()):
+        return True
+    texts = [inner_text[name] for name in spellings]
+    return len(set(texts)) != len(texts)
+
+
 def _merge_spj_source(select: exp.Select, *, plain: bool = False) -> exp.Expression | None:
     """Fold a filtering or joining derived table into the grouped select that reads it.
 
@@ -1058,6 +1084,8 @@ def _merge_spj_source(select: exp.Select, *, plain: bool = False) -> exp.Express
         if len(inner_items) > 1 and any(not c.table for c in inner.find_all(exp.Column) if c.find_ancestor(exp.Select) is inner):
             continue
         if any(c.table and c.table.lower() not in inner_aliases for c in inner.find_all(exp.Column) if c.find_ancestor(exp.Select) is inner):
+            continue
+        if _grouping_sets_split_by_merge(select, uses + bare, names, inner):
             continue
         mapping = {old: f"kumosql_m{next(_merge_counter)}_{old}" for old in inner_aliases}
 

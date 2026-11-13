@@ -328,12 +328,47 @@ _DENIED_EXTRACT_UNITS = {"DAYOFWEEK", "DOW", "WEEK", "ISOWEEK", "ISOYEAR", "DAYO
 _OPERATORS = (exp.Binary, exp.Not, exp.Between, exp.In, exp.Like, exp.Neg, exp.Is)
 
 
-def to_duckdb(tree: exp.Expression, dialect: str = "bigquery") -> str:
+def _alias_read_differs(tree: exp.Expression, columns: set[str]) -> str | None:
+    """The name of a bare name that BigQuery reads as a select alias and DuckDB as a source column, if any.
+
+    In QUALIFY (anywhere) and in a window of ORDER BY, BigQuery reads a bare name that is a select alias as the alias;
+    DuckDB reads the source column when the source has one of that name (``clause_alias_reads`` module doc, checked on
+    BigQuery 2026-11-10). A DuckDB run of such a query is not BigQuery's answer, so it is no evidence for or against
+    a rule (``resolve_alias_reads`` rewrites exactly these reads). ``columns`` are the names a source may have:
+    every declared column plus every other alias in the query. Rule-independent and deliberately wide.
+    """
+
+    for select in tree.find_all(exp.Select):
+        aliases = {item.alias.lower() for item in select.expressions if isinstance(item, exp.Alias) and item.alias}
+        if not aliases:
+            continue
+        others = set(columns)
+        for node in tree.find_all(exp.Alias, exp.TableAlias):
+            if isinstance(node, exp.TableAlias):
+                others |= {c.name.lower() for c in node.columns}
+            elif node.parent is not select:
+                others.add(node.alias.lower())
+        for clause, windows_only in (("qualify", False), ("order", True)):
+            node = select.args.get(clause)
+            for column in node.find_all(exp.Column) if node is not None else []:
+                name = column.name.lower()
+                if column.table or name not in aliases or column.find_ancestor(exp.Select) is not select:
+                    continue
+                if (not windows_only or column.find_ancestor(exp.Window) is not None) and name in others:
+                    return name
+    return None
+
+
+def to_duckdb(tree: exp.Expression, dialect: str = "bigquery", columns: set[str] | None = None) -> str:
     """DuckDB SQL with ``tree``'s meaning, or :class:`Unsupported`."""
 
     tree = tree.copy()
     if not isinstance(tree, exp.Query):
         raise Unsupported("not a query")
+    if dialect == "bigquery":
+        name = _alias_read_differs(tree, columns or set())
+        if name is not None:
+            raise Unsupported(f"{name} is a select alias and a column: BigQuery reads the alias, DuckDB the column")
     for node in list(tree.walk()):
         name = type(node).__name__
         if name in _DENIED:
@@ -924,11 +959,12 @@ def check_case(case: dict, only: set | None = None, seed: int = 0, query_seconds
         databases = build_databases(case, seed)
     oracle = Oracle(case, databases, query_seconds)
     dialect = case.get("dialect", "bigquery")
+    declared = {str(column[0]).lower() for columns in case["schema"].values() for column in columns}
     try:
         for fire in fires:
             entry = {"rule": fire.rule, "module": fire.module}
             try:
-                before_sql, after_sql = to_duckdb(fire.before, dialect), to_duckdb(fire.after, dialect)
+                before_sql, after_sql = to_duckdb(fire.before, dialect, declared), to_duckdb(fire.after, dialect, declared)
             except Unsupported as why:
                 entry.update(status="unchecked", reason=str(why)[:200])
                 result["fires"].append(entry)
