@@ -23,23 +23,24 @@ Every conditional proof is checked three ways, and a failure of the first or the
 
 ## Singh and Bedathur LeetCode pairs
 
-All 2,800 pairs, MySQL dialect, table and column names only (the [Singh page](singh-bedathur.md) has the data and its licence note). Measured 2026-11-12 on the branch of Kumo_SQL_Prover draft PR 20, whole run, about 60 minutes on 4 cores, with main `0e94662` measured the same way as the baseline.
+All 2,800 pairs, MySQL dialect, table and column names only (the [Singh page](singh-bedathur.md) has the data and its licence note). Measured 2026-11-13 on commit b389fe4 (the hardest-cases branch merged with main a23e844), about 85 minutes on 4 cores. Main a23e844 on the same corpus, measured by the validation thread: 878 outright, 793 conditional (2026-11-12 on 951be35 the same; 2026-11-11 on c52406f 590).
 
-| Count | Main | This branch |
-| --- | ---: | ---: |
-| Proved outright | 870 | 881 |
-| **Proved under named conditions** | **590** | **759** |
-| Refuted with every candidate holding | 357 | 357 |
-| Unknown | 983 | 803 |
-| Wrong | 0 | 0 |
-| Harness crashes | 0 | 0 |
+| Count | Pairs |
+| --- | ---: |
+| Proved outright | 889 |
+| **Proved under named conditions** | **973** |
+| Refuted with every candidate holding | 357 |
+| Unknown | 581 |
+| Wrong | 0 |
+| Harness crashes | 0 |
 
-- The 759 conditional proofs use 1,489 conditions: 998 NOT NULL, 441 unique keys, 50 single-column foreign keys. One condition alone suffices for 300 pairs, two for 252, three for 167, and four to six for 40.
-- All 759 were re-checked on 900 databases each (683,100 in total) with 0 differences, and each is minimal for the prover. For 713 of them a random database that breaks the conditions separates the queries; for the other 46 no separating database turned up in 300 tries, which does not mean there is none.
-- Against the files' labels: 219 conditional pairs are labelled equivalent (the published answer assumed a key or NOT NULL rule the file does not state), 540 are labelled different (the labelled difference is a NULL or a duplicate; the pair is equal once it is excluded).
-- Held-out fifth (hash of the pair divisible by 5, 580 pairs): **156 conditional, 0 wrong** (126 on main); the development split has 603 of 2,220 conditional.
-- **What moved against main.** 170 unknown pairs became conditional (30 of them held out) and 11 became outright proofs (2 held out). One conditional proof was lost: customers who bought A and B but not C, written with a self join of the orders table, which needed two different strings compared with an untyped column to differ. MySQL reads them as the same number when the column is an integer, and the string check of this branch declines such a proof. Nothing else moved. The 170 new conditional proofs by their first condition: `SALES.buyer_id` NOT NULL 88 (the bought-A-and-never-B family), a primary key on `products(product_id)` 22 (unpivots), on `person(id)` 12 (duplicate-finding self joins), `login` unique 9, a key on `visits` 8, on `customers(id)` 7, `SALARIES.company_id` NOT NULL 5, other 19; the pairs were not classified further.
-- **History.** Main's measurement of 2026-11-11 (commit c52406f) was 842 outright, 597 conditional on an older main without the rule modules of 2026-11-10, and 590 conditional once they landed; the first measurement (2026-10-04) had 854 outright, 610 conditional, 357 refuted and 979 unknown.
+- The 973 conditional proofs use 2,227 conditions: 1,705 NOT NULL, 471 unique keys, 51 single-column foreign keys. One condition alone suffices for 310 pairs, two for 240, three for 288, and four to seven for 135.
+- All 973 were re-checked on 900 databases each (875,700 in total) with 0 differences, and each is minimal for the prover. For 935 of them a random database that breaks the conditions separates the queries; for the other 38 no separating database turned up in 300 tries, which does not mean there is none.
+- Against the files' labels: 282 conditional pairs are labelled equivalent (the published answer assumed a key or NOT NULL rule the file does not state), 691 are labelled different (the labelled difference is a NULL or a duplicate; the pair is equal once it is excluded).
+- Held-out fifth (hash of the pair divisible by 5, 580 pairs): **196 conditional, 0 wrong** (164 on main a23e844); the development split has 777 of 2,220 conditional.
+- **The count rose from 793 to 973 on 2026-11-13.** The hardest-cases branch of the prover (a filter pushed into a grouped source, regroupings under a tail, joins to a table's own groups, duplicate-finding self joins, a `HAVING` that counts rows meeting a condition, a key looked up through its own table, `BETWEEN` bounds with interval dates, `ENUM` columns as strings) moved 180 pairs from unknown to conditional (32 of them held out) and 11 from unknown to proved outright (2 held out), compared pair by pair with main a23e844; no pair that main proves, outright or under conditions, is lost. The rules were written on the development split of this eval, of the LOGOS eval and of the Singh eval; the held-out fifth was run for scoring only and never read. One pair that was conditional on main ff364a7 is not conditional any more (a2826e16ae71, customers who bought A and B but not C: it needed different strings compared with an untyped column to differ, which MySQL reads as the same number for an integer column; it is not conditional on a23e844 either).
+- **The count rose from 590 to 793 on 2026-11-12 (main).** The rule batch of 2026-11-11/12 (window filters and pruning, nested membership, keyed join groups, scalar and one-row joins; see the [QUITE page](quite.md)) and the VeriEQL batch of main were written for other pairs, not for this eval. Together they moved 203 pairs from unknown to conditional and 8 more to proved outright (870 to 878); an earlier measurement of the QUITE batch alone on b01aa90 gave 783 conditional and 870 outright. This eval was run as a soundness guard: it showed that a rule reading declared unique keys must require NOT NULL on every key column, which was fixed before merging. The held-out fifth was never read; it went from 126 to 164 conditional.
+- **The count fell on 2026-11-11 because pairs left for the better.** Main without the rule modules of 2026-11-10 (9231bd9), measured the same way on the same machine, gives 842 proved outright, 597 conditional, 357 refuted and 1,004 unknown (held-out fifth 128 conditional). Those rules, written for the [Singh eval](singh-bedathur.md), prove 9 of the conditional pairs with no condition at all (2 of them held out). They also prove 19 unknown pairs outright (3 held out), make 2 unknown pairs conditional and let 4 conditional proofs drop one condition. No pair moved the other way, and no rule was written for this eval. The first measurement (2026-10-04) had 854 outright, 610 conditional, 357 refuted and 979 unknown; main's distance from it predates these rules and was not traced.
 
 ```bash
 python tools/conditional_bench.py singh                  # all 2,800 pairs, about 40 minutes on 4 cores
@@ -53,15 +54,15 @@ The same problems as VeriEQL ships them, with types, primary keys, NOT NULL colu
 
 | Count | Cases |
 | --- | ---: |
-| Proved outright | 929 |
-| **Proved under named conditions** | **374** |
+| Proved outright | 866 |
+| **Proved under named conditions** | **297** |
 | Refuted with every candidate holding | 0 |
-| Unknown | 1,690 |
-| Conditional but not re-checkable | 7 |
+| Unknown | 1,832 |
+| Conditional but not re-checkable | 5 |
 | Wrong | 0 |
 | Harness crashes | 0 |
 
-Measured 2026-11-12 on commit `395b5c1` (Kumo_SQL_Prover draft PR 20; about 31 minutes on 4 cores): 929 proved outright, **374 proved under named conditions**, 0 refuted, 1,690 unknown, 7 not re-checkable, 0 wrong. The 374 use 550 conditions (309 NOT NULL, 181 unique keys, 60 foreign keys); one condition suffices for 266, two for 73, three or more for 35. All 374 pass the 900-database re-check and the executed counterexample search with the conditions in the spec; 101 are separated by a database that breaks them. The same sample on main `0e94662` gives 879 outright, 335 conditional, 1,781 unknown and 5 not re-checkable. No pair moved the other way: 50 unknown pairs became outright proofs, 39 became conditional, and two pairs that a database had separated (the second query drops rows where a column is NULL) now read as equal whenever that column is NOT NULL; the harness cannot re-check those two (both queries are constant on every database that meets the condition), so they are not scored. The 5 other not re-checkable pairs rest on a composite foreign key that the executed check cannot impose. The first measurement (2026-10-04) had 297 conditional, then 23 fewer than master because the constant-result check could not run on VeriEQL type names before and rejected 24 proofs that hold only because the returned conditions make both queries return one result on every test database (a unique key on a self join that asks for two different rows). Fewer conditionals per case than Singh is expected: the declared keys already carry what the prover can use. No held-out split is reserved for this sample. The harness was developed against Singh dev pairs and an early 80-case VeriEQL sample (tuned on test); the full sample was run afterwards.
+The 297 use 454 conditions (225 NOT NULL, 169 unique keys, 60 foreign keys). All 297 pass the 900-database re-check and the executed counterexample search with the conditions in the spec; 70 are separated by a database that breaks them. Against master on the same sample this is 23 fewer conditional proofs (320 there): the constant-result check could not run on VeriEQL type names before, and now rejects 24 proofs that hold only because the returned conditions make both queries return one result on every test database (a unique key on a self join that asks for two different rows); one proof was gained. Five more conditional proofs rest on a composite foreign key that the executed check cannot impose, so they are not re-checked and not scored. Fewer conditionals per case than Singh is expected: the declared keys already carry what the prover can use. No held-out split is reserved for this sample. The harness was developed against Singh dev pairs and an early 80-case VeriEQL sample (tuned on test); the full sample was run afterwards.
 
 ```bash
 python tools/conditional_bench.py verieql --every 8 --workers 4   # about 15 minutes on 4 cores
