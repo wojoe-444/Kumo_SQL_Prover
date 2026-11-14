@@ -117,6 +117,23 @@ def test_truncating_cast_is_not_proved():
     assert differ_on_duckdb(plain, "SELECT a FROM t WHERE SUBSTRING(n, 1, 6) = 'Sunday'", {"t": [(1, "GA", "Sundays", "x", "x")]})
 
 
+def test_bigquery_reads_every_character_column_as_a_string():
+    # A schema written for another engine declares CHAR(2), but the column a BigQuery query reads is a STRING, so the
+    # cast a translated query carries (``CAST(s AS CHAR(2))`` and ``CAST(s AS VARCHAR)`` both become this) is the column.
+    plain = "SELECT a FROM t WHERE s IN ('GA', 'IL')"
+    assert proved(plain, "SELECT a FROM t WHERE CAST(s AS STRING) IN ('GA', 'IL')", dialect="bigquery")
+    assert proved(
+        "SELECT COALESCE(n, '') || v AS x FROM t",
+        "SELECT CASE WHEN n IS NOT NULL THEN CAST(n AS STRING) ELSE '' END || v AS x FROM t",
+        dialect="bigquery",
+    )
+    # elsewhere a CHAR and a VARCHAR compare trailing blanks differently, and the cast stays
+    assert not proved(plain, "SELECT a FROM t WHERE CAST(s AS VARCHAR) IN ('GA', 'IL')", dialect="postgres")
+    # a number is not a string, and another column is another column
+    assert not proved("SELECT a FROM t WHERE CAST(a AS STRING) < '5'", "SELECT a FROM t WHERE a < 5", dialect="bigquery")
+    assert not proved(plain, "SELECT a FROM t WHERE CAST(n AS STRING) IN ('GA', 'IL')", dialect="bigquery")
+
+
 CAST_NEAR_MISSES = [
     # a number cast to a string compares as text
     ("SELECT a FROM t WHERE CAST(a AS VARCHAR(20)) < '5'", "SELECT a FROM t WHERE a < 5", {"t": [(10, "GA", "n", "v", "w")]}),

@@ -23,22 +23,23 @@ Every conditional proof is checked three ways, and a failure of the first or the
 
 ## Singh and Bedathur LeetCode pairs
 
-All 2,800 pairs, MySQL dialect, table and column names only (the [Singh page](singh-bedathur.md) has the data and its licence note). Measured 2026-11-12 on commit 951be35 (2026-11-11: c52406f, 590 conditional), about 55 minutes on 4 cores.
+All 2,800 pairs, MySQL dialect, table and column names only (the [Singh page](singh-bedathur.md) has the data and its licence note). Measured 2026-11-13 on commit b389fe4 (the hardest-cases branch merged with main a23e844), about 85 minutes on 4 cores. Main a23e844 on the same corpus, measured by the validation thread: 878 outright, 793 conditional (2026-11-12 on 951be35 the same; 2026-11-11 on c52406f 590).
 
 | Count | Pairs |
 | --- | ---: |
-| Proved outright | 878 |
-| **Proved under named conditions** | **793** |
+| Proved outright | 889 |
+| **Proved under named conditions** | **973** |
 | Refuted with every candidate holding | 357 |
-| Unknown | 772 |
+| Unknown | 581 |
 | Wrong | 0 |
 | Harness crashes | 0 |
 
-- The 793 conditional proofs use 1,955 conditions: 1,474 NOT NULL, 431 unique keys, 50 single-column foreign keys. One condition alone suffices for 201 pairs, two for 174, three for 298, and four to seven for 120.
-- All 793 were re-checked on 900 databases each (713,700 in total) with 0 differences, and each is minimal for the prover. For 755 of them a random database that breaks the conditions separates the queries; for the other 38 no separating database turned up in 300 tries, which does not mean there is none.
-- Against the files' labels: 232 conditional pairs are labelled equivalent (the published answer assumed a key or NOT NULL rule the file does not state), 561 are labelled different (the labelled difference is a NULL or a duplicate; the pair is equal once it is excluded).
-- Held-out fifth (hash of the pair divisible by 5, 580 pairs): **164 conditional, 0 wrong**; the development split has 629 of 2,220 conditional.
-- **The count rose from 590 to 793 on 2026-11-12.** The rule batch of 2026-11-11/12 (window filters and pruning, nested membership, keyed join groups, scalar and one-row joins; see the [QUITE page](quite.md)) and the VeriEQL batch of main were written for other pairs, not for this eval. Together they moved 203 pairs from unknown to conditional and 8 more to proved outright (870 to 878); an earlier measurement of the QUITE batch alone on b01aa90 gave 783 conditional and 870 outright. This eval was run as a soundness guard: it showed that a rule reading declared unique keys must require NOT NULL on every key column, which was fixed before merging. The held-out fifth was never read; it went from 126 to 164 conditional.
+- The 973 conditional proofs use 2,227 conditions: 1,705 NOT NULL, 471 unique keys, 51 single-column foreign keys. One condition alone suffices for 310 pairs, two for 240, three for 288, and four to seven for 135.
+- All 973 were re-checked on 900 databases each (875,700 in total) with 0 differences, and each is minimal for the prover. For 935 of them a random database that breaks the conditions separates the queries; for the other 38 no separating database turned up in 300 tries, which does not mean there is none.
+- Against the files' labels: 282 conditional pairs are labelled equivalent (the published answer assumed a key or NOT NULL rule the file does not state), 691 are labelled different (the labelled difference is a NULL or a duplicate; the pair is equal once it is excluded).
+- Held-out fifth (hash of the pair divisible by 5, 580 pairs): **196 conditional, 0 wrong** (164 on main a23e844); the development split has 777 of 2,220 conditional.
+- **The count rose from 793 to 973 on 2026-11-13.** The hardest-cases branch of the prover (a filter pushed into a grouped source, regroupings under a tail, joins to a table's own groups, duplicate-finding self joins, a `HAVING` that counts rows meeting a condition, a key looked up through its own table, `BETWEEN` bounds with interval dates, `ENUM` columns as strings) moved 180 pairs from unknown to conditional (32 of them held out) and 11 from unknown to proved outright (2 held out), compared pair by pair with main a23e844; no pair that main proves, outright or under conditions, is lost. The rules were written on the development split of this eval, of the LOGOS eval and of the Singh eval; the held-out fifth was run for scoring only and never read. One pair that was conditional on main ff364a7 is not conditional any more (a2826e16ae71, customers who bought A and B but not C: it needed different strings compared with an untyped column to differ, which MySQL reads as the same number for an integer column; it is not conditional on a23e844 either).
+- **The count rose from 590 to 793 on 2026-11-12 (main).** The rule batch of 2026-11-11/12 (window filters and pruning, nested membership, keyed join groups, scalar and one-row joins; see the [QUITE page](quite.md)) and the VeriEQL batch of main were written for other pairs, not for this eval. Together they moved 203 pairs from unknown to conditional and 8 more to proved outright (870 to 878); an earlier measurement of the QUITE batch alone on b01aa90 gave 783 conditional and 870 outright. This eval was run as a soundness guard: it showed that a rule reading declared unique keys must require NOT NULL on every key column, which was fixed before merging. The held-out fifth was never read; it went from 126 to 164 conditional.
 - **The count fell on 2026-11-11 because pairs left for the better.** Main without the rule modules of 2026-11-10 (9231bd9), measured the same way on the same machine, gives 842 proved outright, 597 conditional, 357 refuted and 1,004 unknown (held-out fifth 128 conditional). Those rules, written for the [Singh eval](singh-bedathur.md), prove 9 of the conditional pairs with no condition at all (2 of them held out). They also prove 19 unknown pairs outright (3 held out), make 2 unknown pairs conditional and let 4 conditional proofs drop one condition. No pair moved the other way, and no rule was written for this eval. The first measurement (2026-10-04) had 854 outright, 610 conditional, 357 refuted and 979 unknown; main's distance from it predates these rules and was not traced.
 
 ```bash

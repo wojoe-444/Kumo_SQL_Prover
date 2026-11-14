@@ -261,6 +261,12 @@ def candidate_conditions(
                     occ = reader.owner(side)
                     if occ is not None:
                         add("shape_unique", _make("unique", occ, [side.name.lower()], dialect))
+        for node in tree.find_all(exp.LT, exp.GT):
+            # a.id < b.id between two rows of one table is the other way to ask for two different rows
+            if isinstance(node.this, exp.Column) and isinstance(node.expression, exp.Column) and node.this.name.lower() == node.expression.name.lower():
+                first, second = reader.owner(node.this), reader.owner(node.expression)
+                if first is not None and second is not None and first.ident != second.ident and first.key == second.key:
+                    add("shape_unique", _make("unique", first, [node.this.name.lower()], dialect))
         for node in tree.find_all(exp.In):
             query = node.args.get("query")
             inner = query.this if isinstance(query, exp.Subquery) else query
@@ -559,6 +565,7 @@ def jointly_satisfiable(conditions: Iterable[Condition], constraints: Mapping[st
 
 
 MAX_ALTERNATIVES = 6
+MAX_LEFT_OUT = 6  # unique-key candidates left out one at a time when every candidate together proves nothing
 
 
 def add_conditions(
@@ -603,8 +610,21 @@ def add_conditions(
 
     # Foreign keys come second: their rules can rewrite one side out of the shape the other side's proof needs, so a
     # pair the other facts prove is never lost to them.
+    # More facts are not always more proofs. A candidate key lets a rule rewrite one side (a GROUP BY on a key is
+    # dropped) out of the shape the other side's proof needs, and a key on the column a query looks for duplicates
+    # in makes that query empty while the other is not recognised as empty. So when everything together does not
+    # prove the pair, smaller sets are tried inside the time allowed: the NOT NULL facts alone, then everything but
+    # one unique key, for the first few keys.
     without_keys = [c for c in candidates if c.kind != "foreign_key"]
-    for universe in dict.fromkeys([tuple(without_keys), tuple(candidates)]):
+    not_null_only = [c for c in candidates if c.kind == "not_null"]
+    fewer = [tuple(not_null_only)]
+    uniques = [c for c in without_keys if c.kind == "unique"]
+    if len(uniques) > 1:
+        fewer += [tuple(c for c in without_keys if c is not left_out) for left_out in uniques[:MAX_LEFT_OUT]]
+    full = dict.fromkeys([tuple(without_keys), tuple(candidates)])
+    for universe in dict.fromkeys([*full, *fewer]):
+        if universe not in full and time.monotonic() > deadline:
+            return result  # the extra attempts are made only inside the time allowed
         if universe and proves(list(universe)):
             candidates = list(universe)
             break
