@@ -5024,6 +5024,13 @@ def normalize(
     from .exact_rounding import exact_rounding
     from .exact_power_division import divide_by_power_of_ten
     from .exact_scaling import scale_after_division
+    from .keyed_distinct_aggregates import drop_keyed_aggregate_distinct
+    from .joined_membership import join_to_membership
+    from .counted_outer_joins import counted_outer_join_to_inner
+    from .nonempty_group_counts import drop_nonempty_group_counts
+    from .grouped_membership_filters import grouped_membership_filters
+    from .grouped_source_dedup import drop_dedup_over_grouped
+    from .unique_join_membership import read_unique_joins, unique_join_to_membership
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
@@ -5055,6 +5062,9 @@ def normalize(
 
         tree = read_own_group_windows(tree, schema, not_null)  # pre-pass: AGG(c) OVER (PARTITION BY k) is a join with the table's own grouped aggregate
         tree = qualify_aliased_columns(tree, schema, dialect)  # pre-pass: a bare column in a select list, WHERE or ON is a source column
+        from .correlated_count_tests import read_correlated_count_tests
+
+        tree = read_correlated_count_tests(tree, schema, types)  # pre-pass: (SELECT COUNT(*) .. WHERE x.c = o.k) > 1 is o.k IN the groups counted so
         from .aggregate_membership import read_aggregate_membership
 
         tree = read_aggregate_membership(tree, schema, dialect)  # pre-pass: (k, v) IN (SELECT k, MIN(v) .. GROUP BY k) compares with the group's aggregate
@@ -5072,6 +5082,10 @@ def normalize(
         from .key_group_choice import choose_key_groups
 
         tree = choose_key_groups(tree, schema, keys, not_null)  # pre-pass: grouping by any NOT NULL key of a table is one grouping, so name the first
+        from .membership_key_counts import read_membership_key_counts
+
+        tree = read_unique_joins(tree, schema)  # pre-pass: an inner join with a grouped derived table on all of its keys is an IN test
+        tree = read_membership_key_counts(tree, schema)  # pre-pass: COUNT(k) is COUNT(*) in the HAVING of x IN (SELECT k .. GROUP BY k ..)
     # Not shape rules: each reads a comparison the prover could not read at all, so the second attempt (shapes off, which
     # drops merge_exists_disjunction) keeps them and can still match the separate EXISTS tests they produce.
     from .absolute_values import read_absolute_values
@@ -5169,6 +5183,7 @@ def normalize(
         lambda sel: drop_mysql_exists_cast(sel, dialect),
         lambda sel: rewrite_case_arms(sel, dialect),
         lambda sel: drop_unmatched_left_join(sel, schema, dialect),
+        lambda sel: drop_nonempty_group_counts(sel, schema, not_null),  # COUNT(NOT NULL column) >= 1 holds for every group; before the next rule reads it as a NULL test
         lambda sel: rewrite_count_tests(sel, schema),
         lambda sel: rewrite_semijoin_shapes(sel, schema, types_map),
         lambda sel: string_spelling_rules(sel, types_map, dialect),
@@ -5234,6 +5249,12 @@ def normalize(
         lambda sel: exact_rounding(sel, types_map, dialect),
         lambda sel: scale_after_division(sel, types_map, dialect),
         lambda sel: divide_by_power_of_ten(sel, types_map, dialect),
+        lambda sel: counted_outer_join_to_inner(sel, schema),  # LEFT JOIN .. HAVING COUNT(right column) > 0 keeps no padded row
+        lambda sel: join_to_membership(sel, schema, types_map),  # a source joined only to be matched, under a select blind to repeats
+        lambda sel: grouped_membership_filters(sel, schema),  # a test on group keys with a subquery filters before the grouping
+        lambda sel: drop_dedup_over_grouped(sel, schema),  # DISTINCT or GROUP BY over the keys of a grouped derived table
+        lambda sel: drop_keyed_aggregate_distinct(sel, schema, keys, not_null),  # COUNT(DISTINCT c) where a key keeps c from repeating
+        lambda sel: unique_join_to_membership(sel, schema),  # a join on every key of a grouped derived table that other steps exposed
     ) if shapes else ()
 
     # shape rules that must read a select before ``_wrap_outer_join_aggregate`` wraps its outer joins
