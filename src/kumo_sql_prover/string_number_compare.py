@@ -364,6 +364,8 @@ class _Kinds:
         self.feeds: dict[tuple[str, str], set[tuple[str, str]]] = {}  # derived output -> the columns its expression can hand on
         self.dated: set[tuple[str, str]] = set()  # the classes of expressions that are a date or a time whatever the columns hold
         self.ordered: set[tuple[str, str]] = set()  # keys read by an ordering: <, BETWEEN, MIN, MAX, GREATEST, LEAST, ORDER BY
+        self.reused: set[str] = set()
+        self.outputs: dict[tuple[str, str], dict[tuple[int, int], exp.Expression | list]] = {}  # derived output -> what each branch puts there: an expression, or the keys of the column it is
         self._collect_sources()
         self._build()
 
@@ -371,9 +373,9 @@ class _Kinds:
         for node in self.tree.walk():
             if isinstance(node, exp.Table) and node.name:
                 self.tables.setdefault((node.alias or node.name).lower(), set()).add(node.name.lower())
-            elif isinstance(node, exp.CTE) and node.alias and isinstance(node.this, exp.Query):
-                self.derived[node.alias.lower()] = node.this
-            elif isinstance(node, exp.Subquery) and node.alias and isinstance(node.this, exp.Query):
+            elif isinstance(node, (exp.CTE, exp.Subquery)) and node.alias and isinstance(node.this, exp.Query):
+                if node.alias.lower() in self.derived:
+                    self.reused.add(node.alias.lower())  # two derived tables under one name: their outputs share keys
                 self.derived[node.alias.lower()] = node.this
             elif isinstance(node, exp.Column) and node.name:
                 self.names.setdefault(node.name.lower(), set()).add(node.table.lower())
@@ -413,15 +415,35 @@ class _Kinds:
         With ``accepted`` narrowed to ``_STAMPS``: whether the column is declared a type that keeps a time of day.
         """
 
+        return self._temporal(key, accepted) is True
+
+    def _temporal(self, key: tuple[str, str], accepted: tuple[str, ...] = _TEMPORAL) -> bool | None:
+        """:meth:`temporal`, with None for a key that says nothing by itself, so the other columns of its class decide.
+
+        Two keys say nothing. An output of a derived table or CTE that every branch fills with a column (``t.d AS x``,
+        ``MIN(t.d) AS x``, ``*``): that column is in the same class. And a name under a qualifier whose tables are known
+        not to have it: ``SELECT * FROM a JOIN b`` ties the output ``d`` to ``a.d`` and ``b.d``, and only one exists.
+        An output filled with any other expression is a date only when the expression is one whatever the columns hold.
+        A derived table whose name is used twice, or is also a table's, is never trusted.
+        """
+
         if key in self.dated:
             return accepted is _TEMPORAL
         qualifier, name = key
-        found = self.tables.get(qualifier) if qualifier else None
+        found = self.tables.get(qualifier) if qualifier and qualifier not in self.derived else None
         if found and all(t in self.types for t in found):
             declared = [self.types[t][name] for t in found if name in self.types[t]]
+            if not declared and all(t in self.columns and name not in self.columns[t] for t in found):
+                return None
             return bool(declared) and all(_is_temporal_type(type_sql, accepted) for type_sql in declared)
         if qualifier in self.derived:
-            return False
+            filled = self.outputs.get(key)
+            shared = qualifier in self.reused or self.tables.get(qualifier, set()) - {qualifier} or qualifier in self.types or qualifier in self.columns
+            if not filled or shared:  # the name is also another derived table or a real table: nothing is known
+                return False
+            if all(isinstance(inner, list) for inner in filled.values()):
+                return None
+            return accepted is _TEMPORAL and all(isinstance(inner, list) or self.fixed(inner) == "date" for inner in filled.values())
         declared = []
         for table in {table for tables in self.tables.values() for table in tables if table not in self.derived}:
             if name in self.types.get(table, {}):
@@ -429,6 +451,54 @@ class _Kinds:
             elif table not in self.columns or name in self.columns[table]:
                 return False
         return bool(declared) and all(_is_temporal_type(type_sql, accepted) for type_sql in declared)
+
+    def origin(self, key: tuple[str, str], depth: int = 0) -> str | None:
+        """``"string"``, ``"number"`` or ``"date"`` when the column is declared so, itself or through the derived tables and
+        CTEs that hand it on unchanged (``t.d AS x``, ``MIN(t.d) AS x``, ``*``); None when nothing declares it.
+
+        Unlike a class, this follows no comparison: ``a.name = s.d`` leaves ``a.name`` a string and ``s.d`` a date.
+        """
+
+        if key in self.operands:
+            return None
+        declared = self.declared(key)
+        if declared:
+            return declared
+        answer = self._temporal(key)
+        if answer is True:
+            return "date"
+        if answer is False or key[0] not in self.derived or depth > 6:
+            return None
+        found = set()
+        for filled in self.outputs[key].values():
+            # ``*`` over a join names the column under every source; the sources known not to have it say nothing
+            keys = [k for k in filled if k[0] in self.derived or self._temporal(k) is not None or self.declared(k)]
+            found.update(self.origin(k, depth + 1) for k in keys or filled)
+        return found.pop() if len(found) == 1 else None
+
+    def text_and_date_problem(self) -> str | None:
+        """Why a comparison of a text value with a date cannot be read, else None.
+
+        The provers read a date as its ISO text, so ``v.s >= CAST('2019-06-28' AS DATE)`` and ``v.s >= '2019-06-28'`` look
+        the same to them. For a text column they are not: MySQL converts the column's text to a date for the first
+        (``'2019-6-3'`` is the third of June, and sorts after ``'2019-06-28'`` as text; MySQL 8.0.46), and DuckDB,
+        PostgreSQL and BigQuery refuse it. The same holds for a text column compared with a date column, and for a text expression
+        (``CONCAT``) compared with either. A string literal is not a text value here: :meth:`literal_problem` reads it.
+        """
+
+        def side(node: exp.Expression) -> str | None:
+            node = _unwrap(node)
+            if isinstance(node, (exp.Literal, exp.Null)):
+                return None
+            carried = _carried(node)
+            if isinstance(carried, exp.Column):
+                return self.origin(self.key(carried))
+            return self.fixed(node) or (self.fixed(carried) if carried is not node else None)
+
+        for left, right in _pairs(self.tree):
+            if {side(left), side(right)} == {"string", "date"}:
+                return "a text value is compared with a date (the engines convert the text to a date or refuse the comparison; the prover reads the date as text)"
+        return None
 
     def _declared_by_name(self, name: str) -> str | None:
         """The declared kind of a column known by its name alone: the one kind the tables this query reads give it.
@@ -613,11 +683,13 @@ class _Kinds:
                         stars = [inner.table.lower()] if isinstance(inner, exp.Column) and inner.table else sources
                         for name, qualifiers in self.names.items():
                             if alias in qualifiers:
+                                self.outputs.setdefault((alias, name), {})[(id(branch), position)] = [(source, name) for source in stars]
                                 for source in stars:
                                     self.union((alias, name), (source, name))
                     elif "*" not in names and position < len(names):
                         node = (alias, names[position])
                         carried = _carried(inner)
+                        self.outputs.setdefault(node, {})[(id(branch), position)] = [self.key(carried)] if isinstance(carried, exp.Column) else inner
                         if isinstance(carried, exp.Column):
                             self.union(node, self.key(carried))  # MIN(t.s) AS m is a value of t.s, as t.s AS m is
                         else:
@@ -660,8 +732,9 @@ class _Kinds:
     def _dated(self, members: set[tuple[str, str]], accepted: tuple[str, ...] = _TEMPORAL) -> bool:
         """Whether every column of the class is declared a date or a timestamp (or the class is a dated expression)."""
 
-        columns = [key for key in members if key not in self.operands or key in self.dated]
-        return bool(columns) and all(self.temporal(key, accepted) for key in columns)
+        answers = [self._temporal(key, accepted) for key in members if key not in self.operands or key in self.dated]
+        answers = [answer for answer in answers if answer is not None]
+        return bool(answers) and all(answers)
 
     def operand_keys(self, operand: exp.Expression) -> list[tuple[str, str]]:
         """The classes a string compared with ``operand`` is compared with: the column it is or hands on, else every column
@@ -862,7 +935,7 @@ def problem(
         if isinstance(node, _MIXING):
             if kinds.kinds(node) == {"string", "number"} and _is_operand(node):
                 return "a value of mixed kinds (a string in one branch, a number in another) is compared or used in arithmetic (the engines convert it; the prover does not model it)"
-    return kinds.literal_problem(dialect)
+    return kinds.text_and_date_problem() or kinds.literal_problem(dialect)
 
 
 def _is_operand(node: exp.Expression) -> bool:

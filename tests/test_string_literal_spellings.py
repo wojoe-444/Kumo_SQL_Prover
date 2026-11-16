@@ -254,3 +254,116 @@ def test_duckdb_returns_the_rows_the_text_reading_denies():
     for left, right in SAFE:
         assert sorted(con.execute(left).fetchall()) == sorted(con.execute(right).fetchall())
     assert con.execute("SELECT e.k FROM e WHERE e.d = '2019-01-01 10:00:00' AND e.d = '2019-01-01 11:00:00'").fetchall() == [(1,)]
+
+
+# --- a declared date read through a derived table, a CTE or ``*`` is still a declared date ---
+
+WIDE = {"p": ["id", "name"], "s": ["pid", "d", "n"]}
+WIDE_TYPES = {"p": {"id": "INT", "name": "VARCHAR"}, "s": {"pid": "INT", "d": "DATE", "n": "INT"}}
+_RANGE = "MIN({0}) >= '2019-01-01' AND MAX({0}) <= '2019-03-31'"
+
+DATED_THROUGH = [
+    # an unqualified column inside a derived table that also hands the extremes out
+    f"SELECT p.id FROM (SELECT pid, MAX(d) AS hi, MIN(d) AS lo FROM s GROUP BY pid HAVING {_RANGE.format('d')}) AS t, p WHERE t.pid = p.id",
+    # a CTE that hands the column on, read without a qualifier
+    f"WITH tab AS (SELECT p.id, s.d FROM p JOIN s ON p.id = s.pid) SELECT id FROM tab GROUP BY id HAVING {_RANGE.format('d')}",
+    # the extremes compared outside the derived table
+    "SELECT t.pid FROM (SELECT s.pid, MIN(s.d) AS lo, MAX(s.d) AS hi FROM s GROUP BY s.pid) AS t WHERE t.lo >= '2019-01-01' AND t.hi <= '2019-03-31'",
+    # ``*`` over a join: only one of the two tables has the column
+    f"SELECT x.id FROM (SELECT * FROM p JOIN s ON p.id = s.pid) AS x GROUP BY x.id HAVING {_RANGE.format('x.d')}",
+    # a date-valued expression as the output
+    "SELECT t.pid FROM (SELECT s.pid, DATE_ADD(s.d, INTERVAL 1 DAY) AS nxt FROM s) AS t WHERE t.nxt >= '2019-01-01' AND t.nxt <= '2019-03-31'",
+]
+
+NOT_DATED_THROUGH = [
+    # the output is a number column
+    "SELECT t.pid FROM (SELECT s.pid, MIN(s.n) AS lo, MAX(s.n) AS hi FROM s GROUP BY s.pid) AS t WHERE t.lo >= '2019-01-01' AND t.hi <= '2019-03-31'",
+    # one branch of the derived table hands on a number column
+    "SELECT t.v FROM (SELECT s.d AS v FROM s UNION ALL SELECT s.n FROM s) AS t WHERE t.v >= '2019-01-01' AND t.v <= '2019-03-31'",
+    # the output can be the date or a number
+    "SELECT t.v FROM (SELECT COALESCE(s.d, s.n) AS v FROM s) AS t WHERE t.v >= '2019-01-01' AND t.v <= '2019-03-31'",
+]
+
+
+@pytest.mark.parametrize("sql", DATED_THROUGH)
+def test_a_declared_date_read_through_a_derived_table_needs_no_numeric_reading(sql):
+    assert numeric_column_reading.reading(sql, sql, "mysql", WIDE_TYPES, WIDE) is None
+    assert string_number_compare.problem(sql, "mysql", WIDE_TYPES, plain_ok=True, schema=WIDE) is None
+
+
+@pytest.mark.parametrize("sql", NOT_DATED_THROUGH)
+def test_a_derived_output_that_can_be_a_number_is_not_a_date(sql):
+    found = numeric_column_reading.reading(sql, sql, "mysql", WIDE_TYPES, WIDE)
+    answer = string_number_compare.problem(sql, "mysql", WIDE_TYPES, plain_ok=True, schema=WIDE)
+    assert found is not None or answer is not None, "two date strings against a number are one number"
+
+
+def test_a_derived_table_name_used_twice_is_not_trusted():
+    # with no types one ``t`` hands on an untyped column: nothing says the class is a date
+    sql = (
+        "SELECT a.pid FROM (SELECT s.pid, MIN(s.d) AS lo FROM s GROUP BY s.pid) AS t "
+        "JOIN (SELECT t.pid FROM (SELECT s.pid, s.n AS lo FROM s) AS t WHERE t.lo >= '2019-01-01' AND t.lo <= '2019-03-31') AS a ON a.pid = t.pid"
+    )
+    types = {"p": WIDE_TYPES["p"], "s": {"pid": "INT", "d": "DATE"}}
+    kinds = string_number_compare._Kinds(sqlglot.parse_one(sql, read="mysql"), types, WIDE)
+    assert "t" in kinds.reused and kinds._temporal(("t", "lo")) is False
+    assert numeric_column_reading.reading(sql, sql, "mysql", types, WIDE) is not None
+
+
+# --- a text value compared with a date: the provers read a date as its ISO text, MySQL converts the text to a date ---
+
+NOTES = {"v": ["k", "s"], "c": ["day"]}
+NOTES_TYPES = {"v": {"k": "INT", "s": "VARCHAR(20)"}, "c": {"day": "DATE"}}
+_V = "SELECT v.k FROM v WHERE "
+
+# MySQL 8.0.46 with v = (1, '2019-6-3'), (2, '2019-07-01') and c = ('2019-06-03'): the first of each pair differs from
+# the second (rows 2 against 1 and 2; one joined row against none).
+TEXT_AGAINST_DATE = [
+    (_V + "v.s >= CAST('2019-06-28' AS DATE)", _V + "v.s >= '2019-06-28'"),
+    (_V + "v.s >= DATE('2019-06-28')", _V + "v.s >= '2019-06-28'"),
+    (_V + "v.s BETWEEN DATE_SUB(DATE('2019-07-27'), INTERVAL 29 DAY) AND DATE('2019-07-27')", _V + "v.s BETWEEN '2019-06-28' AND '2019-07-27'"),
+    ("SELECT v.k FROM v JOIN c ON v.s = c.day WHERE c.day = '2019-06-03'", "SELECT v.k FROM v JOIN c ON v.s = c.day WHERE v.s = '2019-06-03'"),
+    ("SELECT x.k FROM (SELECT v.k, MIN(v.s) AS lo FROM v GROUP BY v.k) AS x JOIN c ON x.lo = c.day WHERE c.day = '2019-06-03'",
+     "SELECT x.k FROM (SELECT v.k, MIN(v.s) AS lo FROM v GROUP BY v.k) AS x JOIN c ON x.lo = c.day WHERE x.lo = '2019-06-03'"),
+]
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+@pytest.mark.parametrize("left, right", TEXT_AGAINST_DATE)
+def test_a_text_column_compared_with_a_date_is_not_a_text_comparison(prover, left, right):
+    for dialect in ENGINES:
+        result = prover(left, right, schema=NOTES, types=NOTES_TYPES, compare_names=False, dialect=dialect, timeout_ms=4000)
+        assert result.status is not SmtStatus.PROVEN_EQUIVALENT, dialect
+    assert "text value is compared with a date" in string_number_compare.problem(left, "mysql", NOTES_TYPES, plain_ok=True, schema=NOTES)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT c.day FROM c WHERE c.day = CONCAT('2019-6', '-3')",  # a text expression against a date column: one row on MySQL
+        "SELECT c.day FROM c WHERE c.day > DATE_FORMAT('2019-03-31', '%Y-%M-%D')",
+        "SELECT v.k FROM v WHERE v.s IN (SELECT c.day FROM c)",
+    ],
+)
+def test_a_text_expression_compared_with_a_date_column_is_declined(sql):
+    assert "text value is compared with a date" in string_number_compare.problem(sql, "mysql", NOTES_TYPES, plain_ok=True, schema=NOTES)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT c.day FROM c WHERE c.day >= CAST('2019-06-28' AS DATE) AND c.day <= '2019-07-27'",  # a date against dates
+        "SELECT v.k FROM v WHERE v.s >= '2019-06-28'",  # text against a string
+        "SELECT v.k FROM v WHERE DATE_FORMAT(v.s, '%Y-%m') = '2019-06'",  # a text expression against a string
+        "SELECT v.s AS x FROM v UNION SELECT c.day FROM c",  # a UNION of the two compares nothing
+    ],
+)
+def test_other_comparisons_of_text_and_of_dates_are_read_as_before(sql):
+    assert string_number_compare.problem(sql, "mysql", NOTES_TYPES, plain_ok=True, schema=NOTES) is None
+
+
+def test_a_column_of_no_declared_type_compared_with_a_date_is_read_as_a_date_column():
+    left, right = _V + "v.s >= CAST('2019-06-28' AS DATE)", _V + "v.s >= '2019-06-28'"
+    assert string_number_compare.problem(left, "mysql", None, plain_ok=True, schema=NOTES) is None
+    result = prove_equivalent_algebraic(left, right, schema=NOTES, compare_names=False, dialect="mysql", timeout_ms=4000)
+    assert result.status is SmtStatus.PROVEN_EQUIVALENT
