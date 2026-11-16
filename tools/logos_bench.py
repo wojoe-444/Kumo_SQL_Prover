@@ -247,15 +247,18 @@ def _converted(sql: str, route: str, columns: dict[str, list[str]] | None = None
     """The PostgreSQL query in the route's dialect.
 
     Calcite names a derived table's columns in its alias (``AS t (a, b)``), which BigQuery and MySQL
-    cannot say; KumoSQL's ``expand_alias_columns`` moves the names into the derived table first.
+    cannot say; ``expand_alias_columns`` moves the names into the derived table first. An output the list names
+    but the derived table does not (``COUNT(o_orderkey)`` in TPC-H 13's ``AS c_orders (c_custkey, c_count)``) gets
+    a name first (``name_listed_outputs``, the step ``normalize`` takes before the same expansion).
     """
 
     from kumo_sql_prover.ast_utils import UnmodeledConstruct, expand_alias_columns
+    from kumo_sql_prover.listed_output_names import name_listed_outputs
 
     tree = sqlglot.parse_one(sql, read="postgres")
     if any(a.args.get("columns") for a in tree.find_all(exp.TableAlias)):
         try:
-            sql = expand_alias_columns(tree, columns).sql(dialect="postgres")
+            sql = expand_alias_columns(name_listed_outputs(tree), columns).sql(dialect="postgres")
         except UnmodeledConstruct:
             pass
     if route == "bigquery":

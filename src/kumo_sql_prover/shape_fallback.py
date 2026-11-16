@@ -32,7 +32,7 @@ A larger pair gets the first attempt only.
 The shape rules: ``single_source_columns``, ``grouped_self_membership``, ``disjoint_union``,
 ``tailed_grouping_sets``, ``mysql_exists_casts``, ``case_arm_rules``, ``unmatched_outer_join``,
 ``having_count_rules``, ``semijoin_shapes``, ``string_spelling_rules``, ``tailed_outer_aggregates``,
-``wrapped_join_filters``, ``one_row_tails``, and the derived-table and ``JOIN .. ON`` sources that
+``wrapped_join_filters``, ``one_row_tails``, ``grouped_source_filters``, ``keyed_union``, ``tailed_regroups``, ``union_join_grouping``, ``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence`` (hardest-cases batch 3, 2026-11-11), and the derived-table and ``JOIN .. ON`` sources that
 ``closed_sources`` lets the scalar-aggregate decorrelation read. Added on 2026-11-11 for the DSB rewrites of
 the QUITE eval: ``renamed_join_heads``, ``spread_aggregates``, ``scalar_having_groups``,
 ``star_source_columns``, ``count_column_bounds``, ``extreme_group_sources``, ``setop_operand_sources``,
@@ -64,6 +64,15 @@ more modules of that batch are not normalizations. ``window_inputs``, ``derived_
 ``grouped_aggregate_spellings`` run in ``_prove_algebraic`` on the two normalized texts, only on the attempt with
 the shape rules on and only after the solver has failed on those texts, so they cannot take a verdict away.
 
+``self_key_membership`` is the other way round, a *late rule*: it runs in a third and a fourth attempt only (the late rules on, first beside the shape rules and then without them),
+and only for a pair where it would have changed a query. On the first attempt it took three pairs out of the shape that other rules
+prove, and in the second it took two more.
+
+The rules of the hardest-cases batch (``grouped_source_filters``, ``rejected_null_filters``, ``tailed_regroups``, ``union_join_grouping``,
+``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence``) are also in the narrow tier below: one of them rewrote the
+SUM(CASE ..) > 0 side of a conditional LeetCode pair out of the shape main proves, and the whole second attempt cannot find that
+out for a pair that is too large for it.
+
 A new rule that rewrites queries the prover already read belongs in the list: guard its entry in ``normalize``
 with ``shape_fallback.enabled()``.
 
@@ -87,6 +96,47 @@ def worth_retrying(left_sql: str, right_sql: str) -> bool:
     """Whether a pair the first attempt left without a verdict gets the attempt without the shape rules."""
 
     return enabled() and len(left_sql) + len(right_sql) <= MAX_CHARS
+
+
+_LATE: ContextVar[bool] = ContextVar("kumo_sql_prover_late_rules", default=False)
+_LATE_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_late_seen", default=None)
+
+
+def late_enabled() -> bool:
+    """Whether the normalizer applies the late rules: the ones that run in a third attempt only."""
+
+    return _LATE.get()
+
+
+def note_late_candidate() -> None:
+    """A late rule would change a query: the third attempt is worth making."""
+
+    seen = _LATE_SEEN.get()
+    if seen is not None:
+        seen.append(True)
+
+
+@contextmanager
+def watching_late():
+    """Collect, while the block runs, whether a late rule would have changed a query. Yields the list."""
+
+    seen: list = []
+    token = _LATE_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _LATE_SEEN.reset(token)
+
+
+@contextmanager
+def late():
+    """Run the block with the late rules on."""
+
+    token = _LATE.set(True)
+    try:
+        yield
+    finally:
+        _LATE.reset(token)
 
 
 def enabled() -> bool:

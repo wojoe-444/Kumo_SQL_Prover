@@ -1,29 +1,29 @@
 {
   "suite": "Logos TPC-H, DSB, TPC-DS pairs (proofs)",
   "order": 22,
-  "score": "42/69 proved, 0 wrong",
+  "score": "51/69 proved, 0 wrong",
   "metric": "Pairs proved equivalent by the algebraic prover over every database meeting the declared NOT NULL columns and keys; pairs a database shows different (label failures) leave the denominator.",
   "evidence": "proof",
   "correctness": "0 false proofs: every proof's two queries return the same rows on the generated TPC-H or TPC-DS data and on 150 small random databases plus the targeted suite",
   "coverage": {
-    "proven": 42,
+    "proven": 51,
     "refuted": 4,
-    "unknown": 18,
-    "unsupported": 7,
+    "unknown": 11,
+    "unsupported": 5,
     "timeout": 2
   },
-  "caveats": "Logos 333d5275ac87; query text fetched at run time, never committed. By family: rbot-tpch 19/21 proved, 1 refuted; rbot-dsb 19/36 proved, 1 refuted; tpcds-variants 4/12 proved, 2 refuted. 14 TPC-DS variant pairs are adapted (TOP n read as LIMIT n, date + n days as an interval): 4 proved, 2 refuted among them. TPC-H data is scale 0.1 (tpchgen-cli); TPC-DS data is scale 1 from DSB's dsdgen, whose distributions differ from the official kit's. The TPC-H schema declares no keys, so proofs hold over every database with its NOT NULL columns. Prover routes time out after 120 s of wall-clock time, so a loaded machine can turn a few proofs into timeouts. Baseline before any harness fix: 23/69 proved, 4 refuted, 0 wrong (5/11 held out). The two harness fixes (moving Calcite's derived-table column lists into the derived table with KumoSQL's expand_alias_columns, and one renamed TPC-DS column on the generated data) were made on the dev split, but the baseline listing showed every pair's failure reason, held-out ones included (tuned on test, exposure only; the held-out score did not move). Measured on 951be35, whole run with --jobs 2. One pair (rbot-dsb query 31) proves alone in 84 to 110 s and sits at the 120 s wall-clock limit: the run on b01aa90 proved it (43/69) and this one timed out on it (42/69), so the count moves by one with load; the run is not repeated until it is stable. One tpcds-variants pair that proved on b01aa90 is unknown on main itself since main's float regrouping check (PR 31) and is back here after the decimal fix (PR 32).",
+  "caveats": "Logos 333d5275ac87; query text fetched at run time, never committed. By family: rbot-tpch 21/21 proved, 1 refuted; rbot-dsb 26/36 proved, 1 refuted; tpcds-variants 4/12 proved, 2 refuted. 14 TPC-DS variant pairs are adapted (TOP n read as LIMIT n, date + n days as an interval): 4 proved, 2 refuted among them. TPC-H data is scale 0.1 (tpchgen-cli); TPC-DS data is scale 1 from DSB's dsdgen, whose distributions differ from the official kit's. The TPC-H schema declares no keys, so proofs hold over every database with its NOT NULL columns. Prover routes time out after 120 s of wall-clock time, so a loaded machine can turn a few proofs into timeouts. Baseline before any harness fix: 23/69 proved, 4 refuted, 0 wrong (5/11 held out). The two harness fixes (moving Calcite's derived-table column lists into the derived table with KumoSQL's expand_alias_columns, and one renamed TPC-DS column on the generated data) were made on the dev split, but the baseline listing showed every pair's failure reason, held-out ones included (tuned on test, exposure only; the held-out score did not move). Measured on a3c22d2. 2026-11-13: the hardest-cases branch (Kumo_SQL_Prover PR 20) went from 43/69 on main (a23e844, same container, whole run; held out 7/11; 42/69 was recorded on 951be35) to 51/69 (held out 8/11) on a3c22d2, whose behaviour b389fe4 shares (it only replaces a per-rule closure with a module function). Nine pairs gained (rbot-tpch 13, 16; rbot-dsb 32, 54, 72 (held out), 81, 84, 92, 102) and one lost to the wall-clock limit (rbot-dsb 31, which proves alone on both trees at about two minutes with setup). Two pairs proved in an earlier run of the branch (rbot-dsb 1 and 30) are unknown now, as on main. The rules were written for Singh, LOGOS-shaped and conditional pairs; the rbot-dsb family is tuned on test because its queries are DSB templates, and no held-out case was read one by one.",
   "size": 73,
   "docs": "docs/evals/logos.md",
   "command": "python tools/logos_bench.py --jobs 4",
   "date": "2026-11-12",
-  "held_out": "7/11 proved, 1 refuted, 0 wrong (12 held-out pairs)",
+  "held_out": "8/11 proved, 1 refuted, 0 wrong (12 held-out pairs)",
   "environment": {
     "python": "3.13.18",
     "sqlglot": "30.21.0",
     "sqlglotc": "30.21.0",
     "duckdb": "1.5.6",
     "z3-solver": "5.4.1.0",
-    "commit": "951be35+changes"
+    "commit": "a3c22d2"
   }
 }

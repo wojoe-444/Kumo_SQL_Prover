@@ -44,6 +44,15 @@ def test_tpcds_kit_spellings_are_adapted():
     assert len(plain) == 2 and none == []
 
 
+def test_a_listed_name_for_an_unnamed_output_is_converted():
+    # TPC-H 13: the alias list names an output the derived table leaves unnamed
+    sql = "SELECT c_count, COUNT(*) AS custdist FROM (SELECT c_custkey, COUNT(o_orderkey) FROM customer LEFT JOIN orders ON c_custkey = o_custkey GROUP BY c_custkey) AS c_orders (c_custkey, c_count) GROUP BY c_count"
+    for route in ("bigquery", "mysql"):
+        converted = bench._converted(sql, route)
+        assert "c_orders (" not in converted and "c_orders(" not in converted
+        assert "AS c_count" in converted.replace("`", "") and "COUNT(o_orderkey) AS kq_col1" in converted.replace("`", "")
+
+
 def test_outcomes():
     def case(proof, data="same", small="none"):
         return {"statements": [{"proof": {"status": proof}, "data": {"status": data}, "small": {"status": small}}]}
