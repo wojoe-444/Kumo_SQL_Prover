@@ -5056,6 +5056,9 @@ def normalize(
 
         tree = sqlite_date_text_rules(tree, dialect)  # pre-pass: SQLite's STRFTIME digits as text or as a number
     if shapes:
+        from .having_alias import read_having_aliases
+
+        tree = read_having_aliases(tree, schema)  # pre-pass: HAVING n > 1 after COUNT(x) AS n tests the count
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
         from .aliased_columns import qualify_aliased_columns
         from .own_group_windows import read_own_group_windows
@@ -5086,6 +5089,21 @@ def normalize(
 
         tree = read_unique_joins(tree, schema)  # pre-pass: an inner join with a grouped derived table on all of its keys is an IN test
         tree = read_membership_key_counts(tree, schema)  # pre-pass: COUNT(k) is COUNT(*) in the HAVING of x IN (SELECT k .. GROUP BY k ..)
+        from .repeated_groups import read_repeated_groups
+
+        tree = read_repeated_groups(tree, schema, not_null, keys, types)  # pre-pass: two different rows that agree on columns are a group of more than one row
+        from .count_membership import read_count_membership
+
+        tree = read_count_membership(tree, schema)  # pre-pass: a correlated COUNT(..) > n is membership in the groups that pass
+        from .one_row_aggregates import read_one_row_aggregates
+
+        tree = read_one_row_aggregates(tree, schema)  # pre-pass: a select that aggregates without GROUP BY is one row, as an IN list or a joined table
+        from .fk_membership import read_fk_membership
+
+        tree = read_fk_membership(tree, schema, foreign_keys)  # pre-pass: a foreign-key column is in its parent's key exactly when it is not NULL
+        from .unmatched_groups import read_unmatched_groups
+
+        tree = read_unmatched_groups(tree, schema, not_null, keys)  # pre-pass: LEFT JOIN .. GROUP BY key HAVING COUNT(joined) = 0 keeps the rows without a match
     # Not shape rules: each reads a comparison the prover could not read at all, so the second attempt (shapes off, which
     # drops merge_exists_disjunction) keeps them and can still match the separate EXISTS tests they produce.
     from .absolute_values import read_absolute_values
