@@ -5183,6 +5183,8 @@ def normalize(
             tree, lambda t: _qualify_correlated_columns(_qualify_outer_join_columns(t, schema), schema), schema, dialect, "algebraic_qualification"
         )
     if shapes:
+        for _select in list(tree.find_all(exp.Select)):
+            derived_anti_join(_select)  # pre-pass: before the existence joins below spell the derived table's own join as EXISTS
         tree = read_existence_joins_everywhere(tree, schema)  # pre-pass: anti-, semi- and marker joins as EXISTS tests
     tree = merge_distinct_partitions(tree)
     if shapes:
