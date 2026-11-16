@@ -20,7 +20,7 @@ pytest.importorskip("z3")
 from kumo_sql_prover import numeric_column_reading, string_number_compare
 from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 from kumo_sql_prover.smt_equivalence import SmtStatus, prove_equivalent_smt
-from kumo_sql_prover.string_number_compare import date_form
+from kumo_sql_prover.string_number_compare import date_value
 
 PROVERS = (prove_equivalent_algebraic, prove_equivalent_smt)
 SCHEMA = {"e": ["k", "d", "ts", "n", "m"]}
@@ -127,19 +127,18 @@ def test_the_numeric_reading_is_asked_for_when_the_order_of_the_strings_is_not_t
 
 
 @pytest.mark.parametrize(
-    "text, form",
+    "text, value",
     [
-        ("2019-01-01", "date"),
-        ("2019-12-31", "date"),
-        ("2019-01-01 00:00:00", "datetime"),
-        ("2019-03-31 23:59:59", "datetime"),
-        ("2019-1-1", "other"),
+        ("2019-01-01", (2019, 1, 1, 0, 0, 0)),
+        ("2019-1-1", (2019, 1, 1, 0, 0, 0)),
+        (" 2019-01-01 ", (2019, 1, 1, 0, 0, 0)),
+        ("2019/01/01", (2019, 1, 1, 0, 0, 0)),
+        ("2019-01-01 00:00:00", (2019, 1, 1, 0, 0, 0)),
+        ("2019-03-31 23:59:59", (2019, 3, 31, 23, 59, 59)),
         ("20190101", "other"),
         ("190101", "other"),
-        ("2019/01/01", "other"),
         ("19-01-01", "other"),
-        (" 2019-01-01", "other"),
-        ("2019-01-01 ", "other"),
+        ("2019-01/01", "other"),
         ("2019-01-01abc", "other"),
         ("2019-01-01T00:00:00", "other"),
         ("2019-01-01 00:00:00.0", "other"),
@@ -151,10 +150,11 @@ def test_the_numeric_reading_is_asked_for_when_the_order_of_the_strings_is_not_t
         ("2019", None),
         ("12345", None),
         ("x2019-01-01", None),
+        ("10:30:00", None),  # a time of day
     ],
 )
-def test_the_form_of_a_date_string(text, form):
-    assert date_form(text) == form
+def test_the_moment_a_date_string_is(text, value):
+    assert date_value(text) == value
 
 
 @pytest.mark.parametrize(
@@ -167,8 +167,13 @@ def test_the_form_of_a_date_string(text, form):
         ("e.d = '2019-01-01' AND e.n = '2019-1-1'", False),  # two values
         ("e.d = 'abc' AND e.d <> '2019-1-1'", False),  # 'abc' is no date in any engine
         ("e.d = '2019-01-01' AND e.d <> '2019-1-1'", True),
-        ("e.d IN ('2019-01-01', '2019-01-02 00:00:00')", True),
-        ("e.d BETWEEN '2019-01-01' AND '2019-1-31'", True),
+        ("e.d IN ('2019-01-01', '2019-01-02 00:00:00')", False),  # two days
+        ("e.d IN ('2019-01-01', '2019-01-01 00:00:00')", True),  # one moment
+        ("e.d BETWEEN '2019-01-01' AND '2019-1-31'", False),  # two days, in the order of their texts
+        ("e.d IN ('2019-9-1', '2019-10-1')", False),  # no ordering is asked
+        ("e.d BETWEEN '2019-9-1' AND '2019-10-1'", True),  # '2019-10-1' sorts before '2019-9-1'
+        ("e.d >= '2019-07-27' AND e.d <= '2019-6-28'", True),
+        ("e.d = '2019-01-01' AND e.d <> '20190102'", True),  # a spelling that is not worked out
         ("e.d = e.ts AND e.d = '2019-01-01' AND e.ts = '20190101'", True),  # one value under two names
         ("COALESCE(e.d, e.ts) = '2019-01-01' AND e.d <> '20190101'", True),  # a value that hands the column on
         ("e.d = '2019-01-01 10:00:00' AND e.d <> '2019-01-01 11:00:00'", True),  # one day twice for a DATE column in DuckDB

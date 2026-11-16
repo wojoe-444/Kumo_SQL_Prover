@@ -37,7 +37,8 @@ provers read a string compared with a value of no declared type, or with a date,
 
 - a date written in more than one way (``d = '2019-01-01' AND d = '20190101'`` is one day twice in MySQL; DuckDB,
   PostgreSQL and BigQuery read ``'2019-1-1'`` as that day too). Several date strings compared with one value must all be
-  ``YYYY-MM-DD`` or all ``YYYY-MM-DD hh:mm:ss`` (:func:`date_form`), for a declared date and for a column of no type;
+  different days that sort as text the way they sort as dates (:func:`date_value`), for a declared date and for a column
+  of no type;
 - on DuckDB and PostgreSQL, strings that are numbers compared with a column of no type (``n = '1' AND n = '01'`` holds the
   integer 1; ``n >= '9' AND n < '10'`` the integer 9);
 - on MySQL the same cases are read both ways by ``numeric_column_reading``: two strings of one number, or strings whose
@@ -83,30 +84,30 @@ def _is_temporal_type(type_sql: str, accepted: tuple[str, ...] = _TEMPORAL) -> b
     return re.split(r"[\s(<]", type_sql.strip().upper(), maxsplit=1)[0] in accepted
 
 
-_DATE_FORM = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
-_DATETIME_FORM = re.compile(r"^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$")
+_DATE_VALUE = re.compile(r"^\s*(\d{4})([-/.])(\d{1,2})\2(\d{1,2})(?: (\d{2}):(\d{2}):(\d{2}))?\s*$")
 _DATE_LIKE = re.compile(r"^\s*(\d{1,4}[^\d\s]\d{1,2}[^\d\s]\d{1,2}|\d{6})")
 
 
-def date_form(text: str) -> str | None:
-    """How a string reads when an engine converts it to a date: ``"date"`` (exactly ``YYYY-MM-DD``, a real day),
-    ``"datetime"`` (exactly ``YYYY-MM-DD hh:mm:ss``), ``"other"`` (another spelling an engine may accept: ``2019-1-1``,
-    ``20190101``, ``2019/01/01``, a fraction, trailing text), or None for a string no engine reads as a date.
+def date_value(text: str) -> tuple[int, ...] | str | None:
+    """The moment a string is when an engine converts it to a date: ``(year, month, day, hour, minute, second)``.
 
-    Two strings of one of the first two forms are the same date only when they are the same text, and their order as
-    text is their order as dates. Nothing of the kind holds for ``"other"``: MySQL reads ``'20190101'``, ``'190101'``
-    and ``'2019-1-1'`` as the first of January 2019.
+    Read here: ``YYYY-MM-DD`` with one- or two-digit month and day, ``-``, ``/`` or ``.`` between the parts, an optional
+    ``hh:mm:ss`` after one space, and spaces around the whole. Every engine that accepts such a string reads it as that
+    moment (one that refuses it returns no rows to differ). ``"other"`` is a string an engine may read as a date in a way
+    this function does not work out (``'20190101'``, ``'19-01-01'``, a fraction, trailing text, a day that does not
+    exist: MySQL reads the first two as the first of January 2019). None is a string no engine reads as a date.
     """
 
-    found = _DATE_FORM.match(text) or _DATETIME_FORM.match(text)
+    found = _DATE_VALUE.match(text)
     if found is None:
         return "other" if _DATE_LIKE.match(text) and not _TIME_FORM.match(text) else None  # '10:30:00' is a time of day
-    parts = [int(part) for part in found.groups()]
+    parts = [int(part) for index, part in enumerate(found.groups()) if index != 1 and part is not None]
+    parts += [0] * (6 - len(parts))
     try:
         datetime.datetime(*parts)
     except ValueError:
         return "other"  # '2019-02-30', '0000-00-00': an error in one engine and version, a zero date in another
-    return "date" if len(parts) == 3 else "datetime"
+    return tuple(parts)
 
 
 _TIME_FORM = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$")
@@ -126,8 +127,8 @@ _PLAIN_INTEGER = re.compile(r"^-?(0|[1-9][0-9]*)$")
 _NUMBER_TEXT = re.compile(r"^\s*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?\s*$")
 
 
-def _order_differs(numbers: dict[str, float]) -> bool:
-    """Whether two of the strings are ordered one way as text and the other way as the numbers they are read as."""
+def _order_differs(numbers: dict) -> bool:
+    """Whether two of the strings are ordered one way as text and the other way as the numbers (or moments) they are read as."""
 
     texts = sorted(numbers)
     return any(numbers[a] > numbers[b] for i, a in enumerate(texts) for b in texts[i + 1 :])
@@ -740,7 +741,7 @@ class _Kinds:
         ordering (``<``, ``BETWEEN``, ``MIN``, ``ORDER BY``) and two of its strings are ordered one way as text and the
         other way as numbers. With neither, the strings are as different and as ordered for an integer column as for a
         text one, and a proof for the one holds for the other. A class whose columns are all declared dates is not
-        returned: MySQL compares a date with a string as dates (:func:`date_form`).
+        returned: MySQL compares a date with a string as dates (:meth:`literal_problem`).
         """
 
         ordered = {self.find(key) for key in self.ordered}
@@ -759,11 +760,12 @@ class _Kinds:
         """Why the strings one class is compared with cannot be read as text, else None.
 
         A column with no declared type may be a date, and a declared date is one: every engine converts the string, and
-        reads more than one spelling as the same day. Two strings are safe together when both are written
-        ``YYYY-MM-DD``, or both ``YYYY-MM-DD hh:mm:ss``: then they are equal and ordered as text exactly as they are as
-        dates. A string that is a date written another way, next to any other date, is declined. So are two strings
-        with a time on the same day, unless every column of the class is declared a type that keeps the time: DuckDB reads
-        ``d = '2019-01-01 10:00:00'`` for a ``DATE`` column as the day.
+        reads more than one spelling as the same day. Several date strings compared with one value are safe together when
+        :func:`date_value` reads each of them, no two are the same moment, and, under an ordering, they sort as text the
+        way they sort as moments (``'2019-10-1'`` sorts before ``'2019-9-1'``): then a table of dates can be written as a
+        table of texts on which every comparison comes out the same, so a proof for text is a proof for dates. For a
+        class that may be a ``DATE`` column the day is the moment, since DuckDB reads ``d = '2019-01-01 10:00:00'`` for
+        such a column as the day; only columns declared a type that keeps the time compare the times.
 
         A time is read the same way: several strings that look like times must all be written ``hh:mm:ss``.
 
@@ -783,12 +785,12 @@ class _Kinds:
             members = self._open(root)
             if members is None:
                 continue
-            forms = [date_form(text) for text in literals]
-            dates = [form for form in forms if form is not None]
-            days = [text[:10] for text in literals if date_form(text) == "datetime"]
-            same_day = len(set(days)) < len(days) and not self._dated(members, _STAMPS)  # a date column drops the time (DuckDB)
-            if len(dates) > 1 and ("other" in dates or len(set(dates)) > 1 or same_day):
-                return "one value is compared with dates written in more than one way (the engines convert each string to a date; the prover reads them as text)"
+            dates = {text: value for text in literals if (value := date_value(text)) is not None}
+            if len(dates) > 1:
+                # a date column drops a time of day (DuckDB), so there two strings of one day are one value
+                moments = None if "other" in dates.values() else {text: value if self._dated(members, _STAMPS) else value[:3] for text, value in dates.items()}
+                if moments is None or len(set(moments.values())) < len(moments) or (root in ordered and _order_differs(moments)):
+                    return "one value is compared with dates written in more than one way (the engines convert each string to a date; the prover reads them as text)"
             times = [text for text in literals if _TIME_LIKE.match(text)]
             if len(times) > 1 and not all(_TIME_FORM.match(text) for text in times):
                 return "one value is compared with times written in more than one way (the engines convert each string to a time; the prover reads them as text)"
