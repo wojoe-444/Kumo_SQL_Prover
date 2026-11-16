@@ -154,6 +154,12 @@ from .one_row_groups import collapse_one_row_groups
 from .one_row_tails import drop_one_row_tail
 from .plain_grouping_calls import fold_plain_grouping_calls
 from .self_outer_join_columns import distinct_self_outer_join_column
+from .scalar_counts import scalar_counts_to_grouped_join
+from .counted_union_branches import ungroup_counted_branches
+from .grouped_join_keys import join_before_grouping
+from .indicator_sums import indicator_sum_rules
+from .keyed_union_branches import union_of_distinct_rows
+from .union_all_counts import count_over_union_all
 from .string_spelling_rules import string_spelling_rules
 from .tagged_union_groups import split_tagged_union_group
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
@@ -5203,6 +5209,12 @@ def normalize(
         push_filter_below_windows,
         lambda sel: literal_like_to_equality(sel, types_map, dialect),
         merge_exists_disjunction,
+        lambda sel: union_of_distinct_rows(sel, schema, keys, not_null),
+        lambda sel: scalar_counts_to_grouped_join(sel, schema, keys, not_null),
+        lambda sel: count_over_union_all(sel, schema, keys, not_null),
+        lambda sel: indicator_sum_rules(sel, schema, keys, not_null),
+        lambda sel: ungroup_counted_branches(sel, schema, keys, not_null),
+        lambda sel: join_before_grouping(sel, schema, keys),
     ) if shapes else ()
 
     # shape rules that must read a select before ``_wrap_outer_join_aggregate`` wraps its outer joins
