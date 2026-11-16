@@ -49,3 +49,25 @@ def test_all_pairs():
     assert report.counts["wrong"] == 0, [i for i, v in report.verdicts.items() if v.kind == "wrong"]
     decided = report.counts["equivalent"] + report.counts["different"]
     assert decided >= FLOORS["all"], report.line()
+
+
+# A made-up pair (no benchmark data): equal when the column holds dates, different when it holds numbers, because MySQL
+# reads both strings as 2019 against a number. The harness declares the column the way its search reads it.
+_DATED_LEFT = (
+    "SELECT s.product_id FROM sales AS s WHERE s.name <> 'S8' GROUP BY s.product_id "
+    "HAVING MIN(s.sale_date) >= '2019-01-01' AND MIN(s.sale_date) <> '2019-03-31'"
+)
+_DATED_RIGHT = (
+    "SELECT s.product_id FROM sales AS s WHERE s.name <> 'S8' GROUP BY s.product_id "
+    "HAVING (MIN(s.sale_date) > '2019-01-01' AND MIN(s.sale_date) <> '2019-03-31') OR MIN(s.sale_date) = '2019-01-01'"
+)
+
+
+def test_columns_used_as_dates_are_declared_to_the_prover(monkeypatch):
+    pair = bench.Pair(0, _DATED_LEFT, _DATED_RIGHT, {"sales": ["product_id", "name", "sale_date"]}, "equivalent")
+    assert bench._text_types(pair) == {"sales": {"name": "STRING", "sale_date": "DATE"}}
+    assert bench.prove(pair)[0]
+    assert bench.decide(pair).kind == "equivalent"
+    monkeypatch.setattr(bench, "_text_types", lambda pair: {"sales": {"name": "STRING"}})
+    proved, _, reason = bench.prove(pair)
+    assert not proved and "same number" in reason
