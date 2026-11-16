@@ -38,6 +38,7 @@ def test_a_count_above_zero_is_a_filter_and_a_count_of_zero_is_not_exists():
         ("COUNT(IF(i.name = 'pen', 1, NULL)) >= 1", "1 > COUNT(IF(i.name = 'ink', 1, NULL))"),
         ("MAX(CASE WHEN i.name = 'pen' THEN 1 ELSE 0 END) = 1", "MAX(CASE WHEN i.name = 'ink' THEN 1 ELSE 0 END) = 0"),
         ("MAX(IF(i.name = 'pen', 1, 0)) <> 0", "MAX(IF(i.name = 'ink', 1, 0)) <> 1"),
+        ("SUM(CASE i.name WHEN 'pen' THEN 1 ELSE 0 END) > 0", "COUNT(CASE i.name WHEN 'ink' THEN 1 END) = 0"),
         ("(SUM(CASE WHEN (i.name = 'pen') THEN 1 ELSE 0 END) > 0)", "(SUM((CASE WHEN i.name = 'ink' THEN 1 ELSE 0 END)) = 0)"),
     ],
 )
