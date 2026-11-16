@@ -7,6 +7,10 @@ strings that MySQL reads as the same number, a proof is accepted only if it also
 number MySQL reads them as: the proof then does not depend on the column being text, and holds for an integer column as well.
 A string that is not a small integer after that reading (``'1.5'``) cannot be replaced, so the pair is declined.
 
+The same holds for a string compared with a value built on such a column: one that hands the column on as it is
+(``MIN(n)``, ``COALESCE(n, m)``, a ``CASE`` or a scalar subquery that returns it) or one the provers have no type for
+(``YEAR(d)``, an unknown function). ``string_number_compare._Kinds.operand_keys`` names the classes a string is compared with.
+
 Only the ``mysql`` dialect is checked. DuckDB, PostgreSQL and BigQuery refuse to compare an integer column with a string that
 is not a number, so no result is returned there to differ.
 """
@@ -49,11 +53,11 @@ def _rewrite(sql: str, types, schema=None) -> tuple[str, str | None] | None:
     if not ambiguous:
         return None
     for left, right in string_number_compare._pairs(tree):
-        for column, other in ((left, right), (right, left)):
-            column, other = string_number_compare._unwrap(column), string_number_compare._unwrap(other)
-            if not (isinstance(column, exp.Column) and isinstance(other, exp.Literal) and other.is_string):
+        for operand, other in ((left, right), (right, left)):
+            other = string_number_compare._unwrap(other)
+            if not (isinstance(other, exp.Literal) and other.is_string):
                 continue
-            if kinds.find(kinds.key(column)) not in ambiguous:
+            if not any(kinds.find(key) in ambiguous for key in kinds.operand_keys(operand)):
                 continue
             value = string_number_compare.mysql_number(other.this)
             if value != int(value) or abs(value) >= _LIMIT:

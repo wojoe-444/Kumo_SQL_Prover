@@ -237,3 +237,35 @@ def test_an_enum_column_is_read_as_its_string(prover):
     options = dict(dialect="mysql", schema={"t": ["k", "s"]}, constraints=_keyed())
     assert prover(TWO_NAMES, NONE, types={"t": {"s": "ENUM", "k": "INT"}}, **options).status is SmtStatus.PROVEN_EQUIVALENT
     assert not prover(TWO_NAMES, NONE, types={"t": {"s": "INT", "k": "INT"}}, **options).proven
+
+
+# MIN, MAX and the like hand the column's value on with its type: MySQL 8.0 keeps a group whose integer s is 0 on one side only
+CARRIED = [
+    ("SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x' AND MIN(t.s) <> 'y'", "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x'"),
+    ("SELECT t.k FROM t GROUP BY t.k HAVING MAX(t.s) IN ('x', 'y') AND MAX(t.s) <> 'y'", "SELECT t.k FROM t GROUP BY t.k HAVING MAX(t.s) = 'x'"),
+    ("SELECT MIN(t.s) AS m FROM t HAVING MIN(t.s) = 'x' AND MIN(t.s) <> 'y'", "SELECT MIN(t.s) AS m FROM t HAVING MIN(t.s) = 'x'"),
+    ("SELECT t.k FROM t WHERE NULLIF(t.s, '1q') = 'x' AND NULLIF(t.s, '1q') <> 'y'", "SELECT t.k FROM t WHERE NULLIF(t.s, '1q') = 'x'"),
+]
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+@pytest.mark.parametrize("left,right", CARRIED)
+def test_a_string_compared_with_the_minimum_of_a_column_is_compared_with_the_column(prover, left, right):
+    assert not prover(left, right, dialect="mysql", schema={"t": ["k", "s"]}).proven
+    assert prover(left, right, dialect="mysql", schema={"t": ["k", "s"]}, types={"t": {"s": "VARCHAR", "k": "INT"}}).status is SmtStatus.PROVEN_EQUIVALENT
+    assert prover(left, right, dialect="postgres", schema={"t": ["k", "s"]}).status is SmtStatus.PROVEN_EQUIVALENT
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+def test_proofs_about_a_minimum_that_hold_for_both_readings_stay(prover):
+    options = dict(dialect="mysql", schema={"t": ["k", "s"]})
+    same = "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x' AND MAX(t.s) = 'y'"
+    assert prover(same, "SELECT t.k FROM t GROUP BY t.k HAVING MAX(t.s) = 'y' AND MIN(t.s) = 'x'", **options).status is SmtStatus.PROVEN_EQUIVALENT
+    # '1' is 1 and 'x' is 0 for an integer column: two different numbers, as they are two different strings
+    apart = "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x' AND MIN(t.s) <> '1'"
+    assert prover(apart, "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x'", **options).status is SmtStatus.PROVEN_EQUIVALENT
+
+
+def test_the_reading_replaces_a_string_compared_with_a_minimum():
+    found = numeric_column_reading.reading(*CARRIED[0], "mysql")
+    assert found.pair == ("SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 0 AND MIN(t.s) <> 0", "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x'")

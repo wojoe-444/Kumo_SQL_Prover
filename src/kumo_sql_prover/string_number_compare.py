@@ -15,7 +15,11 @@ equality, ordering, ``BETWEEN``, ``IN`` lists, simple ``CASE`` operands and ``NU
   (``x + INTERVAL ..`` and ``x - INTERVAL ..`` are a date, a timestamp or an interval, so they are not read as numbers);
 - a number literal (or the other numeric forms) with a column declared as a string;
 - one column compared with a string literal in one place and a number literal in another (``a = 'abc' AND a = 0``
-  is not empty on MySQL when ``a`` is an integer column, since ``'abc'`` reads as 0).
+  is not empty on MySQL when ``a`` is an integer column, since ``'abc'`` reads as 0); the same for a value that hands a
+  column on (``MIN(a)``, ``COALESCE(a, b)``) or that has no known type (``YEAR(d)``);
+- a condition with a string literal (``(c = 2) = 'x'``: MySQL reads the condition as 0 or 1 and the string as a number).
+
+A negated value is a number whatever is negated (``-x = 'abc'``).
 
 The SMT prover reads a plain comparison of that kind as an opaque predicate of its two values, true or false whatever the
 engine's conversion rule is, so a pair that uses one the same way on both sides can still be proven; :func:`problem` with
@@ -46,6 +50,7 @@ _STRING_NODES = tuple(getattr(exp, name) for name in ("Lower", "Upper", "Concat"
 _MIXING = (exp.Coalesce, exp.Greatest, exp.Least, exp.If, exp.Case, exp.Nullif)
 _SET_OPERATION = getattr(exp, "SetOperation", exp.Union)  # sqlglot before 25 has only Union
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE, exp.NullSafeEQ, exp.NullSafeNEQ)
+_CONDITIONS = (exp.Predicate, exp.Connector, exp.Not, exp.Boolean)  # a value that is TRUE or FALSE
 
 
 def _type_kind(type_sql: str) -> str | None:
@@ -93,8 +98,10 @@ def _column_kinds(types: dict[str, dict[str, str]] | None) -> dict[str, str]:
 def _kind(node: exp.Expression, columns: dict[str, str]) -> str | None:
     """``"number"``, ``"string"`` or None (not known) for an operand."""
 
-    while isinstance(node, (exp.Paren, exp.Neg, exp.Alias)):
+    while isinstance(node, (exp.Paren, exp.Alias)):
         node = node.this
+    if isinstance(node, exp.Neg):
+        return "number"  # -x is a number whatever x is (MySQL reads a string operand as a number first)
     if isinstance(node, exp.Literal):
         return "string" if node.is_string else "number"
     if isinstance(node, exp.Cast):
@@ -178,6 +185,87 @@ def _unwrap(node: exp.Expression) -> exp.Expression:
     return node
 
 
+_VALUE_CALLS = (exp.Min, exp.Max, exp.AnyValue, exp.FirstValue, exp.LastValue, exp.Lag, exp.Lead, exp.NthValue)
+_VALUE_WRAPPERS = (exp.Window, exp.Filter, exp.IgnoreNulls, exp.RespectNulls, exp.Nullif) + _VALUE_CALLS
+
+
+def _named(*names: str) -> tuple[type, ...]:
+    return tuple(getattr(exp, name) for name in names if hasattr(exp, name))
+
+
+# calls whose result MySQL types as a string, and as a date or a time, whatever their arguments are
+_TEXT_NODES = _STRING_NODES + _named(
+    "Left", "Right", "Pad", "SubstringIndex", "TimeToStr", "GroupConcat", "Chr", "Hex", "MD5", "SHA", "SHA2", "NumberToStr", "Space", "Stuff", "Elt", "Dayname", "Monthname", "Collate"
+)
+_TEMPORAL_NODES = _named(
+    "TsOrDsToDate", "Date", "DateAdd", "DateSub", "TsOrDsAdd", "DatetimeAdd", "DatetimeSub", "TimestampAdd", "TimestampSub", "CurrentDate", "CurrentTimestamp",
+    "CurrentTime", "CurrentDatetime", "UtcDate", "UtcTimestamp", "StrToDate", "StrToTime", "LastDay", "Timestamp", "Time", "UnixToTime", "DateTrunc", "TsOrDsToTimestamp",
+)
+
+
+def _value_parts(node: exp.Expression) -> list[exp.Expression] | None:
+    """The expressions one of whose values ``node`` returns as it is (``MIN(x)``: x; ``COALESCE(x, y)``: x and y; a scalar
+    subquery: what it selects); None when ``node`` computes its value some other way."""
+
+    if isinstance(node, _VALUE_WRAPPERS) and isinstance(node.this, exp.Expression):
+        return [node.this] + ([node.args["default"]] if isinstance(node, (exp.Lag, exp.Lead)) and node.args.get("default") is not None else [])
+    if isinstance(node, exp.Distinct) and len(node.expressions) == 1:
+        return [node.expressions[0]]
+    if isinstance(node, (exp.Coalesce, exp.Greatest, exp.Least)):
+        return [node.this, *node.expressions]
+    if isinstance(node, exp.If) and node.args.get("true") is not None:
+        return [node.args["true"]] + ([node.args["false"]] if node.args.get("false") is not None else [])
+    if isinstance(node, exp.Case):
+        parts = [branch.args["true"] for branch in node.args.get("ifs") or [] if branch.args.get("true") is not None]
+        return parts + ([node.args["default"]] if node.args.get("default") is not None else [])
+    if isinstance(node, (exp.Subquery, exp.Select, _SET_OPERATION)):
+        inner = node.this if isinstance(node, exp.Subquery) else node
+        branches = _branches(inner) if isinstance(inner, exp.Query) else []
+        if branches and all(len(b.selects) == 1 and not _is_star(b.selects[0]) for b in branches):
+            return [b.selects[0] for b in branches]
+    return None
+
+
+def _handed_on(node: exp.Expression, depth: int = 0) -> tuple[list[exp.Column], bool]:
+    """``(columns, only)``: the columns whose value ``node`` can return as it is, type included, and whether it can return
+    nothing but one of those values or NULL.
+
+    ``MIN(n)``, ``COALESCE(n, m)``, ``CASE WHEN c THEN n END``, ``NULLIF(n, 0)``, ``LAG(n) OVER (..)`` and a scalar subquery that
+    selects ``n`` hand ``n`` on: MySQL gives the result the column's type, so ``MIN(n) = 'x'`` compares a value of ``n`` with
+    ``'x'`` exactly as ``n = 'x'`` does, as numbers when ``n`` is an integer column.
+    """
+
+    node = _unwrap(node)
+    if isinstance(node, exp.Column):
+        return [node], True
+    if isinstance(node, exp.Null):
+        return [], True
+    parts = _value_parts(node) if depth <= 6 else None
+    if parts is None:
+        return [], False
+    columns: list[exp.Column] = []
+    only = True
+    for part in parts:
+        found, rest = _handed_on(part, depth + 1)
+        columns.extend(found)
+        only = only and rest
+    return columns, only
+
+
+def _carried(node: exp.Expression) -> exp.Expression:
+    """The one column whose value ``node`` hands on (:func:`_handed_on`) when it can return nothing else; ``node`` otherwise."""
+
+    node = _unwrap(node)
+    columns, only = _handed_on(node)
+    if only and columns and len({(c.table.lower(), c.name.lower()) for c in columns}) == 1:
+        return columns[0]
+    return node
+
+
+def _operand_text(node: exp.Expression) -> str:
+    return _unwrap(node).sql().lower()
+
+
 class _Kinds:
     """The kinds (``"string"``, ``"number"``) each column of a query can hold, from the query's own comparisons.
 
@@ -200,6 +288,8 @@ class _Kinds:
         self.names: dict[str, set[str]] = {}
         self.tables: dict[str, set[str]] = {}
         self.derived: dict[str, exp.Query] = {}
+        self.operands: dict[tuple[str, str], exp.Expression] = {}  # the expression behind each class that is not a column
+        self.feeds: dict[tuple[str, str], set[tuple[str, str]]] = {}  # derived output -> the columns its expression can hand on
         self._collect_sources()
         self._build()
 
@@ -267,8 +357,8 @@ class _Kinds:
         """Kinds ``node`` can hold; empty when nothing is known."""
 
         node = _unwrap(node)
-        while isinstance(node, exp.Neg):
-            node = _unwrap(node.this)
+        if isinstance(node, exp.Neg):
+            return {"number"}
         if depth > 6:
             return set()
         if isinstance(node, exp.Literal):
@@ -429,15 +519,74 @@ class _Kinds:
                                     self.union((alias, name), (source, name))
                     elif "*" not in names and position < len(names):
                         node = (alias, names[position])
-                        if isinstance(inner, exp.Column):
-                            self.union(node, self.key(inner))
+                        carried = _carried(inner)
+                        if isinstance(carried, exp.Column):
+                            self.union(node, self.key(carried))  # MIN(t.s) AS m is a value of t.s, as t.s AS m is
                         else:
                             self.add(node, self.kinds(inner))
+                            self.feeds.setdefault(node, set()).update(self.key(column) for column in _handed_on(inner)[0])
 
     def _comparisons(self) -> None:
         for left, right in _pairs(self.tree):
-            self._relate(_unwrap(left), _unwrap(right))
-            self._relate(_unwrap(right), _unwrap(left))
+            for operand, other in ((left, right), (right, left)):
+                self._relate(_carried(operand), _carried(other))
+                other = _unwrap(other)
+                if isinstance(other, exp.Literal) and other.is_string:
+                    for key in self.operand_keys(operand):
+                        self.literals.setdefault(self.find(key), set()).add(other.this)
+
+    def operand_keys(self, operand: exp.Expression) -> list[tuple[str, str]]:
+        """The classes a string compared with ``operand`` is compared with: the column it is or hands on, else every column
+        it can hand on and the expression itself (keyed by its text, so the same expression is one class)."""
+
+        node = _carried(operand)
+        if isinstance(node, exp.Column):
+            keys = [self.key(node)]
+        elif self.fixed(node) is not None:
+            return []  # compared in a known way, whatever the columns under it hold
+        else:
+            key = ("", "\x00" + _operand_text(node))
+            self.operands.setdefault(key, node)
+            keys = [key] + [self.key(column) for column in _handed_on(node)[0]]
+        seen = set(keys)
+        for key in keys:  # an output of a derived table that can hand on several columns: a value of each of them
+            for member in self.members.get(self.find(key), {key}):
+                for fed in self.feeds.get(member, ()):
+                    if fed not in seen:
+                        seen.add(fed)
+                        keys.append(fed)
+        return keys
+
+    def fixed(self, node: exp.Expression, depth: int = 0) -> str | None:
+        """``"string"``, ``"number"`` or ``"other"`` (a date, a time, bytes, JSON) when MySQL's type for ``node`` is that
+        whatever the untyped columns hold; None when it depends on them.
+
+        A string is compared with such a value in a known way: as strings, as dates, or as numbers (which :func:`problem`
+        reports). So two different strings compared with it are not the open case :meth:`untyped_text_columns` looks for.
+        """
+
+        node = _unwrap(node)
+        if isinstance(node, exp.Literal):
+            return "string" if node.is_string else "number"
+        if _interval_arithmetic(node) or isinstance(node, _TEMPORAL_NODES):
+            return "other"
+        if isinstance(node, exp.Anonymous) and str(node.this).lower().startswith("kumo"):
+            return "other"  # the prover's own placeholder (KUMOSQL_SCALAR(0)): the value it stands for was read at the entry
+        if isinstance(node, (exp.Neg, exp.Boolean) + _NUMBER_NODES):
+            return "number"
+        if isinstance(node, _TEXT_NODES):
+            return "string"
+        if isinstance(node, exp.Cast):
+            return _data_type_kind(node.args.get("to")) or "other"
+        if isinstance(node, exp.Column):
+            return self.declared(self.key(node))
+        parts = _value_parts(node) if depth <= 6 else None
+        if parts is None:
+            return None
+        found = [self.fixed(part, depth + 1) for part in parts if not isinstance(_unwrap(part), exp.Null)]
+        if "string" in found and isinstance(node, (exp.Coalesce, exp.If, exp.Case, exp.Greatest, exp.Least)):
+            return "string"  # MySQL types a choice between a string and anything else as a string
+        return found[0] if found and None not in found and len(set(found)) == 1 else None
 
     def _relate(self, column: exp.Expression, other: exp.Expression) -> None:
         if not isinstance(column, exp.Column):
@@ -462,7 +611,7 @@ class _Kinds:
         found = set()
         for root, literals in self.literals.items():
             root = self.find(root)
-            if any(self.declared(key) for key in self.members.get(root, {root})):
+            if any(key not in self.operands and self.declared(key) for key in self.members.get(root, {root})):
                 continue
             numbers: dict[float, set[str]] = {}
             for text in literals:
@@ -502,6 +651,9 @@ def problem(
     kinds = _Kinds(tree, types, schema)
     literal_kinds: dict[str, set[str]] = {}
     for left, right in _pairs(tree):
+        if any(isinstance(_unwrap(a), _CONDITIONS) and isinstance(_unwrap(b), exp.Literal) and _unwrap(b).is_string for a, b in ((left, right), (right, left))):
+            # MySQL reads the condition as 0 or 1 and the string as a number ((c = 1) = 'x' is true where c <> 1); the others refuse it
+            return "a condition is compared with a string (MySQL reads both as numbers; the prover does not model it)"
         sides = {_kind(left, columns), _kind(right, columns)}
         plain = plain_ok and isinstance(left.parent, _COMPARISONS)
         if sides == {"string", "number"} and not plain:
@@ -510,8 +662,13 @@ def problem(
         if found == {"string", "number"} and not (plain and None not in sides):
             return "a string is compared with a number (the engines convert the string; the prover does not model it)"
         for column, other in ((left, right), (right, left)):
-            if isinstance(column, exp.Column) and isinstance(other, exp.Literal):
-                literal_kinds.setdefault(column.sql().lower(), set()).add("string" if other.is_string else "number")
+            if not isinstance(other, exp.Literal):
+                continue
+            carried = column if isinstance(column, exp.Column) else _carried(column)
+            # MIN(a) = 'abc' AND MIN(a) = 0 is a = 'abc' AND a = 0 for the row that holds the minimum; an expression the
+            # prover has no type for (YEAR(d), a CASE over untyped columns) can be a number for both comparisons too
+            if isinstance(carried, exp.Column) or kinds.fixed(carried) is None:
+                literal_kinds.setdefault(carried.sql().lower(), set()).add("string" if other.is_string else "number")
     for name, found in literal_kinds.items():
         if len(found) > 1:
             return f"column {name} is compared with both a string and a number (the engines convert the string; the prover does not model it)"
