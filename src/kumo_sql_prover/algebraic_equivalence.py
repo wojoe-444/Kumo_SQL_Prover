@@ -5199,7 +5199,7 @@ def normalize(
         lambda sel: _narrow("anti_join_reading", read_unmatched_left_join, sel),
         lambda sel: _narrow("distinct_source_filters", lift_source_distinct, sel),
         lambda sel: _narrow("keyed_semijoin", lambda s: distinct_key_join_to_exists(s, keys, not_null, types_map), sel),
-        lambda sel: _narrow("nested_correlation", flatten_nested_correlation, sel),
+        lambda sel: _narrow("nested_correlation", lambda s: flatten_nested_correlation(s, types_map), sel),
         merge_preserved_join_source,
         lambda sel: prune_windowed_outputs(sel, schema),
         count_subquery_as_join,

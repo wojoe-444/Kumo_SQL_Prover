@@ -18,7 +18,8 @@ each tuple once. So the result has one row for each ``p`` that has at least one 
 
 ``constraint_normalization.keyed_join_to_exists`` makes this step for a select without subqueries that lists
 columns of the left table only. This rule also reads a column of the other table that a top-level equality ties to
-a column of the keyed one, takes either table as the keyed one, reads a comma join, and keeps the conditions that
+a column of the keyed one (when ``nested_correlation.interchangeable`` says the two can be read one for the
+other: an INT and a DOUBLE, or a string and a number, are equal without being the same value), takes either table as the keyed one, reads a comma join, and keeps the conditions that
 do not read the other table outside the ``EXISTS``.
 
 The rule fires on a ``SELECT DISTINCT`` over exactly two base tables under an inner or cross join, with no
@@ -33,6 +34,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from . import smt_values
+from .nested_correlation import interchangeable
 
 _BANNED = ("group", "having", "qualify", "windows", "with_", "with", "limit", "offset", "order", "laterals", "pivots", "into", "locks", "sample")
 _JOIN_EXTRAS = ("method", "using", "match_condition", "global_", "hint", "directed", "expressions", "pivots")
@@ -103,7 +105,9 @@ def distinct_key_join_to_exists(select: exp.Select, keys: dict | None, not_null:
         for item in select.expressions:
             found = _column(item.unalias())
             if found is not None and found[0] == other:
-                found = equal.get(found)
+                tied = equal.get(found)
+                same = tied is not None and interchangeable(types, (names[found[0]].name.lower(), found[1]), (names[tied[0]].name.lower(), tied[1]))
+                found = tied if same else None
             if found is None or found[0] != keyed:
                 outputs = []
                 break
