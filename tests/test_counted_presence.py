@@ -156,8 +156,77 @@ def test_a_floating_point_grouping_column_is_left_alone():
     assert rewritten(COUNTED, types={"sales": {"buyer": "INT"}}) == READ
 
 
+BY_BUYER = "SELECT s.buyer FROM sales AS s GROUP BY s.buyer HAVING "
+ROWS = "SELECT DISTINCT s.buyer FROM sales AS s WHERE "
+NONE = " AND NOT EXISTS(SELECT 1 FROM sales AS kqc1_s WHERE ({}) AND kqc1_s.buyer = s.buyer)"
+
+
+def test_a_bound_on_the_minimum_or_maximum_is_a_row_inside_and_none_outside():
+    # MIN(day) >= 2: some row has a day, and no row has one below 2
+    assert rewritten(BY_BUYER + "MIN(s.day) >= 2") == ROWS + "(s.day >= 2)" + NONE.format("kqc1_s.day < 2")
+    assert rewritten(BY_BUYER + "2 <= MIN(s.day)") == ROWS + "(s.day >= 2)" + NONE.format("kqc1_s.day < 2")
+    assert rewritten(BY_BUYER + "MIN(s.day) > 2") == ROWS + "(s.day > 2)" + NONE.format("kqc1_s.day <= 2")
+    assert rewritten(BY_BUYER + "MAX(s.day) < 5") == ROWS + "(s.day < 5)" + NONE.format("kqc1_s.day >= 5")
+    # both bounds of one column are asked of one row, and one probe looks for a row outside either
+    assert rewritten(BY_BUYER + "MIN(s.day) >= 2 AND MAX(s.day) <= 5") == ROWS + "(s.day >= 2 AND s.day <= 5)" + NONE.format("kqc1_s.day < 2 OR kqc1_s.day > 5")
+    dates = "MIN(s.day) >= '2020-01-01' AND MAX(s.day) <= '2020-03-31'"
+    assert rewritten(BY_BUYER + dates) == ROWS + "(s.day >= '2020-01-01' AND s.day <= '2020-03-31')" + NONE.format("kqc1_s.day < '2020-01-01' OR kqc1_s.day > '2020-03-31'")
+    # the bound the extremum only has to reach: some row reaches it
+    assert rewritten(BY_BUYER + "MIN(s.day) <= 2") == ROWS + "(s.day <= 2)"
+    assert rewritten(BY_BUYER + "MAX(s.day) >= 5") == ROWS + "(s.day >= 5)"
+    # bounds of two columns need not be met by one row; every "has none" goes into one probe, a count of zero included
+    mixed = "MIN(s.day) >= 2 AND MAX(s.item) <= 3 AND SUM(CASE WHEN s.id = 1 THEN 1 ELSE 0 END) = 0"
+    assert rewritten(BY_BUYER + mixed) == (
+        ROWS + "(s.day >= 2)" + NONE.format("kqc1_s.day < 2 OR kqc1_s.item > 3 OR kqc1_s.id = 1") + " AND EXISTS(SELECT 1 FROM sales AS kqc2_s WHERE (kqc2_s.item <= 3) AND kqc2_s.buyer = s.buyer)"
+    )
+
+
+def test_a_simple_case_counts_the_rows_that_equal_its_value():
+    simple = "SUM(CASE s.item WHEN 1 THEN 1 ELSE 0 END) > 0 AND COUNT(CASE s.item WHEN 2 THEN 1 END) = 0"
+    assert rewritten(BY_BUYER + simple) == ROWS + "(s.item = 1)" + NONE.format("kqc1_s.item = 2")
+    assert rewritten(BY_BUYER + "SUM(CASE s.item WHEN 1 THEN 1 WHEN 2 THEN 1 ELSE 0 END) > 0") is None
+
+
+@pytest.mark.parametrize(
+    "having",
+    [
+        "MIN(s.day) = 2",  # the minimum itself, not a bound on it
+        "MIN(s.day) <> 2",
+        "MIN(s.day) >= MAX(s.item)",
+        "MIN(s.day) >= s.buyer",
+        "MIN(DISTINCT s.day) >= 2",
+        "MIN(s.day + 1) >= 2",
+        "MIN(s.day) BETWEEN 2 AND 5",
+        "MIN(s.day) >= 2 OR MAX(s.day) <= 5",
+        "AVG(s.day) >= 2",
+    ],
+)
+def test_other_conditions_on_an_extremum_are_left_alone(having):
+    assert rewritten(BY_BUYER + having) is None
+
+
+def test_a_bound_follows_the_order_the_extremum_uses():
+    # MySQL compares a text column with a number as numbers; MIN of the column is its first string
+    assert rewritten(BY_BUYER + "MIN(s.day) >= 2", types={"sales": {"day": "VARCHAR"}}) is None
+    assert rewritten(BY_BUYER + "MIN(s.day) >= 2", types={"sales": {"day": "DATE"}}) is None
+    assert rewritten(BY_BUYER + "MIN(s.day) >= 2", types={"sales": {"day": "INT"}}) is not None
+    assert rewritten(BY_BUYER + "MIN(s.day) >= 2.5", types={"sales": {"day": "DECIMAL(8, 2)"}}) is not None
+    # a string is compared in the column's own order whatever the column is
+    assert rewritten(BY_BUYER + "MIN(s.day) >= '2'", types={"sales": {"day": "VARCHAR"}}) is not None
+    assert rewritten(BY_BUYER + "MIN(s.day) >= '2020-01-01'", types={"sales": {"day": "DATE"}}) is not None
+    # a derived column's type is not known, so only a string bound is read
+    derived = "SELECT d.buyer FROM (SELECT s.buyer, s.day FROM sales AS s) AS d GROUP BY d.buyer HAVING MIN(d.day) >= "
+    assert rewritten(derived + "2") is None
+    assert rewritten(derived + "'b'") is not None
+
+
 SPELLINGS = [
     COUNTED,
+    BY_BUYER + "MIN(s.day) >= 2 AND MAX(s.day) <= 2",
+    BY_BUYER + "MIN(s.item) > 1 AND MAX(s.day) < 3",
+    BY_BUYER + "MIN(s.day) <= 1 AND MAX(s.item) >= 3 AND SUM(CASE s.item WHEN 2 THEN 1 ELSE 0 END) = 0",
+    BY_BUYER + "3 > MAX(s.day) AND 1 < MIN(s.day)",
+    f"{HEAD} HAVING MIN(s.day) >= 2 AND COUNT(CASE i.name WHEN 'ink' THEN 1 END) = 0 AND MAX(i.name) <= 'pen'",
     f"{HEAD} HAVING SUM(CASE WHEN i.name = 'ink' THEN 1 ELSE 0 END) = 0",
     f"{HEAD.replace(' GROUP BY', ' WHERE s.day > 1 OR s.day IS NULL GROUP BY')} HAVING COUNT(CASE WHEN i.name = 'pen' THEN 1 END) > 0 AND MAX(CASE WHEN s.day = 2 OR i.name = 'ink' THEN 1 ELSE 0 END) = 1",
     "SELECT s.buyer FROM sales AS s LEFT JOIN items AS i ON s.item = i.item GROUP BY s.buyer HAVING SUM(CASE WHEN i.name = 'pen' THEN 1 ELSE 0 END) = 0 AND SUM(CASE WHEN i.name IS NULL THEN 1 ELSE 0 END) >= 1",
