@@ -80,6 +80,8 @@ The suites carry no labels, but four pairs are known to differ and `tests/test_v
 | Calcite-397 | 397 | 342 | 29 | 17 | 9 | 0 |
 | LeetCode (all pairs) | 23,994 | 9,022 | 5,129 | 8,772 | 1,071 | 0 |
 
+On 2026-11-16 the string-literal checks changed (`docs/provers.md`). The 883 LeetCode pairs the change reaches were run on its base and on the change, not the whole corpus: no pair lost a proof, and 12 pairs that agreed on every database are now proved (9 development, 3 held out), each through the 1,000-database recheck. They are all pairs where a declared `DATE` column is compared with two date strings, which the old check sent through the numeric reading (`'2019-06-28'` and `'2019-07-27'` are both 2019 for a number column). The table above keeps the whole-run counts of 97e4a0e.
+
 ### The 2026-11-12 LeetCode batch (commit 97e4a0e)
 
 Both suites were rerun whole on commit 97e4a0e (and, after main moved again, Calcite-397 and Literature whole and every 24th LeetCode pair on the merged commit e7ad6b7: the same statuses, no proof lost) (LeetCode in six chunks of 4,000 pairs with `--audit`). LeetCode went from 4,787 to 9,022 proved with 0 wrong, and Calcite-397 from 337 to 342. Most of that is the rules of this batch, but the number also contains every prover rule merged since 2026-10-02 and the harness fixes since then; the two were not measured apart. Several of the 52 LeetCode problems have one reference query and hundreds of spellings of it, so each rule below reads one family of spellings. Each is a new module, written against the problem named and tested on made-up queries:
