@@ -261,9 +261,12 @@ def test_proofs_about_a_minimum_that_hold_for_both_readings_stay(prover):
     options = dict(dialect="mysql", schema={"t": ["k", "s"]})
     same = "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x' AND MAX(t.s) = 'y'"
     assert prover(same, "SELECT t.k FROM t GROUP BY t.k HAVING MAX(t.s) = 'y' AND MIN(t.s) = 'x'", **options).status is SmtStatus.PROVEN_EQUIVALENT
-    # '1' is 1 and 'x' is 0 for an integer column: two different numbers, as they are two different strings
-    apart = "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x' AND MIN(t.s) <> '1'"
+    # '-1' is -1 and 'x' is 0 for an integer column: two different numbers, in the order of the two strings
+    apart = "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x' AND MIN(t.s) <> '-1'"
     assert prover(apart, "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x'", **options).status is SmtStatus.PROVEN_EQUIVALENT
+    # '1' sorts below 'x' and 1 is above 0: a minimum is an ordering, so the proof has to hold for the numbers too
+    crossed = "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x' AND MIN(t.s) <> '1'"
+    assert not prover(crossed, "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x'", **options).proven
 
 
 def test_the_reading_replaces_a_string_compared_with_a_minimum():

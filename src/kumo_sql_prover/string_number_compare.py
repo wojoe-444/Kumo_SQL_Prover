@@ -31,10 +31,22 @@ or a derived table's projection share a kind, and a value that mixes kinds (``CO
 ``GREATEST``) is a string and a number at once. A comparison that sets one kind against the other, a column that
 gathers both kinds, or a mixed value used as a comparison or arithmetic operand is declined, since the SMT prover
 cannot tell the kinds apart for a column it has no type for and calls a string and a number unequal.
+
+The strings themselves are checked too (:meth:`_Kinds.literal_problem`, :meth:`_Kinds.untyped_text_columns`), because the
+provers read a string compared with a value of no declared type, or with a date, as text:
+
+- a date written in more than one way (``d = '2019-01-01' AND d = '20190101'`` is one day twice in MySQL; DuckDB,
+  PostgreSQL and BigQuery read ``'2019-1-1'`` as that day too). Several date strings compared with one value must all be
+  ``YYYY-MM-DD`` or all ``YYYY-MM-DD hh:mm:ss`` (:func:`date_form`), for a declared date and for a column of no type;
+- on DuckDB and PostgreSQL, strings that are numbers compared with a column of no type (``n = '1' AND n = '01'`` holds the
+  integer 1; ``n >= '9' AND n < '10'`` the integer 9);
+- on MySQL the same cases are read both ways by ``numeric_column_reading``: two strings of one number, or strings whose
+  order as text is not their order as numbers under an ordering.
 """
 
 from __future__ import annotations
 
+import datetime
 import re
 
 import sqlglot
@@ -50,6 +62,7 @@ _STRING_NODES = tuple(getattr(exp, name) for name in ("Lower", "Upper", "Concat"
 _MIXING = (exp.Coalesce, exp.Greatest, exp.Least, exp.If, exp.Case, exp.Nullif)
 _SET_OPERATION = getattr(exp, "SetOperation", exp.Union)  # sqlglot before 25 has only Union
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE, exp.NullSafeEQ, exp.NullSafeNEQ)
+_ORDERINGS = (exp.LT, exp.LTE, exp.GT, exp.GTE)
 _CONDITIONS = (exp.Predicate, exp.Connector, exp.Not, exp.Boolean)  # a value that is TRUE or FALSE
 
 
@@ -60,6 +73,64 @@ def _type_kind(type_sql: str) -> str | None:
     if base in _STRING:
         return "string"
     return None
+
+
+_TEMPORAL = ("DATE", "DATETIME", "TIMESTAMP", "TIMESTAMPTZ", "TIMESTAMP_NTZ", "TIMESTAMP_LTZ")
+_STAMPS = _TEMPORAL[1:]  # the types that keep a time of day
+
+
+def _is_temporal_type(type_sql: str, accepted: tuple[str, ...] = _TEMPORAL) -> bool:
+    return re.split(r"[\s(<]", type_sql.strip().upper(), maxsplit=1)[0] in accepted
+
+
+_DATE_FORM = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_DATETIME_FORM = re.compile(r"^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$")
+_DATE_LIKE = re.compile(r"^\s*(\d{1,4}[^\d\s]\d{1,2}[^\d\s]\d{1,2}|\d{6})")
+
+
+def date_form(text: str) -> str | None:
+    """How a string reads when an engine converts it to a date: ``"date"`` (exactly ``YYYY-MM-DD``, a real day),
+    ``"datetime"`` (exactly ``YYYY-MM-DD hh:mm:ss``), ``"other"`` (another spelling an engine may accept: ``2019-1-1``,
+    ``20190101``, ``2019/01/01``, a fraction, trailing text), or None for a string no engine reads as a date.
+
+    Two strings of one of the first two forms are the same date only when they are the same text, and their order as
+    text is their order as dates. Nothing of the kind holds for ``"other"``: MySQL reads ``'20190101'``, ``'190101'``
+    and ``'2019-1-1'`` as the first of January 2019.
+    """
+
+    found = _DATE_FORM.match(text) or _DATETIME_FORM.match(text)
+    if found is None:
+        return "other" if _DATE_LIKE.match(text) and not _TIME_FORM.match(text) else None  # '10:30:00' is a time of day
+    parts = [int(part) for part in found.groups()]
+    try:
+        datetime.datetime(*parts)
+    except ValueError:
+        return "other"  # '2019-02-30', '0000-00-00': an error in one engine and version, a zero date in another
+    return "date" if len(parts) == 3 else "datetime"
+
+
+_TIME_FORM = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$")
+_TIME_LIKE = re.compile(r"^\s*-?\d{1,3}:\d{1,2}")
+_TRUE_WORDS = ("t", "true", "y", "yes", "on", "1")
+_FALSE_WORDS = ("f", "false", "n", "no", "off", "0")
+
+
+def _truth(text: str) -> bool | None:
+    """The Boolean DuckDB and PostgreSQL read a string as when it is compared with a Boolean column, else None."""
+
+    word = text.strip().lower()
+    return True if word in _TRUE_WORDS else False if word in _FALSE_WORDS else None
+
+
+_PLAIN_INTEGER = re.compile(r"^-?(0|[1-9][0-9]*)$")
+_NUMBER_TEXT = re.compile(r"^\s*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?\s*$")
+
+
+def _order_differs(numbers: dict[str, float]) -> bool:
+    """Whether two of the strings are ordered one way as text and the other way as the numbers they are read as."""
+
+    texts = sorted(numbers)
+    return any(numbers[a] > numbers[b] for i, a in enumerate(texts) for b in texts[i + 1 :])
 
 
 def is_integer_type(type_sql: str) -> bool:
@@ -290,6 +361,8 @@ class _Kinds:
         self.derived: dict[str, exp.Query] = {}
         self.operands: dict[tuple[str, str], exp.Expression] = {}  # the expression behind each class that is not a column
         self.feeds: dict[tuple[str, str], set[tuple[str, str]]] = {}  # derived output -> the columns its expression can hand on
+        self.dated: set[tuple[str, str]] = set()  # the classes of expressions that are a date or a time whatever the columns hold
+        self.ordered: set[tuple[str, str]] = set()  # keys read by an ordering: <, BETWEEN, MIN, MAX, GREATEST, LEAST, ORDER BY
         self._collect_sources()
         self._build()
 
@@ -332,6 +405,29 @@ class _Kinds:
             kinds = {_type_kind(self.types[t][name]) for t in found if name in self.types[t]}
             return kinds.pop() if len(kinds) == 1 else None
         return None if qualifier in self.derived else self._declared_by_name(name)
+
+    def temporal(self, key: tuple[str, str], accepted: tuple[str, ...] = _TEMPORAL) -> bool:
+        """Whether the column is declared a date or a timestamp (read like :meth:`declared`), or ``key`` is a dated expression.
+
+        With ``accepted`` narrowed to ``_STAMPS``: whether the column is declared a type that keeps a time of day.
+        """
+
+        if key in self.dated:
+            return accepted is _TEMPORAL
+        qualifier, name = key
+        found = self.tables.get(qualifier) if qualifier else None
+        if found and all(t in self.types for t in found):
+            declared = [self.types[t][name] for t in found if name in self.types[t]]
+            return bool(declared) and all(_is_temporal_type(type_sql, accepted) for type_sql in declared)
+        if qualifier in self.derived:
+            return False
+        declared = []
+        for table in {table for tables in self.tables.values() for table in tables if table not in self.derived}:
+            if name in self.types.get(table, {}):
+                declared.append(self.types[table][name])
+            elif table not in self.columns or name in self.columns[table]:
+                return False
+        return bool(declared) and all(_is_temporal_type(type_sql, accepted) for type_sql in declared)
 
     def _declared_by_name(self, name: str) -> str | None:
         """The declared kind of a column known by its name alone: the one kind the tables this query reads give it.
@@ -406,6 +502,7 @@ class _Kinds:
             self._projections()
             self._comparisons()
             self._using()
+        self._orderings()
 
     def _unqualified(self) -> None:
         """A column written without its table is one of the columns of that name the query qualifies elsewhere."""
@@ -535,6 +632,36 @@ class _Kinds:
                     for key in self.operand_keys(operand):
                         self.literals.setdefault(self.find(key), set()).add(other.this)
 
+    def _orderings(self) -> None:
+        for node in self.tree.walk():
+            if isinstance(node, _ORDERINGS):
+                operands = [node.this, node.expression]
+            elif isinstance(node, exp.Between):
+                operands = [node.this, node.args["low"], node.args["high"]]
+            elif isinstance(node, (exp.Min, exp.Max, exp.Ordered)):
+                operands = [node.this]
+            elif isinstance(node, (exp.Greatest, exp.Least)):
+                operands = [node.this, *node.expressions]
+            elif isinstance(node, _named("ArgMin", "ArgMax")):
+                operands = [node.expression]
+            else:
+                continue
+            for operand in operands:
+                if not isinstance(_unwrap(operand), exp.Literal):
+                    self.ordered.update(self.operand_keys(operand))
+
+    def _open(self, root: tuple[str, str]) -> set[tuple[str, str]] | None:
+        """The members of a class no declared type settles as text or as a number; None for a settled class."""
+
+        members = self.members.get(root, {root})
+        return None if any(key not in self.operands and self.declared(key) for key in members) else members
+
+    def _dated(self, members: set[tuple[str, str]], accepted: tuple[str, ...] = _TEMPORAL) -> bool:
+        """Whether every column of the class is declared a date or a timestamp (or the class is a dated expression)."""
+
+        columns = [key for key in members if key not in self.operands or key in self.dated]
+        return bool(columns) and all(self.temporal(key, accepted) for key in columns)
+
     def operand_keys(self, operand: exp.Expression) -> list[tuple[str, str]]:
         """The classes a string compared with ``operand`` is compared with: the column it is or hands on, else every column
         it can hand on and the expression itself (keyed by its text, so the same expression is one class)."""
@@ -542,11 +669,13 @@ class _Kinds:
         node = _carried(operand)
         if isinstance(node, exp.Column):
             keys = [self.key(node)]
-        elif self.fixed(node) is not None:
+        elif self.fixed(node) not in (None, "date"):
             return []  # compared in a known way, whatever the columns under it hold
         else:
             key = ("", "\x00" + _operand_text(node))
             self.operands.setdefault(key, node)
+            if self.fixed(node) == "date":  # the engine converts the string to a date: literal_problem() says when that is safe
+                self.dated.add(key)
             keys = [key] + [self.key(column) for column in _handed_on(node)[0]]
         seen = set(keys)
         for key in keys:  # an output of a derived table that can hand on several columns: a value of each of them
@@ -558,8 +687,8 @@ class _Kinds:
         return keys
 
     def fixed(self, node: exp.Expression, depth: int = 0) -> str | None:
-        """``"string"``, ``"number"`` or ``"other"`` (a date, a time, bytes, JSON) when MySQL's type for ``node`` is that
-        whatever the untyped columns hold; None when it depends on them.
+        """``"string"``, ``"number"``, ``"date"`` (a date or a timestamp) or ``"other"`` (a time, bytes, JSON) when MySQL's
+        type for ``node`` is that whatever the untyped columns hold; None when it depends on them.
 
         A string is compared with such a value in a known way: as strings, as dates, or as numbers (which :func:`problem`
         reports). So two different strings compared with it are not the open case :meth:`untyped_text_columns` looks for.
@@ -569,7 +698,7 @@ class _Kinds:
         if isinstance(node, exp.Literal):
             return "string" if node.is_string else "number"
         if _interval_arithmetic(node) or isinstance(node, _TEMPORAL_NODES):
-            return "other"
+            return "date"
         if isinstance(node, exp.Anonymous) and str(node.this).lower().startswith("kumo"):
             return "other"  # the prover's own placeholder (KUMOSQL_SCALAR(0)): the value it stands for was read at the entry
         if isinstance(node, (exp.Neg, exp.Boolean) + _NUMBER_NODES):
@@ -577,9 +706,10 @@ class _Kinds:
         if isinstance(node, _TEXT_NODES):
             return "string"
         if isinstance(node, exp.Cast):
-            return _data_type_kind(node.args.get("to")) or "other"
+            to = node.args.get("to")
+            return _data_type_kind(to) or ("date" if isinstance(to, exp.DataType) and _is_temporal_type(to.sql()) else "other")
         if isinstance(node, exp.Column):
-            return self.declared(self.key(node))
+            return self.declared(self.key(node)) or ("date" if self.temporal(self.key(node)) else None)
         parts = _value_parts(node) if depth <= 6 else None
         if parts is None:
             return None
@@ -602,23 +732,77 @@ class _Kinds:
                 self.literals.setdefault(self.find(key), set()).add(other.this)
 
     def untyped_text_columns(self) -> set[tuple[str, str]]:
-        """Roots of the column classes with no declared type that two different strings of one MySQL number are compared with.
+        """Roots of the column classes with no declared type whose strings MySQL would read another way as numbers.
 
         ``n = 'x' AND n = 'y'`` is empty for a text column and not for an integer column that holds 0, since MySQL reads
-        both strings as 0.
+        both strings as 0. ``n >= '9' AND n < '10'`` is empty for a text column (``'10'`` sorts before ``'9'``) and holds
+        the integer 9. So a class is returned when two of its strings are one number, or when the class is read by an
+        ordering (``<``, ``BETWEEN``, ``MIN``, ``ORDER BY``) and two of its strings are ordered one way as text and the
+        other way as numbers. With neither, the strings are as different and as ordered for an integer column as for a
+        text one, and a proof for the one holds for the other. A class whose columns are all declared dates is not
+        returned: MySQL compares a date with a string as dates (:func:`date_form`).
         """
 
+        ordered = {self.find(key) for key in self.ordered}
         found = set()
         for root, literals in self.literals.items():
             root = self.find(root)
-            if any(key not in self.operands and self.declared(key) for key in self.members.get(root, {root})):
+            members = self._open(root)
+            if members is None or self._dated(members):
                 continue
-            numbers: dict[float, set[str]] = {}
-            for text in literals:
-                numbers.setdefault(mysql_number(text), set()).add(text)
-            if any(len(group) > 1 for group in numbers.values()):
+            numbers = {text: mysql_number(text) for text in literals}
+            if len(set(numbers.values())) < len(numbers) or (root in ordered and _order_differs(numbers)):
                 found.add(root)
         return found
+
+    def literal_problem(self, dialect: str) -> str | None:
+        """Why the strings one class is compared with cannot be read as text, else None.
+
+        A column with no declared type may be a date, and a declared date is one: every engine converts the string, and
+        reads more than one spelling as the same day. Two strings are safe together when both are written
+        ``YYYY-MM-DD``, or both ``YYYY-MM-DD hh:mm:ss``: then they are equal and ordered as text exactly as they are as
+        dates. A string that is a date written another way, next to any other date, is declined. So are two strings
+        with a time on the same day, unless every column of the class is declared a type that keeps the time: DuckDB reads
+        ``d = '2019-01-01 10:00:00'`` for a ``DATE`` column as the day.
+
+        A time is read the same way: several strings that look like times must all be written ``hh:mm:ss``.
+
+        DuckDB and PostgreSQL convert a string compared with a number column to the column's type, so for a column with
+        no declared type ``n = '1' AND n = '01'`` holds the integer 1, and ``n >= '9' AND n < '10'`` the integer 9. When
+        every string of a class is a number there (one that is not would be an error for a number column), two or more
+        strings are declined unless all are plain integers (``'12'``, not ``'012'`` or ``'1.5'``: different texts are then
+        different numbers) and, under an ordering, sorted the same way as text. One string alone is one point, and reads
+        the same either way. MySQL's reading is :meth:`untyped_text_columns`; BigQuery refuses a number compared with a
+        string. The same two engines read ``'yes'``, ``'true'`` and ``'1'`` as one value for a Boolean column, so strings
+        that are all such words, two of them one truth value, are declined there as well.
+        """
+
+        ordered = {self.find(key) for key in self.ordered}
+        for root, literals in self.literals.items():
+            root = self.find(root)
+            members = self._open(root)
+            if members is None:
+                continue
+            forms = [date_form(text) for text in literals]
+            dates = [form for form in forms if form is not None]
+            days = [text[:10] for text in literals if date_form(text) == "datetime"]
+            same_day = len(set(days)) < len(days) and not self._dated(members, _STAMPS)  # a date column drops the time (DuckDB)
+            if len(dates) > 1 and ("other" in dates or len(set(dates)) > 1 or same_day):
+                return "one value is compared with dates written in more than one way (the engines convert each string to a date; the prover reads them as text)"
+            times = [text for text in literals if _TIME_LIKE.match(text)]
+            if len(times) > 1 and not all(_TIME_FORM.match(text) for text in times):
+                return "one value is compared with times written in more than one way (the engines convert each string to a time; the prover reads them as text)"
+            if dialect in ("mysql", "bigquery") or self._dated(members):
+                continue
+            if all(_NUMBER_TEXT.match(text) for text in literals):
+                numbers = {text: float(text) for text in literals}
+                plain = all(_PLAIN_INTEGER.match(text) for text in literals)
+                if len(literals) > 1 and (not plain or (root in ordered and _order_differs(numbers))):
+                    return "a column with no declared type is compared with strings that are numbers (a number column reads them as numbers; the prover reads them as text)"
+            truths = [_truth(text) for text in literals]
+            if None not in truths and len(set(truths)) < len(truths):
+                return "a column with no declared type is compared with strings that are one truth value (a Boolean column reads 'yes' and 'true' alike; the prover reads them as text)"
+        return None
 
     def _using(self) -> None:
         for select in self.tree.find_all(exp.Select):
@@ -667,7 +851,7 @@ def problem(
             carried = column if isinstance(column, exp.Column) else _carried(column)
             # MIN(a) = 'abc' AND MIN(a) = 0 is a = 'abc' AND a = 0 for the row that holds the minimum; an expression the
             # prover has no type for (YEAR(d), a CASE over untyped columns) can be a number for both comparisons too
-            if isinstance(carried, exp.Column) or kinds.fixed(carried) is None:
+            if isinstance(carried, exp.Column) or kinds.fixed(carried) in (None, "date"):
                 literal_kinds.setdefault(carried.sql().lower(), set()).add("string" if other.is_string else "number")
     for name, found in literal_kinds.items():
         if len(found) > 1:
@@ -676,7 +860,7 @@ def problem(
         if isinstance(node, _MIXING):
             if kinds.kinds(node) == {"string", "number"} and _is_operand(node):
                 return "a value of mixed kinds (a string in one branch, a number in another) is compared or used in arithmetic (the engines convert it; the prover does not model it)"
-    return None
+    return kinds.literal_problem(dialect)
 
 
 def _is_operand(node: exp.Expression) -> bool:

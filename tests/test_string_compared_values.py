@@ -166,7 +166,7 @@ def test_the_type_mysql_gives_a_value():
 
     assert fixed("LEFT(t.s, 1)") == "string"
     assert fixed("-t.s") == "number"
-    assert fixed("DATE(t.s)") == fixed("t.s + INTERVAL 1 DAY") == fixed("CAST(t.s AS DATE)") == "other"
+    assert fixed("DATE(t.s)") == fixed("t.s + INTERVAL 1 DAY") == fixed("CAST(t.s AS DATE)") == "date"
     assert fixed("KUMOSQL_SCALAR(0)") == "other"  # the prover's placeholder for a scalar subquery it has set aside
     assert fixed("CASE WHEN t.k = 1 THEN 'a' ELSE t.s END") == "string"  # a choice between a string and anything is a string
     assert fixed("CASE WHEN t.k = 1 THEN 1 ELSE t.s END") is None
