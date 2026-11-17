@@ -84,7 +84,7 @@ from .solver_lock import Z3_MISSING, bound, bounded_solver, serialized, sweep
 from .string_literals import canonical_literals
 from .type_names import invalid_type_name
 from .sqlx_fragments import masked_template_problem
-from . import derived_types, numeric_column_reading, opaque_pairing, shape_fallback, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals, volatile_calls
+from . import date_witness, derived_types, numeric_column_reading, opaque_pairing, shape_fallback, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals, volatile_calls
 from . import float_halving, sum_argument_types
 from .float_sum_order import Ledger
 
@@ -2195,7 +2195,11 @@ class _Compiler:
                 isinstance(e.this, exp.Literal)
                 and e.this.is_string
                 and to.is_type(exp.DataType.Type.DATE)
+                and date_witness.fits(e.this.this, date_witness.DATE)
             ):
+                # CAST('2019-06-27' AS DATE) is the day the string names. A string with a time of day is not its cast:
+                # CAST('2019-06-27 10:00:00' AS DATE) is the 27th, and d = '2019-06-27 10:00:00' is false for a date column
+                # in MySQL and for the midnight of a timestamp column everywhere. That cast stays an unknown function.
                 return self._literal(e.this, negate=False)
             v = self._val(e.this, env, agg, aliases)
             source = self._class_of(e.this, env, agg, aliases)
@@ -3126,16 +3130,63 @@ class _Prover:
         self.opaque_sets: set[str] = set()
         self.candidates: list[tuple[object, object, list[_Occ], list[_Val], list[str | None]]] = []
         self.kind_unknowns: list = []  # the compiler's unknown numeric kinds (decimal literals next to undeclared types)
+        # Whether the queries read their declared date columns only in ways the text of a date follows
+        # (``date_witness.readable``); asked once, and only when a counterexample is sought.
+        self.dates_readable = None
+        self._date_domains: dict[str, list[str]] = {}
+        self._free_date: tuple = (None, None, None)
 
     def declared_kind(self, table: str, column: str) -> str | None:
-        """``"int"``, ``"number"`` or ``"string"`` for a column whose declared type fixes what a value in it is, else ``None``."""
+        """``"int"``, ``"number"`` or ``"string"`` for a column whose declared type fixes what a value in it is, a
+        ``date_witness`` kind for a declared date or timestamp column, else ``None``."""
 
-        cls = smt_values.type_class(self.types.get(str(table).lower(), {}).get(str(column).lower()))
+        declared = self.types.get(str(table).lower(), {}).get(str(column).lower())
+        cls = smt_values.type_class(declared)
         if cls == smt_values.INT64:
             return "int"
         if cls in (smt_values.NUMERIC, smt_values.BIGNUMERIC, smt_values.FLOAT64):
             return "number"
-        return "string" if cls == smt_values.STRING else None
+        if cls == smt_values.STRING:
+            return "string"
+        dated = date_witness.kind(declared)
+        if dated is None:
+            return None
+        if callable(self.dates_readable):
+            self.dates_readable = bool(self.dates_readable())
+        return dated if self.dates_readable is not False else date_witness.NODATE
+
+    def date_domain(self, kind: str) -> list[str]:
+        """The values a counterexample may put in a date column of ``kind`` (``date_witness.domain``)."""
+
+        if kind not in self._date_domains:
+            self._date_domains[kind] = [] if kind == date_witness.NODATE else date_witness.domain(self.string_literals, kind)
+        return self._date_domains[kind]
+
+    def _dated(self, values, kinds) -> list:
+        """Facts that give each declared date column one of its dates (NULL alone for ``NODATE``), with the real order of
+        those dates when the queries order values."""
+
+        V = _value_sort()
+        facts, used = [], set()
+        for v, kind in zip(values, kinds):
+            if kind in date_witness.KINDS:
+                choices = self.date_domain(kind)
+                used.update(choices)
+                facts.append(z3.Or(v.null, z3.And(V.is_Str(v.val), z3.Or(*[V.str(v.val) == z3.StringVal(text) for text in choices]))) if choices else v.null)
+        return facts + (self._order_chain(used) if used and self.ordered else [])
+
+    def cell(self, model, v, table: str, column: str):
+        """The value ``model`` gives the cell ``v`` of ``table.column``, for a counterexample's database."""
+
+        kind = self.declared_kind(table, column)
+        if kind not in date_witness.KINDS:
+            return _cell(model, v, kind)
+        if self._free_date[:2] != (id(model), kind):
+            # a date the model's ranks agree with, for the cells the model left open: the queries may order them
+            choices = self.date_domain(kind)
+            fitting = next((text for text in choices if self.real_string_order(model, [text])), choices[0] if choices else None)
+            self._free_date = (id(model), kind, fitting)
+        return _cell(model, v, kind, (self._free_date[2],) if self._free_date[2] is not None else ())
 
     def _order_chain(self, strings) -> list:
         """The real order of ``strings`` as facts about ``string_rank``, one per neighbouring pair."""
@@ -3163,22 +3214,29 @@ class _Prover:
         rarely chooses one between ``'a'`` and ``'b'``."""
 
         V, rank = _value_sort(), _string_rank()
-        domain = sorted(self.string_literals | set(_strings_between(sorted(self.string_literals))))
+        kinds = list(kinds) + [None] * len(values)
+        dates = {text for kind in set(kinds) if kind in date_witness.KINDS for text in self.date_domain(kind)}
+        domain = sorted(self.string_literals | set(_strings_between(sorted(self.string_literals))) | dates)
         facts = [rank(z3.StringVal(a)) < rank(z3.StringVal(b)) for a, b in zip(domain, domain[1:])]
-        for v, kind in zip(values, list(kinds) + [None] * len(values)):
+        for v, kind in zip(values, kinds):
             if kind in ("string", None):
                 facts.append(z3.Or(v.null, z3.Not(V.is_Str(v.val)), *[V.str(v.val) == z3.StringVal(text) for text in domain]))
         return facts
 
     def well_typed(self, db: dict[str, list[dict]]) -> bool:
         """Whether every value sits in a column that can hold it: no string in a number column, no number in a
-        STRING column, no fraction in an INT64 column. The value sort has no column types, so a model can break all three."""
+        STRING column, no fraction in an INT64 column, and in a declared date or timestamp column a date written the one
+        way ``date_witness.holds`` accepts. The value sort has no column types, so a model can break all of them."""
 
         for table, rows in db.items():
             for row in rows:
                 for column, value in row.items():
                     kind = self.declared_kind(table, column) if value is not None else None
                     if kind is None:
+                        continue
+                    if kind in date_witness.KINDS:
+                        if not date_witness.holds(value, kind):
+                            return False  # '2019-06-270', a number, or any value where the queries' reading of dates is not covered
                         continue
                     number = isinstance(value, (Fraction, int, float)) and not isinstance(value, bool)
                     if (kind == "string") != isinstance(value, str) or (kind != "string" and not number):
@@ -3353,9 +3411,12 @@ class _Prover:
         for v, kind in zip(values, kinds):
             if kind == "string":
                 declared.append(z3.Implies(z3.Not(v.null), V.is_Str(v.val)))
+            elif kind in date_witness.KINDS:
+                continue  # one of the column's dates: ``_dated`` below
             elif kind is not None:
                 fits = z3.And(V.is_Num(v.val), z3.IsInt(V.num(v.val))) if kind == "int" else V.is_Num(v.val)
                 declared.append(z3.Implies(z3.Not(v.null), fits))
+        declared += self._dated(values, kinds)
         free = [v for v, kind in zip(values, kinds) if kind is None]
         integral = [z3.Implies(V.is_Num(v.val), z3.IsInt(V.num(v.val))) for v in values]
         numeric = [z3.Implies(z3.Not(v.null), V.is_Num(v.val)) for v in free]
@@ -4632,12 +4693,15 @@ def _is_date(text: str) -> bool:
     return True
 
 
-def _cell(model, v: _Val, kind: str | None = None):
+def _cell(model, v: _Val, kind: str | None = None, dates: tuple = ()):
     if z3.is_true(model.eval(v.null, model_completion=True)):
         return None
     if not _decided(model, v.val):
         # The model never constrained this value, so z3 would complete it with
-        # an arbitrary constructor, often a string; a number loads into any column but a declared STRING one.
+        # an arbitrary constructor, often a string; a number loads into any column but a declared STRING one
+        # and a date column, which gets one of its dates (``dates``), or NULL when it has none to give.
+        if kind in date_witness.KINDS:
+            return dates[0] if dates else None
         return "" if kind == "string" else Fraction(0)
     return _py(model, v.val)
 
@@ -4797,7 +4861,7 @@ def _find_counterexample(prover: _Prover, left: _Union, right: _Union) -> Counte
             continue  # this model reads an undeclared column as NUMERIC or BIGNUMERIC; the database is shown as plain numbers
         db: dict[str, list[dict]] = {occ.table: [] for occ in all_occs}
         for occ in occs:
-            db.setdefault(occ.table, []).append({name: _cell(model, v, prover.declared_kind(occ.table, name)) for name, v in occ.cols.items()})
+            db.setdefault(occ.table, []).append({name: prover.cell(model, v, occ.table, name) for name, v in occ.cols.items()})
         # A column only the other query reads is still a column of the row: give it the model's
         # value (never NULL by default) rather than leaving it to read as NULL.
         other_columns: dict[str, dict] = {}
@@ -4808,7 +4872,7 @@ def _find_counterexample(prover: _Prover, left: _Union, right: _Union) -> Counte
             for row in rows:
                 for name, v in other_columns.get(table, {}).items():
                     if name not in row:
-                        row[name] = _cell(model, v, prover.declared_kind(table, name))
+                        row[name] = prover.cell(model, v, table, name)
         db = prover.legal_database(db)
         if db is None or not prover.well_typed(db):
             continue  # not a database these tables can hold
@@ -4998,6 +5062,12 @@ def _prove_core(
     if z3 is None:
         return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, Z3_MISSING)
     used = [False]
+    readable: list[bool] = []
+
+    def dates_readable() -> bool:
+        if not readable:
+            readable.append(all(date_witness.readable(sql, dialect, types, schema) for sql in (left_sql, right_sql)))
+        return readable[0]
 
     def attempt(semijoin: bool, blind: bool = False) -> SmtEquivalenceResult:
         compiler = _Compiler(schema, exact_arithmetic, dialect, types)
@@ -5066,6 +5136,7 @@ def _prove_core(
 
         prover = _Prover(timeout_ms, constraints, compiler.types)
         prover.ordered, prover.string_literals = compiler.ordered, compiler.string_literals
+        prover.dates_readable = dates_readable
         prover.opaque_sets = compiler.opaque_sets
         prover.kind_unknowns = list(compiler.kind_unknowns.values())
         used[0] = compiler.used_setsrc
