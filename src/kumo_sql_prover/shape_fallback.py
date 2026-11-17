@@ -32,7 +32,7 @@ A larger pair gets the first attempt only.
 The shape rules: ``single_source_columns``, ``grouped_self_membership``, ``disjoint_union``,
 ``tailed_grouping_sets``, ``mysql_exists_casts``, ``case_arm_rules``, ``unmatched_outer_join``,
 ``having_count_rules``, ``semijoin_shapes``, ``string_spelling_rules``, ``tailed_outer_aggregates``,
-``wrapped_join_filters``, ``one_row_tails``, ``grouped_source_filters``, ``keyed_union``, ``tailed_regroups``, ``union_join_grouping``, ``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence`` (hardest-cases batch 3, 2026-11-11), ``anti_join_reading``, ``distinct_source_filters``, ``keyed_semijoin``, ``nested_correlation`` and ``presence_given_absence`` (batch 4, 2026-11-16 and 17), and the derived-table and ``JOIN .. ON`` sources that
+``wrapped_join_filters``, ``one_row_tails``, ``grouped_source_filters``, ``keyed_union``, ``tailed_regroups``, ``union_join_grouping``, ``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence`` (hardest-cases batch 3, 2026-11-11), ``anti_join_reading``, ``distinct_source_filters``, ``keyed_semijoin``, ``nested_correlation`` and ``presence_given_absence`` (batch 4, 2026-11-16 and 17), ``differing_self_joins``, ``own_value_lists``, ``own_group_membership`` and ``own_key_membership`` (batch 5, 2026-11-17), and the derived-table and ``JOIN .. ON`` sources that
 ``closed_sources`` lets the scalar-aggregate decorrelation read. Added on 2026-11-11 for the DSB rewrites of
 the QUITE eval: ``renamed_join_heads``, ``spread_aggregates``, ``scalar_having_groups``,
 ``star_source_columns``, ``count_column_bounds``, ``extreme_group_sources``, ``setop_operand_sources``,

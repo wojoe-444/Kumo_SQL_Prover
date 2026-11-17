@@ -12,7 +12,9 @@ the form the other common spelling (``GROUP BY email HAVING COUNT(email) > 1``) 
 ``(a, b)`` passes the join exactly when both rows have the same non-NULL ``email`` and different ``id``; ``id`` is
 unique and never NULL, so two rows have different ``id`` exactly when they are two rows. An email is therefore
 listed exactly when at least two rows carry it. ``a.id < b.id`` and ``a.id > b.id`` say the same for this purpose:
-of two different rows one has the larger key, and the columns listed are equal on both.
+of two different rows one has the larger key, and the columns listed are equal on both. Both at once
+(``a.id < b.id AND a.id > b.id``, or ``a.id < b.id AND b.id < a.id``) is never TRUE, so that select returns no row
+and is left alone.
 
 The rule fires on a select that
 
@@ -78,6 +80,7 @@ def regroup_duplicate_self_join(select: exp.Select, keys: dict[str, list[tuple]]
             conditions.extend(_conjuncts(join.args["on"]))
     equated: list[str] = []
     apart: set[str] = set()
+    orders: set[str] = set()  # which row holds the smaller value, for every ``<`` and ``>``
     for condition in conditions:
         while isinstance(condition, exp.Paren):
             condition = condition.this
@@ -91,8 +94,10 @@ def regroup_duplicate_self_join(select: exp.Select, keys: dict[str, list[tuple]]
                 equated.append(a[1])
         else:
             apart.add(a[1])
-    if not equated or len(apart) != 1:
-        return None
+            if not isinstance(condition, exp.NEQ):
+                orders.add(a[0] if isinstance(condition, exp.LT) else b[0])
+    if not equated or len(apart) != 1 or len(orders) > 1:
+        return None  # ``a.x < b.x AND a.x > b.x`` is never TRUE: no pair passes, whatever the groups hold
     (key,) = apart
     declared = {c.lower() for c in {k.lower(): v for k, v in not_null.items()}.get(table, frozenset())}
     table_keys = {k.lower(): v for k, v in keys.items()}.get(table, [])
