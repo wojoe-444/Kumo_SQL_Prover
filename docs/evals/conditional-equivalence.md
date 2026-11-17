@@ -53,15 +53,15 @@ The same problems as VeriEQL ships them, with types, primary keys, NOT NULL colu
 
 | Count | Cases |
 | --- | ---: |
-| Proved outright | 866 |
-| **Proved under named conditions** | **297** |
+| Proved outright | 1,372 |
+| **Proved under named conditions** | **338** |
 | Refuted with every candidate holding | 0 |
-| Unknown | 1,832 |
-| Conditional but not re-checkable | 5 |
+| Unknown | 1,280 |
+| Conditional but not re-checkable | 10 |
 | Wrong | 0 |
 | Harness crashes | 0 |
 
-The 297 use 454 conditions (225 NOT NULL, 169 unique keys, 60 foreign keys). All 297 pass the 900-database re-check and the executed counterexample search with the conditions in the spec; 70 are separated by a database that breaks them. Against master on the same sample this is 23 fewer conditional proofs (320 there): the constant-result check could not run on VeriEQL type names before, and now rejects 24 proofs that hold only because the returned conditions make both queries return one result on every test database (a unique key on a self join that asks for two different rows); one proof was gained. Five more conditional proofs rest on a composite foreign key that the executed check cannot impose, so they are not re-checked and not scored. Fewer conditionals per case than Singh is expected: the declared keys already carry what the prover can use. No held-out split is reserved for this sample. The harness was developed against Singh dev pairs and an early 80-case VeriEQL sample (tuned on test); the full sample was run afterwards.
+The 338 use 519 conditions (398 NOT NULL, 111 unique keys, 10 foreign keys). All 338 pass the 900-database re-check with the conditions in the spec; 116 are separated by a database that breaks them. Measured 2026-11-17 on commit dd53ffe (2026-10-04: 297 conditional, 866 proved outright, 1,832 unknown; the step includes the VeriEQL worker rules of [PR 36](verieql.md#the-2026-11-17-leetcode-batch-commit-dd53ffe) and every rule merged since, not separated). The 10 not re-checkable cases rest on a composite foreign key that the executed check cannot impose, so they are not re-checked and not scored. Fewer conditionals per case than Singh is expected: the declared keys already carry what the prover can use. No held-out split is reserved for this sample. The harness was developed against Singh dev pairs and an early 80-case VeriEQL sample (tuned on test); the full sample was run afterwards.
 
 ```bash
 python tools/conditional_bench.py verieql --every 8 --workers 4   # about 15 minutes on 4 cores
