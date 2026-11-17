@@ -1,196 +1,145 @@
-"""The join of a table with its own grouped aggregate: kept as written, and an outer join that cannot fail made inner.
+"""A ``LEFT JOIN`` from a table to its own groups never pads: it is an inner join.
 
-    SELECT s.id, CASE WHEN g.top > 100 THEN s.pay * 0.5 ELSE s.pay END
-    FROM staff AS s JOIN (SELECT team, MAX(pay) AS top FROM staff GROUP BY team) AS g ON s.team = g.team
+    SELECT s.employee_id, s.salary, m.top
+    FROM salaries AS s
+    LEFT JOIN (SELECT company_id, MAX(salary) AS top FROM salaries GROUP BY company_id) AS m
+      ON s.company_id = m.company_id
 
-is the spelling of "the group's aggregate beside each row" that the SMT prover reasons about: it keeps the grouped
-table of a base table as one relation and knows what it says about the rows of that table (a row's value is not
-above its group's ``MAX``, a NULL ``MAX`` means the row's value is NULL, and so on). Two things moved a query
-away from that spelling.
+looks every row up in the groups of its own table. A row with a ``company_id`` is in the group of that
+``company_id``, so the lookup always finds exactly that group and the ``LEFT`` keeps nothing an inner join would
+drop. People write it either way, and the prover read the two as different shapes.
 
-**1. Pulling the aggregate up** (``eager_aggregation.pull_up_aggregate``). With a key declared on ``staff`` the
-normalizer rewrites the join as ``FROM staff AS s, staff AS k WHERE s.team = k.team GROUP BY s.id, ..`` with
-``MAX(k.pay)`` in the select list. That is the same query, but in it the prover no longer sees that ``s`` is one
-of the rows aggregated, and whether the rewrite fires depends on how the query spells its columns (it needs every
-column qualified), so two spellings of one query ended in different forms. ``own_group_join`` recognizes the
-join, and ``normalize`` does not pull the aggregate up for a select it recognizes. Not applying a rewrite cannot
-make a normal form wrong; like every shape rule this is switched off on the prover's second attempt, where the
-aggregate is pulled up as before.
+The join is made inner when all of this holds:
 
-*What is recognized:* a select with exactly two sources, a plain base table with supplied columns and a derived
-table that is one ``GROUP BY`` of plain columns over the same base table, with no join, ``WHERE``, ``HAVING``,
-``DISTINCT``, ``LIMIT`` or window of its own.
+* the right side is a derived table over **one base table** ``T`` with a plain ``GROUP BY`` on columns of ``T``
+  and nothing that removes a group or a row: no ``WHERE``, ``HAVING``, ``DISTINCT``, ``LIMIT``, window or
+  ``QUALIFY`` (a filter could remove the very group the row belongs to);
+* the ``ON`` is exactly one equality per grouping column, each between that column as the derived table outputs
+  it and **the same column** of a source ``L`` that reads the same base table ``T`` (an extra condition, or a
+  comparison with another column, could reject the row's own group);
+* ``L`` is a real row wherever the join is evaluated: it is the first source or reached by inner or cross joins
+  only, before this join;
+* every grouping column is declared NOT NULL on ``T``. A row with a NULL there is in the NULL group, but
+  ``NULL = NULL`` is not true, so the ``LEFT JOIN`` pads it and an inner join drops it. A column declared
+  floating-point does not count (a NaN has the same problem in some engines).
 
-**2. An outer join.** ``staff AS s LEFT JOIN (SELECT team, .. FROM staff GROUP BY team) AS g ON s.team = g.team``
-is the inner join when ``team`` is declared NOT NULL (``inner_own_group_join``):
-
-* the grouped table has no ``WHERE`` or ``HAVING``, so it has one row for every value of ``team`` that occurs in
-  ``staff``;
-* ``s`` is a row of ``staff`` (it is a base-table source that no other outer join of the select can NULL-pad)
-  and its ``team`` is not NULL, so the group of its own ``team`` exists and equals it on the key: every row has
-  a match, and the outer join pads nothing. (It has exactly one match, the groups being distinct on the key,
-  but that does not matter for the rewrite.)
-* the ``ON`` condition holds nothing but the key equalities, one per grouping column, so nothing else can make
-  the match fail.
-
-*What is read:* a ``LEFT [OUTER] JOIN`` whose right side is such a grouped table (any output expressions; every
-grouping column output as a plain column), or the mirrored ``g RIGHT JOIN s`` when these are the select's only
-two sources. The ``ON`` condition is exactly ``s.k = g.k`` for every grouping column ``k``, each side named by
-its qualifier, and every ``k`` is declared NOT NULL. ``s`` is a plain base table with supplied columns, the same
-table the grouped one reads; the select has no ``RIGHT`` or ``FULL`` join (other than the mirrored one) and
-``s`` is not itself the right side of a ``LEFT JOIN``. A grouped table with a ``WHERE`` (its groups need not
-include the row's), a nullable key, an extra ``ON`` condition or a key that is not output is left alone.
+Without NOT NULL facts nothing fires.
 """
 
 from __future__ import annotations
 
 from sqlglot import exp
 
-from .aggregate_membership import _base_table, _table_key, _unwrap
-from .ast_utils import conjuncts, extended_grouping, select_sources, visible_ctes
+from . import smt_values
 
-_GROUPED_ARGS = frozenset({"expressions", "from", "from_", "group", "comments", "kind", "hint"})
-
-
-def _plain_table(source: exp.Expression, known: dict[str, list[str]]) -> list[str] | None:
-    columns = _base_table(source, known)
-    if columns is None or not source.alias_or_name:
-        return None
-    if not source.args.get("db") and source.name.lower() in visible_ctes(source):
-        return None
-    return columns
+_BODY_BANNED = ("where", "having", "distinct", "limit", "offset", "qualify", "windows", "with_", "with", "order", "joins", "laterals", "pivots")
 
 
-def _grouped(source: exp.Expression, known: dict[str, list[str]]) -> tuple[str, dict[str, str], list[str]] | None:
-    """``(table, {output name: key column}, grouping columns)`` for a derived table that groups one base table."""
+def _from(select: exp.Select):
+    return select.args.get("from_") or select.args.get("from")
+
+
+def _base(source: exp.Expression) -> str | None:
+    if isinstance(source, exp.Table) and isinstance(source.this, exp.Identifier) and not (source.args.get("db") or source.args.get("catalog") or source.args.get("pivots") or source.args.get("sample") or source.args.get("joins")):
+        return source.name.lower()
+    return None
+
+
+def _groups(source: exp.Expression) -> tuple[str, dict[str, str]] | None:
+    """``(base table, output name -> grouping column)`` for a derived table that only groups one base table; every
+    grouping column must be an output."""
 
     if not isinstance(source, exp.Subquery) or not source.alias or not isinstance(source.this, exp.Select):
         return None
-    alias = source.args.get("alias")
-    if alias.args.get("columns") or any(value for key, value in source.args.items() if key not in ("this", "alias", "comments")):
+    if source.args.get("alias") is not None and source.args["alias"].args.get("columns"):
         return None
-    inner = source.this
-    if any(value for key, value in inner.args.items() if key not in _GROUPED_ARGS):
+    body = source.this
+    if any(body.args.get(key) for key in _BODY_BANNED) or body.find(exp.Window) is not None:
         return None
-    sources = select_sources(inner)
-    if len(sources) != 1:
+    from_ = _from(body)
+    table = _base(from_.this) if from_ is not None else None
+    group = body.args.get("group")
+    if table is None or group is None or any(group.args.get(k) for k in ("rollup", "cube", "grouping_sets", "totals", "all")):
         return None
-    table = sources[0]
-    columns = _plain_table(table, known)
-    group = inner.args.get("group")
-    if columns is None or group is None or extended_grouping(group) or any(value for key, value in group.args.items() if key != "expressions"):
-        return None
-    own = table.alias_or_name.lower()
-
-    def column(node: exp.Expression) -> str | None:
-        node = _unwrap(node)
-        if type(node) is not exp.Column or isinstance(node.this, exp.Star) or node.args.get("db") or node.args.get("catalog"):
+    alias = from_.this.alias_or_name.lower()
+    keys = []
+    for key in group.expressions:
+        if not isinstance(key, exp.Column) or not isinstance(key.this, exp.Identifier) or (key.table and key.table.lower() != alias):
             return None
-        if node.table and node.table.lower() != own:
-            return None
-        return node.name.lower() if node.name.lower() in columns else None
-
-    keys = [column(key) for key in group.expressions]
-    if not keys or None in keys or len(set(keys)) != len(keys):
-        return None
-    if any(isinstance(node, (exp.Window, exp.Query, exp.Subquery)) for node in inner.walk() if node is not inner):
+        keys.append(key.name.lower())
+    if not keys or len(set(keys)) != len(keys):
         return None
     outputs: dict[str, str] = {}
-    for item in inner.expressions:
-        if isinstance(item, exp.Star) or (isinstance(item, exp.Column) and isinstance(item.this, exp.Star)):
-            return None
+    names = set()
+    for item in body.expressions:
         name = item.alias_or_name.lower()
-        key = column(item.this if isinstance(item, exp.Alias) else item)
-        if key in keys and name:
-            if name in outputs:
-                return None
-            outputs[name] = key
-        elif name in outputs or (name in keys and key != name):
+        if not name or name in names:
             return None
-    return _table_key(table), outputs, keys
+        names.add(name)
+        value = item.unalias()
+        if isinstance(value, exp.Column) and isinstance(value.this, exp.Identifier) and (not value.table or value.table.lower() == alias) and value.name.lower() in keys:
+            outputs[name] = value.name.lower()
+    if set(outputs.values()) != set(keys):
+        return None
+    return table, outputs
 
 
-def own_group_join(select: exp.Expression, schema: dict[str, list[str]] | None) -> bool:
-    """Whether ``select`` joins a base table with a grouped table over the same base table and nothing else."""
-
-    if not schema or not isinstance(select, exp.Select):
-        return False
-    sources = select_sources(select)
-    if len(sources) != 2:
-        return False
-    known = {key.lower(): [c.lower() for c in columns] for key, columns in schema.items()}
-    for table, derived in (sources, sources[::-1]):
-        if _plain_table(table, known) is None:
-            continue
-        grouped = _grouped(derived, known)
-        if grouped is not None and grouped[0] == _table_key(table):
-            return True
-    return False
-
-
-def inner_own_group_join(select: exp.Select, schema: dict[str, list[str]] | None, not_null: dict[str, frozenset[str]] | None) -> exp.Expression | None:
-    """``select`` (in place) with each outer join described in the module docstring made inner, else ``None``."""
-
+def inner_join_own_groups(select: exp.Select, not_null: dict[str, frozenset[str]] | None, types: dict[str, dict[str, str]] | None = None) -> exp.Expression | None:
     joins = select.args.get("joins") or []
-    if not schema or not not_null or not any(join.side for join in joins):
+    from_ = _from(select)
+    if not not_null or from_ is None or not joins:
         return None
-    sources = select_sources(select)
-    if len(sources) != len(joins) + 1:
-        return None
-    names = [source.alias_or_name.lower() for source in sources]
-    if "" in names or len(set(names)) != len(names):
-        return None
-    sides = [(join.side or "").upper() for join in joins]
-    if any(join.method or join.args.get("using") or (join.kind or "").upper() not in ("", "INNER", "CROSS", "OUTER") for join in joins):
-        return None
-    known = {key.lower(): [c.lower() for c in columns] for key, columns in schema.items()}
-    declared = {key.lower(): {c.lower() for c in columns} for key, columns in not_null.items()}
-    changed = False
+    declared = {t.lower(): {c.lower() for c in cols} for t, cols in not_null.items()}
+    for table, columns in (types or {}).items():  # a NaN is in its group but not equal to itself in every engine
+        declared[table.lower()] = declared.get(table.lower(), set()) - {c.lower() for c, t in columns.items() if smt_values.type_class(t) == smt_values.FLOAT64}
+    real: dict[str, str] = {}  # alias -> base table, for sources that are real rows so far
+    first = _base(from_.this)
+    if first is not None:
+        real[from_.this.alias_or_name.lower()] = first
     for index, join in enumerate(joins):
-        if sides[index] == "LEFT":
-            if any(side in ("RIGHT", "FULL") for side in sides):
-                continue
-            derived, partners = join.this, [(i, s) for i, s in enumerate(sources) if i <= index and (i == 0 or sides[i - 1] != "LEFT")]
-        elif sides[index] == "RIGHT" and len(joins) == 1:
-            derived, partners = sources[0], [(1, sources[1])]
-        else:
-            continue
-        grouped = _grouped(derived, known)
-        on = join.args.get("on")
-        if grouped is None or on is None:
-            continue
-        table, outputs, keys = grouped
-        if not set(keys) <= declared.get(table, set()):
-            continue
-        g = derived.alias.lower()
-        for _, partner in partners:
-            if _plain_table(partner, known) is None or _table_key(partner) != table:
-                continue
-            if _only_key_equalities(on, partner.alias_or_name.lower(), g, outputs, keys):
-                join.set("side", None)
-                join.set("kind", None)
-                sides[index] = ""
-                changed = True
-                break
-    return select if changed else None
+        side, kind = (join.side or "").upper(), (join.kind or "").upper()
+        plain = not any(join.args.get(k) for k in ("method", "using", "match_condition", "global_", "hint", "directed", "expressions", "pivots"))
+        if side == "LEFT" and kind in ("", "OUTER") and plain and join.args.get("on") is not None:
+            found = _groups(join.this)
+            if found is not None and _ties_own_groups(join, found, real, declared):
+                copy = select.copy()
+                target = copy.args["joins"][index]
+                target.set("side", None)
+                target.set("kind", None)
+                return copy
+        if side or kind not in ("", "INNER", "CROSS") or not plain:
+            return None  # sources after an outer join may be padded rows
+        base = _base(join.this)
+        if base is not None:
+            alias = join.this.alias_or_name.lower()
+            if alias in real:
+                return None
+            real[alias] = base
+    return None
 
 
-def _only_key_equalities(on: exp.Expression, s: str, g: str, outputs: dict[str, str], keys: list[str]) -> bool:
-    """Whether ``on`` is exactly ``s.k = g.k`` for every grouping column."""
+def _ties_own_groups(join: exp.Join, found: tuple[str, dict[str, str]], real: dict[str, str], declared: dict[str, set[str]]) -> bool:
+    from .algebraic_equivalence import _conjuncts
 
-    found = set()
-    for part in conjuncts(on):
+    table, outputs = found
+    alias = join.this.alias.lower()
+    if alias in real or not set(outputs.values()) <= declared.get(table, set()):
+        return False
+    tied: dict[str, str] = {}  # grouping column -> the alias of the row that supplies it
+    for part in _conjuncts(join.args["on"]):
+        part = part.unnest() if isinstance(part, exp.Paren) else part
         if not isinstance(part, exp.EQ):
             return False
-        left, right = _unwrap(part.this), _unwrap(part.expression)
-        if type(left) is not exp.Column or type(right) is not exp.Column:
+        sides = [part.this.unnest() if isinstance(part.this, exp.Paren) else part.this, part.expression.unnest() if isinstance(part.expression, exp.Paren) else part.expression]
+        if not all(isinstance(s, exp.Column) and s.table for s in sides):
             return False
-        if left.table.lower() == g and right.table.lower() == s:
-            left, right = right, left
-        if left.table.lower() != s or right.table.lower() != g or left.args.get("db") or right.args.get("db"):
+        group_side = next((s for s in sides if s.table.lower() == alias), None)
+        row_side = next((s for s in sides if s.table.lower() != alias), None)
+        if group_side is None or row_side is None:
             return False
-        key = outputs.get(right.name.lower())
-        if key is None or key != left.name.lower():
+        column = outputs.get(group_side.name.lower())
+        owner = row_side.table.lower()
+        if column is None or real.get(owner) != table or row_side.name.lower() != column or column in tied:
             return False
-        found.add(key)
-    return found == set(keys)
+        tied[column] = owner
+    return set(tied) == set(outputs.values()) and len(set(tied.values())) == 1

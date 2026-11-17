@@ -80,6 +80,8 @@ The suites carry no labels, but four pairs are known to differ and `tests/test_v
 | Calcite-397 | 397 | 342 | 29 | 17 | 9 | 0 |
 | LeetCode (all pairs) | 23,994 | 10,702 | 5,129 | 7,092 | 1,071 | 0 |
 
+On 2026-11-16 the string-literal checks changed (`docs/provers.md`). The 883 LeetCode pairs the change reaches were run on its base and on the change, not the whole corpus: no pair lost a proof, and 12 pairs that agreed on every database are now proved (9 development, 3 held out), each through the 1,000-database recheck. They are all pairs where a declared `DATE` column is compared with two date strings, which the old check sent through the numeric reading (`'2019-06-28'` and `'2019-07-27'` are both 2019 for a number column). The table above keeps the whole-run counts of 97e4a0e.
+
 ### The 2026-11-12 LeetCode batch (commit 97e4a0e)
 
 Both suites were rerun whole on commit 97e4a0e (and, after main moved again, Calcite-397 and Literature whole and every 24th LeetCode pair on the merged commit e7ad6b7: the same statuses, no proof lost) (LeetCode in six chunks of 4,000 pairs with `--audit`). LeetCode went from 4,787 to 9,022 proved with 0 wrong, and Calcite-397 from 337 to 342. Most of that is the rules of this batch, but the number also contains every prover rule merged since 2026-10-02 and the harness fixes since then; the two were not measured apart. Several of the 52 LeetCode problems have one reference query and hundreds of spellings of it, so each rule below reads one family of spellings. Each is a new module, written against the problem named and tested on made-up queries:
@@ -105,7 +107,7 @@ Six workers wrote rules for LeetCode problem families on 2026-11-11 and were sto
 | Problem | What the spellings do | Modules | Pairs proved before and after (whole run) |
 | --- | --- | --- | --- |
 | 1783 | a count of rows of the same key, written as a `UNION ALL` of filtered reads, as `CASE` sums or as a scalar count | `counted_union_branches`, `grouped_join_keys`, `indicator_sums`, `keyed_union_branches`, `scalar_counts`, `union_all_counts` | 27 to 564 of 914 |
-| 1468 | an aggregate over the table's own group, written as a window, a join with the grouped table or a keyed lookup | `aliased_columns`, `own_group_joins`, `own_group_keys`, `own_group_windows` | 97 to 521 of 670 |
+| 1468 | an aggregate over the table's own group, written as a window, a join with the grouped table or a keyed lookup | `aliased_columns`, `own_group_aggregates`, `own_group_keys`, `own_group_windows` | 97 to 521 of 670 |
 | 614 | a join that only asks for a match, a count compared with 0 or 1, membership in groups | `correlated_count_tests`, `counted_outer_joins`, `grouped_membership_filters`, `grouped_source_dedup`, `joined_membership`, `keyed_distinct_aggregates`, `membership_key_counts`, `nonempty_group_counts`, `unique_join_membership` | 342 to 481 of 544 |
 | 1809 | `NOT IN` or an anti join through a derived table, a keyed self membership, `ROUND` around a division | `derived_anti_join`, `keyed_self_membership`, `exact_rounding`, `exact_scaling`, `exact_power_division` | 496 to 527 of 575 |
 | 182, 183, 1045 | a self join or correlated count for repeated values, `HAVING` on an alias, membership of a foreign key in its parent | `repeated_groups`, `count_membership`, `having_alias`, `one_row_aggregates`, `fk_membership`, `unmatched_groups` | 147 to 157 of 265; 183 mostly nullable foreign key; 171 to 210 of 366 |

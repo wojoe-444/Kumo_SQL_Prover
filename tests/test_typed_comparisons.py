@@ -131,3 +131,19 @@ def test_the_two_readings_agree_on_duckdb():
             x, y = run_unoptimized(db, f"SELECT o.k, l.k FROM o JOIN l ON l.k + 5 {operator} o.k * 2 + 5", f"SELECT o.k, l.k FROM o JOIN l ON l.k {operator} o.k * 2")
             assert sorted(map(repr, x)) == sorted(map(repr, y)), operator
         db.close()
+
+
+@pytest.mark.parametrize("test, expected", [
+    ("l.d BETWEEN o.d AND o.d + INTERVAL '30' DAY", "l.d BETWEEN o.d AND DATE_ADD(o.d, INTERVAL '30' DAY)"),
+    ("l.d BETWEEN o.d - INTERVAL 1 DAY AND o.d + INTERVAL 1 DAY", "l.d BETWEEN DATE_SUB(o.d, INTERVAL '1' DAY) AND DATE_ADD(o.d, INTERVAL '1' DAY)"),
+    ("l.k BETWEEN o.k AND o.k + 3", "l.k BETWEEN o.k AND o.k + 3"),  # not dates: left alone
+    ("l.f BETWEEN o.f AND o.f + INTERVAL '3' DAY", "l.f BETWEEN o.f AND o.f + INTERVAL '3' DAY"),  # not a date
+])
+def test_the_bounds_of_a_between_are_read_like_comparisons(test, expected):
+    assert rewritten(test) == expected
+
+
+def test_a_between_with_a_shifted_bound_meets_its_two_comparisons():
+    assert proved("l.d BETWEEN o.d AND o.d + INTERVAL '30' DAY", "l.d >= o.d AND l.d <= DATE_ADD(o.d, INTERVAL '30' DAY)")
+    assert proved("l.d BETWEEN o.d AND o.d + INTERVAL '30' DAY", "l.d >= o.d AND l.d <= o.d + INTERVAL '30' DAY")
+    assert not proved("l.d BETWEEN o.d AND o.d + INTERVAL '30' DAY", "l.d >= o.d AND l.d <= o.d + INTERVAL '31' DAY")

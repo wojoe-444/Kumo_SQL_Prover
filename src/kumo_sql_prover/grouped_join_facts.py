@@ -66,6 +66,21 @@ def _type(column, select, types, depth=0):
     return None
 
 
+def _comparisons(condition):
+    """The conjuncts of ``condition``, a plain ``x BETWEEN low AND high`` as its two comparisons: an optimizer writes
+    the range either way, and a fact read from one spelling only would be added on one side of a pair."""
+
+    found = []
+    for predicate in _conjuncts(condition):
+        inner = predicate.unnest() if isinstance(predicate, exp.Paren) else predicate
+        if isinstance(inner, exp.Between) and not inner.args.get("symmetric"):
+            found.append(exp.GTE(this=inner.this.copy(), expression=inner.args["low"].copy()))
+            found.append(exp.LTE(this=inner.this.copy(), expression=inner.args["high"].copy()))
+        else:
+            found.append(predicate)
+    return found
+
+
 def _facts(source):
     if not isinstance(source, exp.Subquery) or not source.alias or not isinstance(source.this, exp.Select):
         return []
@@ -85,7 +100,7 @@ def _facts(source):
     outputs = {item.unalias().sql(): item.alias_or_name for item in inner.expressions if isinstance(item.unalias(), exp.Column)}
     grouped = {key.sql() for key in group.expressions} if group is not None else None
     facts = []
-    for predicate in _conjuncts(where.this):
+    for predicate in _comparisons(where.this):
         if not isinstance(predicate, _COMPARISONS):
             continue
         cols = list(predicate.find_all(exp.Column))

@@ -21,7 +21,7 @@ only removes rows, and no two rows of the result agree on a NOT NULL key of ``s`
 **What is read.** A select with exactly two sources and one join between them: a plain base table ``s`` with
 supplied columns, and a derived table that is one ``GROUP BY`` of plain columns of a base table, every grouping
 column output as a plain column, with no ``WHERE``, ``HAVING``, ``DISTINCT``, ``LIMIT``, window or subquery
-(the reading of :mod:`kumo_sql_prover.own_group_joins`). For every grouping column ``k`` the ``ON`` condition
+(the reading of :mod:`kumo_sql_prover.own_group_aggregates`). For every grouping column ``k`` the ``ON`` condition
 has ``s.c = g.k`` as one of its ``AND`` parts (for an inner or comma join, the ``WHERE`` counts too); other
 parts only remove rows. The join is inner, or an outer join that keeps the rows of ``s`` (``s LEFT JOIN g``,
 ``g RIGHT JOIN s``); an outer join that keeps the rows of ``g`` is refused (its padded rows all have a NULL
@@ -38,7 +38,7 @@ from sqlglot import exp
 
 from .aggregate_membership import _table_key, _unwrap
 from .ast_utils import conjuncts, extended_grouping, plain_distinct, select_sources
-from .own_group_joins import _grouped, _plain_table
+from .own_group_aggregates import _grouped, _plain_table
 
 
 def keyed_own_group_rows(

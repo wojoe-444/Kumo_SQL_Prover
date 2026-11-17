@@ -53,6 +53,56 @@ def _check(report, floor):
     assert all(o.conditions for o in conditional)
 
 
+# A made-up pair in the corpus's shape (names only, no types): one side compares the column with a date, the other with the
+# string. For a column that holds text MySQL reads the two differently, so the prover declines unless the column is declared
+# the way the re-check fills it.
+_DATED = (
+    "SELECT s.product_id FROM sales AS s GROUP BY s.product_id HAVING MIN(s.sale_date) >= '2019-01-01' AND MAX(s.sale_date) <= '2019-03-31'",
+    "SELECT s.product_id FROM sales AS s GROUP BY s.product_id "
+    "HAVING MIN(s.sale_date) >= CAST('2019-01-01' AS DATE) AND MAX(s.sale_date) <= CAST('2019-03-31' AS DATE)",
+)
+
+
+def test_columns_used_as_dates_are_declared_to_the_prover(monkeypatch):
+    pair = bench.singh.Pair(0, *_DATED, {"sales": ["product_id", "sale_date"]}, "equivalent")
+    assert bench._prove_options(pair)["types"] == {"sales": {"sale_date": "DATE"}}
+    assert bench.decide_singh(pair).kind == "equivalent"
+    monkeypatch.setattr(bench, "_date_types", lambda pair: {})
+    assert "types" not in bench._prove_options(pair)
+    assert bench.decide_singh(pair).kind == "unknown"
+
+
+def test_a_pair_with_no_date_column_declares_nothing():
+    pair = bench.singh.Pair(0, "SELECT t.a FROM t WHERE t.b = 'x'", "SELECT t.a FROM t WHERE 'x' = t.b", {"t": ["a", "b"]}, "equivalent")
+    assert "types" not in bench._prove_options(pair)
+
+
+@pytest.mark.parametrize("rewritten_proves", [True, False])
+def test_a_proof_with_no_condition_is_preferred(monkeypatch, rewritten_proves):
+    """The pair as written is proved under conditions; its rewritten form is then tried for a proof that needs none."""
+
+    from kumo_sql_prover import algebraic_equivalence, canonical_rules
+    from kumo_sql_prover.smt_equivalence import SmtEquivalenceResult, SmtStatus
+
+    calls = []
+
+    def prove(left, right, conditional=False, **options):
+        calls.append((left, conditional))
+        if left == "written":
+            return SmtEquivalenceResult(SmtStatus.PROVEN_CONDITIONALLY if conditional else SmtStatus.NOT_PROVEN, "as written")
+        return SmtEquivalenceResult(SmtStatus.PROVEN_EQUIVALENT if rewritten_proves else SmtStatus.NOT_PROVEN, "rewritten")
+
+    monkeypatch.setattr(algebraic_equivalence, "prove_equivalent_algebraic", prove)
+    monkeypatch.setattr(canonical_rules, "canonicalize", lambda sql, dialect, tables: "rewritten " + sql)
+    pair = bench.singh.Pair(0, "written", "written too", {"t": ["a"]}, "equivalent")
+    result, texts = bench._singh_prove(pair)
+    assert calls == [("written", True), ("rewritten written", False)]
+    if rewritten_proves:
+        assert result.status is SmtStatus.PROVEN_EQUIVALENT and texts == ("rewritten written", "rewritten written too")
+    else:
+        assert result.status is SmtStatus.PROVEN_CONDITIONALLY and texts == ("written", "written too")
+
+
 def test_singh_sample():
     pairs = random.Random(2024).sample(_singh_pairs(), 120)
     _check(bench.run_singh(pairs), FLOORS["singh-sample"])

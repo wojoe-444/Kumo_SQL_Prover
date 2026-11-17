@@ -454,10 +454,12 @@ def _proposed_database(pair: Pair, result) -> list[dict]:
 
 
 def _text_types(pair: Pair) -> dict[str, dict[str, str]]:
-    """The columns the queries compare with a string, declared as text (the pairs carry no types).
+    """The columns the queries use as text or as dates, declared as such (the pairs carry no types).
 
     This is the same reading the witness search uses (``column_kinds``), so the prover and the search agree on which columns
-    hold text. Without it every such column is untyped, and the prover declines a proof that two different strings differ.
+    hold text and which hold dates. Without it every such column is untyped: the prover declines a proof that two different
+    strings differ, and asks whether two date strings are one number (``'2019-01-01'`` and ``'2019-03-31'`` are both 2019
+    to MySQL when the column holds numbers).
     """
 
     try:
@@ -466,8 +468,8 @@ def _text_types(pair: Pair) -> dict[str, dict[str, str]]:
         return {}
     types: dict[str, dict[str, str]] = {}
     for (table, column), kind in column_kinds(trees, pair.tables).items():
-        if kind == "VARCHAR":
-            types.setdefault(table, {})[column] = "STRING"
+        if kind in ("VARCHAR", "DATE"):
+            types.setdefault(table, {})[column] = "STRING" if kind == "VARCHAR" else "DATE"
     return types
 
 

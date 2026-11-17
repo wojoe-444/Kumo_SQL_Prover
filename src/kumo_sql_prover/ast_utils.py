@@ -689,6 +689,29 @@ def _chain(node: exp.Expression, kind: type, distinct) -> list[exp.Expression]:
 _NEIGHBOURS = ("spark", "", "duckdb", "postgres")
 
 
+def _group_keys_apart(tree: exp.Expression) -> exp.Expression | None:
+    """A copy of ``tree`` with each ``GROUP BY`` key that repeats an aliased output of an ordered select in
+    parentheses, or None when there is no such key.
+
+    BigQuery's writer prints such a key as the alias (``GROUP BY CAST(x / 50 AS INT64)`` as ``GROUP BY segment``),
+    which is another tree and, where the source has a column of that name, another query. Parentheses stop the
+    replacement and change nothing else; :func:`_shape` does not count them.
+    """
+
+    copy = tree.copy()
+    found = False
+    for select in copy.find_all(exp.Select):
+        group = select.args.get("group")
+        if group is None or not select.args.get("order"):
+            continue
+        aliased = [item.this for item in select.expressions if isinstance(item, exp.Alias)]
+        for key in list(group.expressions):
+            if not isinstance(key, (exp.Paren, exp.Literal)) and any(key == value for value in aliased):
+                key.replace(exp.Paren(this=key.copy()))
+                found = True
+    return copy if found else None
+
+
 def faithful_sql(tree: exp.Expression, dialect: str) -> str:
     """Print ``tree`` as ``dialect`` SQL that parses back to the same query, or raise :class:`LossySql`.
 
@@ -705,9 +728,19 @@ def faithful_sql(tree: exp.Expression, dialect: str) -> str:
             with quiet_parser():
                 text = tree.sql(dialect=writer, identify=identify)
                 back = canonical_negation(sqlglot.parse_one(text, read=dialect))
-        except sqlglot.errors.SqlglotError:
+        except (sqlglot.errors.SqlglotError, TypeError):  # the compiled parser raises TypeError on a string where a name belongs
             continue
         if _shape(back) == expected:
+            return text
+    apart = _group_keys_apart(tree)
+    if apart is not None:
+        try:
+            with quiet_parser():
+                text = apart.sql(dialect=dialect)
+                back = canonical_negation(sqlglot.parse_one(text, read=dialect))
+        except (sqlglot.errors.SqlglotError, TypeError):
+            back = None
+        if back is not None and _shape(back) == expected:
             return text
     raise LossySql(f"the query cannot be printed faithfully in {dialect or 'the default dialect'}")
 

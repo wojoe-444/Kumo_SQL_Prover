@@ -189,3 +189,86 @@ def test_a_bare_name_of_an_untyped_column_is_not_typed_by_a_table_read_in_anothe
     left = "SELECT k FROM t WHERE s = 'x' AND s = 'y' AND EXISTS (SELECT 1 FROM u WHERE u.k = t.k)"
     right = "SELECT k FROM t WHERE FALSE"
     assert not prover(left, right, dialect="mysql", types=types, schema=schema).proven
+
+
+# two names for one table read one column: under a key the two can be one row, and MySQL returns the row s = 0, k = 1
+TWO_NAMES = "SELECT a.k FROM t AS a JOIN t AS b ON a.k = b.k WHERE a.s = 'x' AND b.s = 'y'"
+ONE_NAME = "SELECT a.k FROM t AS a WHERE a.s = 'x' AND a.s = 'y'"
+
+
+def _keyed():
+    from kumo_sql_prover.smt_equivalence import TableConstraints
+
+    return {"t": TableConstraints(not_null=frozenset({"k"}), keys=(("k",),))}
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+def test_a_column_read_through_two_names_of_its_table_is_one_column(prover):
+    options = dict(dialect="mysql", schema={"t": ["k", "s"]}, constraints=_keyed())
+    assert not prover(TWO_NAMES, NONE, **options).proven
+    assert not prover(TWO_NAMES, NONE, types={"t": {"s": "INT", "k": "INT"}}, **options).proven
+    # the proof holds when the column is declared text, and on a dialect that refuses the comparison for an integer column
+    assert prove_equivalent_algebraic(TWO_NAMES, NONE, types={"t": {"s": "VARCHAR", "k": "INT"}}, **options).proven
+    assert prove_equivalent_algebraic(TWO_NAMES, NONE, **{**options, "dialect": "postgres"}).proven
+
+
+def test_the_reading_replaces_the_strings_under_every_name_of_the_table():
+    found = numeric_column_reading.reading(TWO_NAMES, ONE_NAME, "mysql")
+    assert found.pair[0] == "SELECT a.k FROM t AS a JOIN t AS b ON a.k = b.k WHERE a.s = 0 AND b.s = 0"
+    assert found.pair[1] == "SELECT a.k FROM t AS a WHERE a.s = 0 AND a.s = 0"
+    # a subquery that reads the table again under another name
+    nested = "SELECT a.k FROM t AS a WHERE a.s = 'x' AND NOT EXISTS (SELECT 1 FROM t AS b WHERE b.k = a.k AND b.s = 'y')"
+    assert "'" not in numeric_column_reading.reading(nested, NONE, "mysql").pair[0]
+    # two tables are two columns, as before
+    assert numeric_column_reading.reading("SELECT a.k FROM t AS a JOIN u AS b ON a.k = b.k WHERE a.s = 'x' AND b.s = 'y'", NONE, "mysql") is None
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+def test_a_proof_that_holds_for_both_readings_of_two_names_stays(prover):
+    left = "SELECT a.k FROM t AS a JOIN t AS b ON a.k = b.k WHERE a.s = 'x' AND b.s = 'y'"
+    right = "SELECT b.k FROM t AS b JOIN t AS a ON b.k = a.k WHERE b.s = 'y' AND a.s = 'x'"
+    assert prover(left, right, dialect="mysql", schema={"t": ["k", "s"]}).status is SmtStatus.PROVEN_EQUIVALENT
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+def test_an_enum_column_is_read_as_its_string(prover):
+    # VeriEQL declares ``ACTIVITY_TYPE`` as an ENUM of strings: two names of the table compared with two different strings
+    # are two different values, not the number 0 twice (the pairs of LeetCode 1661 prove under a key on the join columns)
+    options = dict(dialect="mysql", schema={"t": ["k", "s"]}, constraints=_keyed())
+    assert prover(TWO_NAMES, NONE, types={"t": {"s": "ENUM", "k": "INT"}}, **options).status is SmtStatus.PROVEN_EQUIVALENT
+    assert not prover(TWO_NAMES, NONE, types={"t": {"s": "INT", "k": "INT"}}, **options).proven
+
+
+# MIN, MAX and the like hand the column's value on with its type: MySQL 8.0 keeps a group whose integer s is 0 on one side only
+CARRIED = [
+    ("SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x' AND MIN(t.s) <> 'y'", "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x'"),
+    ("SELECT t.k FROM t GROUP BY t.k HAVING MAX(t.s) IN ('x', 'y') AND MAX(t.s) <> 'y'", "SELECT t.k FROM t GROUP BY t.k HAVING MAX(t.s) = 'x'"),
+    ("SELECT MIN(t.s) AS m FROM t HAVING MIN(t.s) = 'x' AND MIN(t.s) <> 'y'", "SELECT MIN(t.s) AS m FROM t HAVING MIN(t.s) = 'x'"),
+    ("SELECT t.k FROM t WHERE NULLIF(t.s, '1q') = 'x' AND NULLIF(t.s, '1q') <> 'y'", "SELECT t.k FROM t WHERE NULLIF(t.s, '1q') = 'x'"),
+]
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+@pytest.mark.parametrize("left,right", CARRIED)
+def test_a_string_compared_with_the_minimum_of_a_column_is_compared_with_the_column(prover, left, right):
+    assert not prover(left, right, dialect="mysql", schema={"t": ["k", "s"]}).proven
+    assert prover(left, right, dialect="mysql", schema={"t": ["k", "s"]}, types={"t": {"s": "VARCHAR", "k": "INT"}}).status is SmtStatus.PROVEN_EQUIVALENT
+    assert prover(left, right, dialect="postgres", schema={"t": ["k", "s"]}).status is SmtStatus.PROVEN_EQUIVALENT
+
+
+@pytest.mark.parametrize("prover", PROVERS)
+def test_proofs_about_a_minimum_that_hold_for_both_readings_stay(prover):
+    options = dict(dialect="mysql", schema={"t": ["k", "s"]})
+    same = "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x' AND MAX(t.s) = 'y'"
+    assert prover(same, "SELECT t.k FROM t GROUP BY t.k HAVING MAX(t.s) = 'y' AND MIN(t.s) = 'x'", **options).status is SmtStatus.PROVEN_EQUIVALENT
+    # '-1' is -1 and 'x' is 0 for an integer column: two different numbers, in the order of the two strings
+    apart = "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x' AND MIN(t.s) <> '-1'"
+    assert prover(apart, "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x'", **options).status is SmtStatus.PROVEN_EQUIVALENT
+    # '1' sorts below 'x' and 1 is above 0: a minimum is an ordering, so the proof has to hold for the numbers too
+    crossed = "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x' AND MIN(t.s) <> '1'"
+    assert not prover(crossed, "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x'", **options).proven
+
+
+def test_the_reading_replaces_a_string_compared_with_a_minimum():
+    found = numeric_column_reading.reading(*CARRIED[0], "mysql")
+    assert found.pair == ("SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 0 AND MIN(t.s) <> 0", "SELECT t.k FROM t GROUP BY t.k HAVING MIN(t.s) = 'x'")

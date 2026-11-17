@@ -143,8 +143,27 @@ def legalize(data: dict[str, list[list]], conditions: list[Condition], pair: sin
 # --- Singh & Bedathur ---------------------------------------------------------------------------------------
 
 
+def _date_types(pair: singh.Pair) -> dict[str, dict[str, str]]:
+    """The columns the queries use as dates, declared ``DATE`` (the pairs carry no types).
+
+    The re-check fills exactly these columns with dates (``column_kinds``), so the prover and the re-check read them alike.
+    Undeclared, such a column may hold text, and then ``d >= CAST('2019-01-01' AS DATE)`` and ``d >= '2019-01-01'`` are
+    different comparisons to MySQL (the first converts the text to a date): the prover declines the pair.
+    """
+
+    return {
+        table: dates
+        for table, columns in singh._text_types(pair).items()
+        if (dates := {column: kind for column, kind in columns.items() if kind == "DATE"})
+    }
+
+
 def _prove_options(pair: singh.Pair) -> dict:
-    return dict(schema=pair.tables, compare_names=False, dialect="mysql", timeout_ms=4000, conditional_seconds=SEARCH_SECONDS)
+    options = dict(schema=pair.tables, compare_names=False, dialect="mysql", timeout_ms=4000, conditional_seconds=SEARCH_SECONDS)
+    dates = _date_types(pair)
+    if dates:
+        options["types"] = dates
+    return options
 
 
 def _singh_prove(pair: singh.Pair):
@@ -153,7 +172,7 @@ def _singh_prove(pair: singh.Pair):
 
     options = _prove_options(pair)
     first = prove_equivalent_algebraic(pair.left, pair.right, conditional=True, **options)
-    if first.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
+    if first.status is SmtStatus.PROVEN_EQUIVALENT:
         return first, (pair.left, pair.right)
     try:
         left, right = canonicalize(pair.left, "mysql", pair.tables), canonicalize(pair.right, "mysql", pair.tables)
@@ -161,6 +180,11 @@ def _singh_prove(pair: singh.Pair):
         return first, (pair.left, pair.right)
     if (left, right) == (pair.left, pair.right):
         return first, (pair.left, pair.right)
+    if first.status is SmtStatus.PROVEN_CONDITIONALLY:
+        # A proof that needs no condition is the stronger answer: the rewritten pair is tried for one before the
+        # conditional proof of the pair as written is taken.
+        plain = prove_equivalent_algebraic(left, right, **options)
+        return (plain, (left, right)) if plain.status is SmtStatus.PROVEN_EQUIVALENT else (first, (pair.left, pair.right))
     second = prove_equivalent_algebraic(left, right, conditional=True, **options)
     return (second, (left, right)) if second.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY) else (first, (pair.left, pair.right))
 
