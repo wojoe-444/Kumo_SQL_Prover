@@ -49,12 +49,18 @@ equalities that leave a group key of ``d`` untied (two rows of ``d`` could then 
 with an output of ``d`` that is not a group key (sound as well, but a join back to the group's own ``MIN`` or
 ``MAX`` is the form ``extreme_joins`` and ``aggregate_membership`` compare such queries in); a derived table that
 is not grouped (other rules read ``SELECT DISTINCT`` ones).
+
+**Narrow second attempt.** The rule fires on one query of a pair and not on the other whenever only one of them
+spells the join, and that moved one held-out DSB pair of QUITE out of a proof the prover found without it. It
+therefore records that it fired (``shape_fallback.note_fired``) and a pair left unproven is tried again with this
+rule alone off (``shape_fallback.without("unique_join_membership")``).
 """
 
 from __future__ import annotations
 
 from sqlglot import exp
 
+from . import shape_fallback
 from .ast_utils import FROM_KEY, conjuncts
 from .decorrelation_rules import _and_all, _closed, _sources
 from .grouped_source_dedup import unique_key_outputs
@@ -64,6 +70,17 @@ _CLAUSES = frozenset({"expressions", "from_", "from", "joins", "where", "group",
 
 
 def _rewrite(select: exp.Select, schema: dict | None) -> bool:
+    """Whether the join was rewritten; the narrow second attempt (``shape_fallback.without``) can switch the rule off."""
+
+    if not shape_fallback.rule_enabled("unique_join_membership"):
+        return False
+    if _rewrite_join(select, schema):
+        shape_fallback.note_fired("unique_join_membership")
+        return True
+    return False
+
+
+def _rewrite_join(select: exp.Select, schema: dict | None) -> bool:
     if any(value for key, value in select.args.items() if key not in _CLAUSES):
         return False
     sources = _sources(select)

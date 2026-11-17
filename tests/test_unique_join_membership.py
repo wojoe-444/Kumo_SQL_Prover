@@ -7,6 +7,7 @@ import sqlglot
 
 pytest.importorskip("z3")
 
+from kumo_sql_prover import shape_fallback
 from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 from kumo_sql_prover.unique_join_membership import read_unique_joins, unique_join_to_membership
 from kumo_sql_prover.smt_equivalence import TableConstraints
@@ -60,6 +61,16 @@ def test_a_join_on_every_key_becomes_a_membership_test():
     )
     # tied on an aggregate as well: the join back to the group's own MAX is left to the rules that read it
     assert rewritten("SELECT t.a, t.b FROM t JOIN (SELECT c AS k, MAX(d) AS m FROM t GROUP BY c) AS g ON t.c = g.k AND t.d = g.m") is None
+
+
+def test_the_rule_is_recorded_and_the_narrow_second_attempt_switches_it_off():
+    sql = f"SELECT t.a, t.b FROM t JOIN {G} ON t.c = g.c"
+    with shape_fallback.tracking() as fired:
+        assert rewritten(sql) is not None
+    assert fired == {"unique_join_membership"}
+    with shape_fallback.tracking() as fired, shape_fallback.without("unique_join_membership"):
+        assert rewritten(sql) is None
+    assert not fired
 
 
 def test_one_join_at_a_time_and_the_other_conditions_stay():
