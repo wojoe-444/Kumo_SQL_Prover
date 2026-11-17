@@ -20,7 +20,7 @@ Almost all of a run is DuckDB answering both queries on many tiny databases. The
 
 ## Latest scores
 
-On 2026-11-12 the whole LeetCode set (23,994 pairs) was rerun: 9,022 pairs are proved equivalent (4,787 before), none wrongly. Calcite-397 went from 337 to 342 proved. The gain comes from new rules for families of spellings of one LeetCode answer (matching with `COUNT(DISTINCT ..)`, values that occur twice, `NOT IN` against the table's own key) and from other rules merged since October. Every fifth pair was never read while writing them; it is proved about as often as the others (37.3% against 37.7%). Many unproved pairs agree on every generated database but differ on a NULL the databases never contain; they stay unknown. Details and the per-problem counts are in the [full reference](../../docs/evals/verieql.md).
+On 2026-11-12 the whole LeetCode set (23,994 pairs) was rerun: 9,022 pairs are proved equivalent (4,787 before), none wrongly. Calcite-397 went from 337 to 342 proved. The gain comes from new rules for families of spellings of one LeetCode answer (matching with `COUNT(DISTINCT ..)`, values that occur twice, `NOT IN` against the table's own key) and from other rules merged since October. Every fifth pair was never read while writing them; it is proved about as often as the others (37.3% against 37.7%). On 2026-11-16 a fix to how text is compared with dates was checked on the 883 pairs it reaches: none lost its proof and 12 more are proved; the totals here are still the whole run of 2026-11-12. Many unproved pairs agree on every generated database but differ on a NULL the databases never contain; they stay unknown. Details and the per-problem counts are in the [full reference](../../docs/evals/verieql.md).
 
 ## Constraints matter
 

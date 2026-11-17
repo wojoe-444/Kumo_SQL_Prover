@@ -7,8 +7,17 @@ strings that MySQL reads as the same number, a proof is accepted only if it also
 number MySQL reads them as: the proof then does not depend on the column being text, and holds for an integer column as well.
 A string that is not a small integer after that reading (``'1.5'``) cannot be replaced, so the pair is declined.
 
-Only the ``mysql`` dialect is checked. DuckDB, PostgreSQL and BigQuery refuse to compare an integer column with a string that
-is not a number, so no result is returned there to differ.
+The same holds for a string compared with a value built on such a column: one that hands the column on as it is
+(``MIN(n)``, ``COALESCE(n, m)``, a ``CASE`` or a scalar subquery that returns it) or one the provers have no type for
+(``YEAR(d)``, an unknown function). ``string_number_compare._Kinds.operand_keys`` names the classes a string is compared with.
+
+The reading is also asked for when the class is read by an ordering (``<``, ``BETWEEN``, ``MIN``, ``ORDER BY``) and two of
+its strings are ordered one way as text and the other way as numbers: ``n >= '9' AND n < '10'`` is empty for a text column
+and holds the integer 9. A class whose columns are all declared dates or timestamps is compared as dates and needs no reading.
+
+Only the ``mysql`` dialect is read this way. DuckDB and PostgreSQL convert the string to the column's type and refuse one that
+is not a number; ``string_number_compare._Kinds.literal_problem`` declines the strings that are numbers there. BigQuery
+refuses the comparison.
 """
 
 from __future__ import annotations
@@ -49,11 +58,11 @@ def _rewrite(sql: str, types, schema=None) -> tuple[str, str | None] | None:
     if not ambiguous:
         return None
     for left, right in string_number_compare._pairs(tree):
-        for column, other in ((left, right), (right, left)):
-            column, other = string_number_compare._unwrap(column), string_number_compare._unwrap(other)
-            if not (isinstance(column, exp.Column) and isinstance(other, exp.Literal) and other.is_string):
+        for operand, other in ((left, right), (right, left)):
+            other = string_number_compare._unwrap(other)
+            if not (isinstance(other, exp.Literal) and other.is_string):
                 continue
-            if kinds.find(kinds.key(column)) not in ambiguous:
+            if not any(kinds.find(key) in ambiguous for key in kinds.operand_keys(operand)):
                 continue
             value = string_number_compare.mysql_number(other.this)
             if value != int(value) or abs(value) >= _LIMIT:
