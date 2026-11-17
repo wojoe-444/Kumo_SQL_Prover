@@ -5557,7 +5557,14 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
                 return last
     if result.status is SmtStatus.NOT_PROVEN and fired and shape_fallback.enabled() and len(left_sql) + len(right_sql) <= shape_fallback.NARROW_MAX_CHARS:
         # The same for a pair too large for that attempt: only the rules that fired, one at a time, are switched off.
-        for name in sorted(fired):
+        if worker_rules.NAME in fired and worker_rules.enabled():
+            # The VeriEQL worker group fired: the whole prover as it was without it (every attempt and every narrow rule), so that
+            # a proof main finds by switching one of its own rules off, which the group can hide, is never lost.
+            with shape_fallback.without(worker_rules.NAME):
+                before_group = _prove_algebraic_levels(original[0], original[1], False, **kwargs)
+            if before_group.status is not SmtStatus.NOT_PROVEN:
+                return before_group
+        for name in sorted(fired - {worker_rules.NAME}):
             with shape_fallback.without(name):
                 narrow = attempt()
             if narrow.status is not SmtStatus.NOT_PROVEN:

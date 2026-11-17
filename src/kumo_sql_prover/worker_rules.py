@@ -9,10 +9,11 @@ and one held-out DSB pair of QUITE, each found by switching one rule off at a ti
 
 So every entry point of the batch goes through ``prepass`` (a rule over the whole tree) or ``step`` (a rule of one
 select) below. Each records that the group fired (``shape_fallback.note_fired``), and a pair that is left without a
-verdict and in which the group fired is tried again with the whole group off (``shape_fallback.without``), which is
-the prover as it was before the batch. A proof or a refutation from that attempt stands. This is the same
-arrangement as the other narrow rules in ``shape_fallback``; the group is one name, so a pair costs one extra
-attempt, not one per rule, and the batch can never take a proof main had.
+verdict and in which the group fired is tried again with the whole group off (``shape_fallback.without``): the whole
+prover, every attempt and every narrow rule of the others, runs again as it was before the batch (the recursive call
+in ``_prove_algebraic_levels``). A proof or a refutation from that run stands. The group is one name, so a pair costs
+one extra run, not one per rule, and the batch can never take a proof main had, also one that main finds only with
+one of its own narrow rules off (the group can hide that one too: ``test_a_pair_main_proves_without_the_rule_is_still_proved``).
 
 What the group does not cover: a proof that needs one rule of the batch and is hidden by another rule of it is
 found on the first attempt or not at all.
