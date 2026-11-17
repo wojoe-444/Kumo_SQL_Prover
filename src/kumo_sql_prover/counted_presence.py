@@ -30,7 +30,7 @@ The rule fires on a select that
 * has a ``HAVING`` that is a conjunction of comparisons of such a count with 0 or 1: ``> 0``, ``>= 1``, ``<> 0``
   ("has a row"), ``= 0``, ``< 1``, ``<= 0`` ("has none"). The count is ``SUM(CASE WHEN c THEN n ELSE 0 END)`` with
   a positive whole number ``n``, ``COUNT(CASE WHEN c THEN x END)`` with a literal ``x``, the same written with
-  ``IF``, or ``COUNTIF(c)``. ``MAX(CASE WHEN c THEN 1 ELSE 0 END)`` compared with ``= 1`` or ``= 0`` reads the same way;
+  ``IF`` or as ``CASE v WHEN w THEN ..``, or ``COUNTIF(c)``. ``MAX(CASE WHEN c THEN 1 ELSE 0 END)`` compared with ``= 1`` or ``= 0`` reads the same way;
 * reads base tables only, each under its own name, joined by inner, cross or left joins;
 * has no window, subquery, other aggregate, ``ORDER BY``, ``LIMIT`` or volatile call.
 
@@ -63,12 +63,15 @@ def _whole(node: exp.Expression | None) -> int | None:
 
 
 def _branch(node: exp.Expression | None) -> tuple[exp.Expression, exp.Expression, exp.Expression | None] | None:
-    """``(condition, value when true, value otherwise)`` of a one-branch ``CASE`` or an ``IF``."""
+    """``(condition, value when true, value otherwise)`` of a one-branch ``CASE`` (searched or simple) or an ``IF``."""
 
     node = _unparen(node)
-    if isinstance(node, exp.Case) and node.args.get("this") is None and len(node.args.get("ifs") or []) == 1:
+    if isinstance(node, exp.Case) and len(node.args.get("ifs") or []) == 1:
         only = node.args["ifs"][0]
-        return only.this, only.args.get("true"), node.args.get("default")
+        operand = node.args.get("this")
+        # ``CASE x WHEN v THEN ..`` compares with ``=``
+        condition = only.this if operand is None else exp.EQ(this=operand.copy(), expression=only.this.copy())
+        return condition, only.args.get("true"), node.args.get("default")
     if isinstance(node, exp.If) and node.args.get("true") is not None:
         return node.this, node.args["true"], node.args.get("false")
     return None
@@ -118,6 +121,39 @@ def _presence(condition: exp.Expression) -> tuple[exp.Expression, bool] | None:
             continue
         wanted = (_COUNT if found[1] == "count" else _FLAG).get((kind, value))
         return None if wanted is None else (found[0], wanted)
+    return None
+
+
+# ``MIN(x) >= a``: no row of the group has ``x < a`` (and some row has an ``x``). op -> (aggregate, op inside, op outside)
+_BOUNDS = {
+    (exp.Min, exp.GTE): (exp.GTE, exp.LT),
+    (exp.Min, exp.GT): (exp.GT, exp.LTE),
+    (exp.Max, exp.LTE): (exp.LTE, exp.GT),
+    (exp.Max, exp.LT): (exp.LT, exp.GTE),
+}
+# ``MIN(x) <= a``: some row of the group has ``x <= a``
+_REACHED = {(exp.Min, exp.LTE): exp.LTE, (exp.Min, exp.LT): exp.LT, (exp.Max, exp.GTE): exp.GTE, (exp.Max, exp.GT): exp.GT}
+
+
+def _bound(condition: exp.Expression) -> tuple[exp.Column, exp.Literal, type, type | None] | None:
+    """``(column, literal, comparison a row inside meets, comparison a row outside meets or None)`` for ``MIN(column) >= literal``
+    and the like. With no "outside" the condition only says that some row meets the comparison."""
+
+    condition = _unparen(condition)
+    if type(condition) not in _FLIPPED:
+        return None
+    for kind, aggregate, literal in ((type(condition), condition.this, condition.expression), (_FLIPPED[type(condition)], condition.expression, condition.this)):
+        aggregate, literal = _unparen(aggregate), _unparen(literal)
+        if not isinstance(aggregate, (exp.Min, exp.Max)) or not isinstance(literal, exp.Literal) or aggregate.args.get("distinct") or isinstance(aggregate.this, exp.Distinct):
+            continue
+        column = _unparen(aggregate.this)
+        if not isinstance(column, exp.Column):
+            return None
+        if (type(aggregate), kind) in _BOUNDS:
+            return column, literal, *_BOUNDS[(type(aggregate), kind)]
+        if (type(aggregate), kind) in _REACHED:
+            return column, literal, _REACHED[(type(aggregate), kind)], None
+        return None
     return None
 
 
@@ -186,6 +222,23 @@ class _Facts:
         holders = [alias for alias, columns in given.items() if name in columns]
         return (holders[0], name) if len(holders) == 1 else None
 
+    def ordered_like(self, source: exp.Expression, name: str, literal: exp.Literal) -> bool:
+        """Does comparing column ``name`` with ``literal`` follow the order ``MIN`` and ``MAX`` of the column use?
+
+        MySQL compares a text column with a number as numbers, while ``MIN`` of the column is its first string: of
+        ``'10'`` and ``'4'`` the minimum is ``'10'``, which is at least 5, and the row ``'4'`` is not. A string literal is
+        compared in the column's own order whatever the column is. A number is, too, unless the column is declared
+        something other than a number; a column of no declared type that is compared with a number is read as a
+        number, as everywhere in the prover (``string_number_compare``).
+        """
+
+        if literal.is_string:
+            return True
+        if not isinstance(source, exp.Table):
+            return False
+        declared = self.kinds.get(source.name.lower(), {}).get(name)
+        return declared is None or smt_values.type_class(declared) in (smt_values.INT64, smt_values.NUMERIC, smt_values.BIGNUMERIC)
+
     def identifies(self, source: exp.Expression, name: str, depth: int = 0) -> bool:
         """Is column ``name`` of ``source`` never NULL and not floating-point, so that ``=`` on it says "the same value"?"""
 
@@ -242,11 +295,32 @@ def read_counted_presence(select: exp.Select, not_null: dict[str, frozenset[str]
     if any(isinstance(item, exp.Alias) and item.alias.lower() in sources for item in select.expressions):
         return None
     wanted: list[tuple[exp.Expression, bool]] = []
+    inside: dict[tuple[str, str], int] = {}  # column -> the place in ``wanted`` of "a row has this column inside its bounds"
     for condition in _conjuncts(having.this):
         found = _presence(condition)
-        if found is None or found[0].find(exp.AggFunc) is not None:
+        if found is not None:
+            if found[0].find(exp.AggFunc) is not None:
+                return None
+            wanted.append((_unparen(found[0]), found[1]))
+            continue
+        bound = _bound(condition)
+        if bound is None:
             return None
-        wanted.append((_unparen(found[0]), found[1]))
+        column, literal, meets, misses = bound
+        key = facts.owner(column, sources)
+        if key is None or not facts.ordered_like(sources[key[0]], key[1], literal):
+            return None
+        row = exp.column(key[1], table=sources[key[0]].alias_or_name)
+        here = meets(this=row.copy(), expression=literal.copy())
+        if misses is None:
+            wanted.append((here, True))
+            continue
+        if key in inside:  # both bounds are asked of one row: any row that has the column and is not outside meets both
+            wanted[inside[key]] = (exp.and_(wanted[inside[key]][0], here, copy=False), True)
+        else:
+            inside[key] = len(wanted)
+            wanted.append((here, True))
+        wanted.append((misses(this=row.copy(), expression=literal.copy()), False))
     for clause in own:
         if clause is not None and clause is not having and clause.find(exp.AggFunc) is not None:
             return None
@@ -259,6 +333,11 @@ def read_counted_presence(select: exp.Select, not_null: dict[str, frozenset[str]
     result.set("distinct", exp.Distinct())
     for item, key in zip(result.expressions, outputs):  # the row outside is named in full, so a probe can refer to it
         item.unalias().replace(exp.column(key[1], table=sources[key[0]].alias_or_name))
+    lacking = [condition for condition, has in wanted if not has]
+    if len(lacking) > 1:  # no row meets any of them: one probe, which is how NOT IN (.. WHERE a OR b) reads
+        at = next(i for i, (_, has) in enumerate(wanted) if not has)
+        wanted = [pair for pair in wanted if pair[1]]
+        wanted.insert(min(at, len(wanted)), (exp.or_(*[c.copy() for c in lacking], copy=False), False))
     first = next((i for i, (_, has) in enumerate(wanted) if has), None)
     conditions: list[exp.Expression] = []
     if first is not None:

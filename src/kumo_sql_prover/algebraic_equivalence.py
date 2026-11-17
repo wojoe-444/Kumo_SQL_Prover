@@ -50,8 +50,10 @@ from .eager_sum_readback import read_back_eager_sums
 from .fk_rules import drop_fk_join
 from .exists_constant_rules import exists_constant_rules
 from .decorrelation_rules import decorrelation_step
+from .anti_join_reading import read_unmatched_left_join
 from .constraint_normalization import keyed_join_to_exists, normalize_key_counts
 from .counted_presence import read_counted_presence
+from .distinct_source_filters import lift_source_distinct
 from .grouping_expansion import collapse_grouping_expansion
 from .grouped_output_names import group_by_named_outputs
 from .grouping_sets import expand_grouping_sets, grouping_sets_to_union
@@ -92,7 +94,10 @@ from .keyed_rules import drop_keyed_distinct, exists_over_aggregate, remove_keye
 from .keyed_set_join import lift_keyed_set_join
 from .aggregate_rules import rewrite_aggregates
 from .null_facts import null_contradiction
+from .keyed_semijoin import distinct_key_join_to_exists
+from .nested_correlation import flatten_nested_correlation
 from .null_rejecting_joins import left_join_to_inner
+from .presence_given_absence import drop_implied_presence_filters
 from .outer_on_rejection import strengthen_under_outer_on
 from .join_rewrites import join_rewrites
 from .quantified_rules import rewrite_quantified
@@ -141,6 +146,7 @@ from .group_total_windows import read_group_totals
 from .closed_scalar_outputs import inline_closed_outputs
 from .guarded_outer_counts import guard_outer_counts
 from .tuple_membership import expand_row_membership
+from .row_equality import expand_row_equality
 from .closed_scalar_filters import fold_scalar_filter, lift_scalar_arithmetic
 from .exclusive_union_filters import merge_exclusive_unions
 from .own_group_filters import filter_own_groups
@@ -154,6 +160,10 @@ from .tailed_regroups import regroup_under_tail
 from .union_join_grouping import group_over_union_join_to_distinct
 from .own_group_joins import inner_join_own_groups
 from .duplicate_self_joins import regroup_duplicate_self_join
+from .differing_self_joins import regroup_differing_self_join
+from .own_group_membership import read_own_group_membership
+from .own_key_membership import read_own_key_membership
+from .own_value_lists import read_own_value_list
 from .one_row_tails import drop_one_row_tail
 from .string_spelling_rules import bigquery_string_column, string_spelling_rules
 from .extremum_comparisons import compare_with_extremum_as_exists
@@ -5191,7 +5201,16 @@ def normalize(
         lambda sel: _narrow("union_join_grouping", group_over_union_join_to_distinct, sel),
         lambda sel: _narrow("own_group_joins", lambda s: inner_join_own_groups(s, not_null, types_map), sel),
         lambda sel: _narrow("duplicate_self_joins", lambda s: regroup_duplicate_self_join(s, keys, not_null, types_map), sel),
+        lambda sel: _narrow("differing_self_joins", lambda s: regroup_differing_self_join(s, types_map), sel),
+        lambda sel: _narrow("own_value_lists", lambda s: read_own_value_list(s, schema), sel),
+        lambda sel: _narrow("own_group_membership", lambda s: read_own_group_membership(s, schema, keys, not_null, types_map), sel),
+        lambda sel: _narrow("own_key_membership", lambda s: read_own_key_membership(s, schema, keys, not_null, types_map), sel),
         lambda sel: read_counted_presence(sel, not_null, types_map, schema),
+        lambda sel: _narrow("anti_join_reading", read_unmatched_left_join, sel),
+        lambda sel: _narrow("distinct_source_filters", lift_source_distinct, sel),
+        lambda sel: _narrow("keyed_semijoin", lambda s: distinct_key_join_to_exists(s, keys, not_null, types_map, schema), sel),
+        lambda sel: _narrow("nested_correlation", lambda s: flatten_nested_correlation(s, types_map), sel),
+        lambda sel: _narrow("presence_given_absence", lambda s: drop_implied_presence_filters(s, not_null, schema), sel),
         merge_preserved_join_source,
         lambda sel: prune_windowed_outputs(sel, schema),
         count_subquery_as_join,
@@ -5216,6 +5235,7 @@ def normalize(
         lambda sel: close_strict_bounds(sel, types_map, dialect),
         unnest_cased_sums,
         lambda sel: expand_row_membership(sel, dialect),
+        lambda sel: expand_row_equality(sel, dialect),
         rewrite_aggregate_presence,  # (SELECT MIN(TRUE) FROM ..) IS NOT NULL asks whether a row exists
         lambda sel: rewrite_join_distinct_select(sel, schema),  # a join under COUNT(DISTINCT) that only asks for a match is an IN
         lambda sel: rewrite_keyed_group_filter(sel, schema, keys),  # a keyed table joined to a grouped table under HAVING is one join with the grouped subquery

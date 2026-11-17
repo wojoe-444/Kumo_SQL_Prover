@@ -61,6 +61,45 @@ def test_other_selects_are_left_alone(sql, keys, not_null):
     assert rewritten(sql, keys, not_null) is None
 
 
+CONTRADICTIONS = [
+    JOINED.replace("a.id <> b.id", "a.id < b.id AND a.id > b.id"),
+    JOINED.replace("a.id <> b.id", "a.id < b.id AND b.id < a.id"),
+    JOINED.replace("a.id <> b.id", "a.id > b.id") + " WHERE b.id > a.id",
+    JOINED.replace("a.id <> b.id", "a.id <> b.id AND a.id < b.id AND a.id > b.id"),
+]
+
+
+@pytest.mark.parametrize("sql", CONTRADICTIONS)
+def test_a_key_both_smaller_and_larger_is_left_alone(sql):
+    """``a.id < b.id AND a.id > b.id`` is never TRUE: the select returns nothing, whatever the groups hold."""
+
+    assert rewritten(sql) is None
+    duckdb = pytest.importorskip("duckdb")
+    con = duckdb.connect()
+    con.execute("CREATE TABLE person (id INT, email VARCHAR, city VARCHAR)")
+    con.execute("INSERT INTO person VALUES (1, 'a', 'x'), (2, 'a', 'x')")
+    assert con.execute(sql).fetchall() == []
+    assert con.execute(GROUPED).fetchall() == [("a",)]
+
+
+def test_one_order_written_twice_is_still_read():
+    assert rewritten(JOINED.replace("a.id <> b.id", "a.id < b.id AND b.id > a.id AND a.id <> b.id")) == GROUPED
+
+
+@pytest.mark.parametrize("sql", CONTRADICTIONS)
+def test_the_prover_does_not_take_a_contradiction_for_a_duplicate_search(sql):
+    pytest.importorskip("z3")
+    from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
+    from kumo_sql_prover.smt_equivalence import TableConstraints
+
+    constraints = {"person": TableConstraints(not_null=frozenset({"id"}), keys=(("id",),))}
+    schema = {"person": ["id", "email", "city"]}
+    wrong = prove_equivalent_algebraic(sql, GROUPED, schema=schema, constraints=constraints, compare_names=False, dialect="mysql")
+    assert not wrong.proven
+    right = prove_equivalent_algebraic(JOINED, GROUPED, schema=schema, constraints=constraints, compare_names=False, dialect="mysql")
+    assert right.proven
+
+
 def test_a_floating_point_key_is_left_alone():
     assert rewritten(JOINED, types={"person": {"id": "DOUBLE"}}) is None
     assert rewritten(JOINED, types={"person": {"id": "INT"}}) == GROUPED
