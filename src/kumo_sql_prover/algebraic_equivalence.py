@@ -97,6 +97,7 @@ from .null_facts import null_contradiction
 from .keyed_semijoin import distinct_key_join_to_exists
 from .nested_correlation import flatten_nested_correlation
 from .null_rejecting_joins import left_join_to_inner
+from .presence_given_absence import drop_implied_presence_filters
 from .outer_on_rejection import strengthen_under_outer_on
 from .join_rewrites import join_rewrites
 from .quantified_rules import rewrite_quantified
@@ -5198,8 +5199,9 @@ def normalize(
         lambda sel: read_counted_presence(sel, not_null, types_map, schema),
         lambda sel: _narrow("anti_join_reading", read_unmatched_left_join, sel),
         lambda sel: _narrow("distinct_source_filters", lift_source_distinct, sel),
-        lambda sel: _narrow("keyed_semijoin", lambda s: distinct_key_join_to_exists(s, keys, not_null, types_map), sel),
+        lambda sel: _narrow("keyed_semijoin", lambda s: distinct_key_join_to_exists(s, keys, not_null, types_map, schema), sel),
         lambda sel: _narrow("nested_correlation", lambda s: flatten_nested_correlation(s, types_map), sel),
+        lambda sel: _narrow("presence_given_absence", lambda s: drop_implied_presence_filters(s, not_null, schema), sel),
         merge_preserved_join_source,
         lambda sel: prune_windowed_outputs(sel, schema),
         count_subquery_as_join,

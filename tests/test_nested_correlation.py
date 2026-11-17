@@ -107,6 +107,19 @@ def test_without_declared_types_an_equality_is_read_as_the_prover_reads_it_elsew
     assert not interchangeable(INTS, ("product", "id"), (None, "pid"))  # a derived source has no declared type
 
 
+def test_columns_the_types_say_nothing_about_are_read_as_with_no_types():
+    # A harness may know only which columns hold dates. The two id columns are then as undeclared as with no types.
+    dates = {"sales": {"day": "DATE"}}
+    assert interchangeable(dates, ("product", "id"), ("sales", "pid"))
+    assert flattened(NESTED, dates) is not None and flattened(LISTED, dates) is not None
+    assert flattened(NESTED, dates) == flattened(NESTED, None)
+    # A derived source may hand on a declared type, so it is not read as undeclared once anything is declared.
+    assert not interchangeable(dates, ("product", "id"), (None, "pid"))
+    assert not interchangeable(dates, (None, "id"), (None, "pid"))
+    # One declared and the other not stays refused.
+    assert not interchangeable({"sales": {"pid": "INT"}}, ("product", "id"), ("sales", "pid"))
+
+
 SPELLINGS = [
     NESTED,
     LISTED,

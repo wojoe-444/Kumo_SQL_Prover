@@ -57,7 +57,88 @@ def _column(node: exp.Expression) -> tuple[str, str] | None:
     return None
 
 
-def distinct_key_join_to_exists(select: exp.Select, keys: dict | None, not_null: dict | None, types: dict | None = None) -> exp.Expression | None:
+def rename_nested_sources(select: exp.Select, taken: set[str]) -> exp.Select:
+    """``select``, or a copy in which no nested query has a source named like one of ``taken`` (lower case).
+
+    ``.. FROM product JOIN sales ON .. WHERE product.id NOT IN (SELECT sales.pid FROM sales WHERE sales.day > 9)``
+    reads two different rows under the name ``sales``. Inside the nested query the name means its own source (the
+    nearest query that has a source of that name), so the nested source and every read of it get a fresh name and
+    nothing changes. Left as it is, to be declined by the rule that asked, when the nested query with the clashing
+    name is not over plain tables, or when a derived table stands anywhere below it (what a name inside a derived
+    table may read differs by dialect).
+    """
+
+    def sources(query: exp.Select) -> list[exp.Expression]:
+        from_ = query.args.get("from_") or query.args.get("from")
+        return ([from_.this] if from_ is not None else []) + [j.this for j in query.args.get("joins") or []]
+
+    def declares(query: exp.Select, name: str) -> bool:
+        return any((s.alias_or_name or "").lower() == name for s in sources(query))
+
+    clashing = [q for q in select.find_all(exp.Select) if q is not select and any((s.alias_or_name or "").lower() in taken for s in sources(q))]
+    if not clashing:
+        return select
+    result = select.copy()
+    used = {(s.alias_or_name or "").lower() for q in result.find_all(exp.Select) for s in sources(q)} | {t.name.lower() for t in result.find_all(exp.Table)}
+    for nested in list(result.find_all(exp.Select)):
+        if nested is result:
+            continue
+        for source in sources(nested):
+            name = (source.alias_or_name or "").lower()
+            if name not in taken:
+                continue
+            if not all(_plain_table(s) for s in sources(nested)) or nested.args.get("laterals") or any(isinstance(sub.parent, (exp.From, exp.Join)) for sub in nested.find_all(exp.Subquery)):
+                return select
+            fresh = next(f"kns{i}_{name}" for i in range(len(used) + 1) if f"kns{i}_{name}" not in used)
+            used.add(fresh)
+            for column in list(nested.find_all(exp.Column)):
+                if column.table.lower() != name:
+                    continue
+                owner = column.find_ancestor(exp.Select)
+                while owner is not None and owner is not nested and not declares(owner, name):
+                    owner = owner.find_ancestor(exp.Select)
+                if owner is nested:
+                    column.set("table", exp.to_identifier(fresh))
+            source.set("alias", exp.TableAlias(this=exp.to_identifier(fresh)))
+    return result
+
+
+def name_nested_sources(select: exp.Select, schema: dict | None) -> exp.Select:
+    """``select``, or a copy in which the bare columns of its nested one-table queries name that table.
+
+    ``p.id NOT IN (SELECT pid FROM sales WHERE day > 9)`` reads ``sales.pid`` and ``sales.day``: SQL looks a bare
+    name up in the innermost query that has a source with a column of that name, and this query has one source.
+    Only a nested select over one base table without an alias clash is read, only when the caller supplied the
+    table's columns and no WITH table of the statement has its name, only in its select list and ``WHERE`` (a
+    ``GROUP BY``, ``HAVING`` or ``ORDER BY`` may read an output name first), and only for a name the table has. A
+    bare name it does not have (a read of an outer row) stays bare, and the rule that asked then declines.
+    """
+
+    if not schema or all(c.table for c in select.find_all(exp.Column)):
+        return select
+    known = {str(name).lower().split(".")[-1]: {str(c).lower() for c in columns} for name, columns in schema.items()}
+    with_names = {cte.alias_or_name.lower() for cte in select.root().find_all(exp.CTE)}
+    result = select.copy()
+    for nested in result.find_all(exp.Select):
+        from_ = nested.args.get("from_") or nested.args.get("from")
+        source = from_.this if from_ is not None else None
+        if nested is result or nested.args.get("joins") or nested.args.get("laterals") or not isinstance(source, exp.Table) or not _plain_table(source):
+            continue
+        columns = known.get(source.name.lower())
+        if not columns or source.name.lower() in with_names:
+            continue
+        qualifier = source.alias_or_name
+        for part in (*nested.expressions, nested.args.get("where")):
+            for column in list(part.find_all(exp.Column)) if part is not None else []:
+                if column.table or not isinstance(column.this, exp.Identifier) or column.name.lower() not in columns:
+                    continue
+                if column.find_ancestor(exp.Select) is not nested or isinstance(column.parent, (exp.Dot, exp.PropertyEQ, exp.Kwarg)):
+                    continue  # a deeper query's own name, or the head of a field path
+                column.set("table", exp.to_identifier(qualifier))
+    return result
+
+
+def distinct_key_join_to_exists(select: exp.Select, keys: dict | None, not_null: dict | None, types: dict | None = None, schema: dict | None = None) -> exp.Expression | None:
     from .algebraic_equivalence import _conjuncts
     from .counted_membership import _unstable
 
@@ -72,6 +153,9 @@ def distinct_key_join_to_exists(select: exp.Select, keys: dict | None, not_null:
     first, second = from_.this, join.this
     if not _plain_table(first) or not _plain_table(second):
         return None
+    select = name_nested_sources(rename_nested_sources(select, {first.alias_or_name.lower(), second.alias_or_name.lower()}), schema)
+    distinct, join = select.args.get("distinct"), select.args["joins"][0]
+    first, second = (select.args.get("from_") or select.args.get("from")).this, join.this
     names = {first.alias_or_name.lower(): first, second.alias_or_name.lower(): second}
     if len(names) != 2:
         return None

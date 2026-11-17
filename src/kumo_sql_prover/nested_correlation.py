@@ -30,8 +30,8 @@ query nested in it may reuse the name of one of its sources or of the outer sour
 row it means. A volatile call anywhere leaves the select as it is.
 
 Step 1 reads one column for another because an equality ties them, which is right only when equal values are the
-same value everywhere they are read. ``interchangeable`` decides that from the declared types: none are declared
-at all (the prover's other steps read such an equality the same way), or both columns have the same class of type
+same value everywhere they are read. ``interchangeable`` decides that from the declared types: neither column is
+declared (the prover's other steps read such an equality the same way), or both columns have the same class of type
 and it is not floating-point (``0.0 = -0.0`` and ``1 = 1.0`` are TRUE, and ``1 / x`` or the text of ``x`` tells them apart).
 A string and a number that MySQL finds equal, an INT and a DOUBLE, a DATE and a DATETIME are never interchanged.
 """
@@ -66,9 +66,12 @@ _ANY_WIDTH = (smt_values.INT64, smt_values.STRING, smt_values.BOOL)
 def interchangeable(types: dict | None, a: tuple[str | None, str], b: tuple[str | None, str]) -> bool:
     """Whether two columns (``(table, column)``, lower case) that an equality ties can be read one for the other.
 
-    Yes when no types are declared at all. With declared types: both must have one, of the same class, not
-    floating-point; a decimal, date or time type must be spelled the same on both (``1.00`` and ``1.0000`` are equal
-    and print differently). A column of a derived source has no declared type.
+    Yes when no types are declared at all, and when neither column has a declared type and both are columns of base
+    tables: ``types`` may declare only some columns (a harness that knows only which columns hold dates), and two
+    columns it says nothing about are read as they are with no types. With one declared and the other not, no. With
+    both declared: the same class, not floating-point; a decimal, date or time type must be spelled the same on both
+    (``1.00`` and ``1.0000`` are equal and print differently). A column of a derived source (table ``None``) has no
+    declared type of its own and may hand on a declared one, so with any types declared it is never interchanged.
     """
 
     def declared(column: tuple[str | None, str]) -> str | None:
@@ -83,6 +86,8 @@ def interchangeable(types: dict | None, a: tuple[str | None, str], b: tuple[str 
     if not types:
         return True
     first, second = declared(a), declared(b)
+    if first is None and second is None:
+        return a[0] is not None and b[0] is not None
     kind = smt_values.type_class(first)
     if kind is None or kind != smt_values.type_class(second) or kind == smt_values.FLOAT64:
         return False
