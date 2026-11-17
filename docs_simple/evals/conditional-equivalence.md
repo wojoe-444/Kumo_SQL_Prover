@@ -8,7 +8,7 @@ The [conditional answer](../conditional-equivalence.md) says two queries match w
 
 The benchmarks are the Singh and Bedathur LeetCode pairs and VeriEQL's LeetCode set. The Singh files list no keys and no NOT NULL facts, so many pairs that look equal are only equal when a fact holds. VeriEQL keeps each problem's declared facts, so there a conditional answer means a fact beyond those.
 
-Four counts are kept apart: pairs proved with no conditions, pairs proved under named conditions, pairs where a database that meets every candidate fact still separates the queries, and pairs left unknown. Nothing reads the published label while deciding. On the Singh pairs the conditional count rose in November 2026 as rules written for other benchmarks carried over; the full guide has the numbers.
+Four counts are kept apart: pairs proved with no conditions, pairs proved under named conditions, pairs where a database that meets every candidate fact still separates the queries, and pairs left unknown. Nothing reads the published label while deciding. On the Singh pairs the conditional count rose in November 2026 as rules written for other benchmarks carried over; the full guide has the numbers. The Singh files carry no column types, so the harness tells the prover which columns the queries use as dates (the same columns its test databases fill with dates). Without that, a column compared with a date in one query and with a date written as a string in the other could hold text, and the prover rightly declines. When a pair can be proved with no conditions at all, that stronger answer is the one reported.
 
 ## How each answer is checked
 
