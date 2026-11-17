@@ -57,18 +57,24 @@ The same problems as VeriEQL ships them, with types, primary keys, NOT NULL colu
 
 | Count | Cases |
 | --- | ---: |
-| Proved outright | 866 |
-| **Proved under named conditions** | **297** |
+| Proved outright | 1,196 |
+| **Proved under named conditions** | **413** |
 | Refuted with every candidate holding | 0 |
-| Unknown | 1,832 |
-| Conditional but not re-checkable | 5 |
+| Unknown | 1,380 |
+| Conditional but not re-checkable | 11 |
 | Wrong | 0 |
 | Harness crashes | 0 |
 
-The 297 use 454 conditions (225 NOT NULL, 169 unique keys, 60 foreign keys). All 297 pass the 900-database re-check and the executed counterexample search with the conditions in the spec; 70 are separated by a database that breaks them. Against master on the same sample this is 23 fewer conditional proofs (320 there): the constant-result check could not run on VeriEQL type names before, and now rejects 24 proofs that hold only because the returned conditions make both queries return one result on every test database (a unique key on a self join that asks for two different rows); one proof was gained. Five more conditional proofs rest on a composite foreign key that the executed check cannot impose, so they are not re-checked and not scored. Fewer conditionals per case than Singh is expected: the declared keys already carry what the prover can use. No held-out split is reserved for this sample. The harness was developed against Singh dev pairs and an early 80-case VeriEQL sample (tuned on test); the full sample was run afterwards.
+Measured 2026-11-17 on commit 9dadccb (the fourth and fifth hardest-cases batches on main 2cf0154). Main's prover (commit 711a01b) measured the same way on the same sample: 1,189 outright, 379 conditional, 1,422 unknown, 10 not re-checkable.
+
+- The 413 use 593 conditions (456 NOT NULL, 120 unique keys, 17 foreign keys); one condition suffices for 289 cases, two for 87, and three to six for 37. All 413 pass the executed counterexample search with the conditions added to the spec (300 databases, then 300 wider ones), and each proof is lost when any one condition is dropped; 141 are separated by a database that breaks the conditions.
+- Eleven more conditional proofs cannot be re-checked and are not scored: 7 rest on a composite foreign key that the executed check cannot impose, and 4 hold only when a column is NOT NULL and make both queries constant on every test database.
+- **The count rose from 379 to 413 on 2026-11-17 (batches 4 and 5).** Compared case by case with the run on main's prover: 36 unknown cases became conditional, 5 unknown cases and 2 conditional ones became outright proofs, 1 unknown case became a conditional proof that is not re-checkable, 4 conditional proofs name a different minimal set, and no proof is lost. 23 of the 36 read the sales table and 4 the insurance table. The rules were written on development pairs of the Singh eval above, which holds some of the same LeetCode problems; this sample was run for scoring and its cases were not read.
+- Earlier measurements: 374 conditional and 929 outright on 2026-11-12 (commit 395b5c1, the third hardest-cases batch; main 0e94662 then had 335 and 879), and 297 conditional and 866 outright on 2026-10-04. In October the constant-result check began to run on VeriEQL type names and rejected 24 proofs that held only because the returned conditions made both queries return one result on every test database (a unique key on a self join that asks for two different rows). The rise from 374 to 379 on main between 2026-11-12 and 2026-11-17 comes from rule batches merged in between and was not traced.
+- Fewer conditionals per case than Singh is expected: the declared keys already carry what the prover can use. No held-out split is reserved for this sample. The harness was developed against Singh dev pairs and an early 80-case VeriEQL sample (tuned on test); the full sample was run afterwards.
 
 ```bash
-python tools/conditional_bench.py verieql --every 8 --workers 4   # about 15 minutes on 4 cores
+python tools/conditional_bench.py verieql --every 8 --workers 4   # about 50 minutes on 4 cores
 ```
 
 ## Constraint-touched candidate pairs
