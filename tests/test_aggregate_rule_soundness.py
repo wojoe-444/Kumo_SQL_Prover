@@ -329,13 +329,22 @@ def test_case_literals_of_mixed_types_are_not_folded():
 
 
 def test_joined_aggregates_reading_an_output_alias_are_not_merged():
-    """Merging renames the outputs, so a HAVING that reads ``s`` by its alias would be left dangling."""
+    """Merging renames the outputs, so a HAVING that reads ``s`` by its alias would be left dangling.
+
+    The shape rules replace such an alias by its expression before the merge (``having_alias``), and the merged
+    select then tests the aggregate itself; with them off the alias is still there and the merge is declined.
+    """
+
+    from kumo_sql_prover import shape_fallback
 
     sql = (
         "SELECT d1.k, d1.s, d2.m FROM (SELECT k, SUM(x) AS s FROM t2 GROUP BY k HAVING s > 5) AS d1"
         " JOIN (SELECT k, MAX(x) AS m FROM t2 GROUP BY k) AS d2 ON d1.k IS NOT DISTINCT FROM d2.k"
     )
-    assert "HAVING s > 5) AS d1" in normalize(sql, schema=SCHEMA)
+    with shape_fallback.disabled():
+        assert "HAVING s > 5) AS d1" in normalize(sql, schema=SCHEMA)
+    merged = normalize(sql, schema=SCHEMA)
+    assert merged.endswith("GROUP BY k HAVING SUM(x) > 5") and " s " not in merged
 
 
 @pytest.mark.parametrize(
