@@ -461,6 +461,48 @@ class _Pred:
     f: object
 
 
+# A truth value is the number 1 or 0 in these dialects (MySQL and SQLite have no Boolean type; DuckDB compares a Boolean
+# with a number as 1 or 0), so ``(a > 3) = 1`` is ``a > 3``. Everywhere else the comparison is a type error (BigQuery,
+# PostgreSQL) or an engine rule that has not been checked, and a pair that compares a truth value with a number is declined.
+_TRUTH_IS_NUMBER = {"mysql", "sqlite", "duckdb"}
+
+
+def _static_kind(x) -> str | None:
+    """``"bool"``, ``"num"`` or ``"str"`` when the value ``x`` is built from one constructor (through ``If``), else None."""
+
+    if not z3.is_app(x):
+        return None
+    decl = x.decl()
+    if decl.kind() == z3.Z3_OP_DT_CONSTRUCTOR:
+        return {"Num": "num", "Str": "str", "Bool": "bool"}.get(decl.name())
+    if decl.kind() == z3.Z3_OP_ITE:
+        left, right = _static_kind(x.arg(1)), _static_kind(x.arg(2))
+        return left if left == right else None
+    return None
+
+
+def _truth_as_number(v: _Val) -> _Val:
+    """``v`` with a truth value built in the query (a comparison, EXISTS, TRUE, through a derived table, IF or CASE) read
+    as the number 1 or 0. A value the model leaves open (a column, an aggregate) is kept as it is."""
+
+    V = _value_sort()
+
+    def number(x):
+        if not z3.is_app(x):
+            return x
+        decl = x.decl()
+        if decl.kind() == z3.Z3_OP_DT_CONSTRUCTOR and decl.name() == "Bool":
+            return V.Num(z3.If(x.arg(0), z3.RealVal(1), z3.RealVal(0)))
+        if decl.kind() == z3.Z3_OP_ITE:
+            then, other = number(x.arg(1)), number(x.arg(2))
+            if then.eq(x.arg(1)) and other.eq(x.arg(2)):
+                return x
+            return z3.If(x.arg(0), then, other)
+        return x
+
+    return _Val(v.null, number(v.val))
+
+
 def _canon(v: _Val):
     V = _value_sort()
     return z3.If(v.null, V.Num(0), v.val)
@@ -1842,7 +1884,7 @@ class _Compiler:
                     return self._converted_compare(op, self._val(e.this, env, agg, aliases), self._val(e.expression, env, agg, aliases))
                 return self._compare(op, *self._compared_vals([e.this, e.expression], env, agg, aliases))
         if isinstance(e, (exp.NullSafeEQ, exp.NullSafeNEQ)):
-            eq = _null_eq(*self._compared_vals([e.this, e.expression], env, agg, aliases))
+            eq = _null_eq(*self._truth_meets_number(*self._compared_vals([e.this, e.expression], env, agg, aliases)))
             eq = eq if isinstance(e, exp.NullSafeEQ) else z3.Not(eq)
             return _Pred(eq, z3.Not(eq))
         if isinstance(e, exp.Is):
@@ -1978,7 +2020,19 @@ class _Compiler:
         known = z3.And(z3.Not(a.null), z3.Not(b.null))
         return _Pred(z3.And(known, r), z3.And(known, z3.Not(r)))
 
+    def _truth_meets_number(self, a: _Val, b: _Val) -> tuple[_Val, _Val]:
+        """``a`` and ``b`` as compared: in MySQL, SQLite and DuckDB a truth value is the number 1 or 0; in any other
+        dialect a truth value that meets a number makes the pair unprovable."""
+
+        if self.dialect in _TRUTH_IS_NUMBER:
+            return _truth_as_number(a), _truth_as_number(b)
+        kinds = {_static_kind(a.val), _static_kind(b.val)}
+        if "bool" in kinds and "num" in kinds:
+            raise Unsupported("a truth value compared with a number")
+        return a, b
+
     def _compare(self, op: str, a: _Val, b: _Val) -> _Pred:
+        a, b = self._truth_meets_number(a, b)
         if op not in ("=", "<>"):
             self.ordered = True
             # Equal ranks mean equal strings (the ranking is one-to-one); stated for the compared pair.
