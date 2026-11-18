@@ -163,5 +163,5 @@ def add_own_row_tests(select: exp.Select, not_null: dict | None) -> exp.Select |
     if not added or _unstable(select):
         return None
     result = select.copy()
-    result.set("where", exp.Where(this=exp.and_(result.args["where"].this, *added, copy=False)))
+    result.set("where", exp.Where(this=exp.and_(*[part.copy() for part in conjuncts(where.this)], *added, copy=False)))
     return result

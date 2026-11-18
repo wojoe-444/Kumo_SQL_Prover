@@ -69,12 +69,46 @@ def test_columns_used_as_dates_are_declared_to_the_prover(monkeypatch):
     assert bench.decide_singh(pair).kind == "equivalent"
     monkeypatch.setattr(bench, "_date_types", lambda pair: {})
     assert "types" not in bench._prove_options(pair)
+    # the second attempt declares the columns used as text or as dates, and proves it too
+    retried = bench.decide_singh(pair)
+    assert retried.kind == "equivalent" and retried.detail.endswith(bench.TEXT_NOTE)
+    monkeypatch.setattr(bench.singh, "_text_types", lambda pair: {})
     assert bench.decide_singh(pair).kind == "unknown"
 
 
 def test_a_pair_with_no_date_column_declares_nothing():
     pair = bench.singh.Pair(0, "SELECT t.a FROM t WHERE t.b = 'x'", "SELECT t.a FROM t WHERE 'x' = t.b", {"t": ["a", "b"]}, "equivalent")
     assert "types" not in bench._prove_options(pair)
+
+
+# A made-up pair whose proof needs two different text literals to differ on the column: 'S' and 'I' are the same value to
+# MySQL when the column holds numbers, so the prover declines until the column is declared as text.
+_LABELLED = (
+    "SELECT buyer FROM sale JOIN item ON sale.item_id = item.item_id WHERE label IN ('S', 'I') GROUP BY buyer "
+    "HAVING SUM(CASE WHEN label = 'I' THEN 1 ELSE 0 END) = 0",
+    "SELECT DISTINCT sale.buyer FROM item JOIN sale ON sale.item_id = item.item_id WHERE label = 'S' "
+    "AND sale.buyer NOT IN (SELECT sale.buyer FROM item JOIN sale ON sale.item_id = item.item_id WHERE label = 'I')",
+)
+
+
+def test_a_pair_still_unknown_is_tried_again_with_its_text_columns_declared(monkeypatch):
+    pair = bench.singh.Pair(0, *_LABELLED, {"item": ["item_id", "label"], "sale": ["buyer", "item_id"]}, "equivalent")
+    assert "types" not in bench._prove_options(pair)
+    assert bench._prove_options(pair, text=True)["types"] == {"item": {"label": "STRING"}}
+    outcome = bench.decide_singh(pair)
+    assert outcome.kind == "conditional" and outcome.detail.endswith(bench.TEXT_NOTE)
+    assert outcome.validated > 0 and outcome.minimal
+    monkeypatch.setattr(bench.singh, "_text_types", lambda pair: {})
+    assert bench.decide_singh(pair).kind == "unknown"
+
+
+def test_a_pair_proved_without_text_types_is_not_tried_again(monkeypatch):
+    pair = bench.singh.Pair(0, *_DATED, {"sales": ["product_id", "sale_date"]}, "equivalent")
+    seen = []
+    original = bench._singh_prove
+    monkeypatch.setattr(bench, "_singh_prove", lambda pair, options=None: seen.append(options) or original(pair, options))
+    outcome = bench.decide_singh(pair)
+    assert outcome.kind == "equivalent" and outcome.detail == "proved outright" and seen == [None]
 
 
 @pytest.mark.parametrize("rewritten_proves", [True, False])
