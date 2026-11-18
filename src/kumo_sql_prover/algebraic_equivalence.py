@@ -5085,6 +5085,14 @@ def normalize(
         tree = read_join_distinct_aggregates(tree, schema)  # pre-pass: a join that only asks for a match, under COUNT(DISTINCT), is an IN
         from .key_group_choice import choose_key_groups
 
+        if shape_fallback.rule_enabled("child_counts"):
+            from .child_counts import read_child_counts
+
+            # pre-pass: counts of a parent row's child rows (grouped after the joins, or counted first) in one spelling;
+            # before the next pass names another key in a GROUP BY this one reads
+            tree, read = read_child_counts(tree, schema, keys, not_null, foreign_keys, types)
+            if read:
+                shape_fallback.note_fired("child_counts")
         tree = choose_key_groups(tree, schema, keys, not_null)  # pre-pass: grouping by any NOT NULL key of a table is one grouping, so name the first
     # Not shape rules: each reads a comparison the prover could not read at all, so the second attempt (shapes off, which
     # drops merge_exists_disjunction) keeps them and can still match the separate EXISTS tests they produce.
