@@ -5479,9 +5479,15 @@ def prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtEq
 
 
 def _prove_equivalent_algebraic_as_written(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
-    result = numeric_column_reading.checked(
-        _prove_equivalent_algebraic_checked, left_sql, right_sql, kwargs, lambda reason: SmtEquivalenceResult(SmtStatus.NOT_PROVEN, reason)
-    )
+    from . import derived_rounding
+
+    def read_numerically(left: str, right: str, **options) -> SmtEquivalenceResult:
+        return numeric_column_reading.checked(
+            _prove_equivalent_algebraic_checked, left, right, options, lambda reason: SmtEquivalenceResult(SmtStatus.NOT_PROVEN, reason)
+        )
+
+    # MySQL stores a quotient a derived table materialises rounded to its declared scale (issue 45): the pair is read so.
+    result = derived_rounding.proved(read_numerically, left_sql, right_sql, kwargs)
     # The rules below may merge or drop a call; a pair that holds a volatile one as written is never proven.
     return without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
 

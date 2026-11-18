@@ -206,6 +206,17 @@ There is one useful middle case. `NOW()`, `CURRENT_DATE` and the name of the cur
 
 The limits: the list was written from each engine's documentation, so a function that is missing from it is still trusted. To make that visible, a proof that relies on a function the prover does not know (your own `my_udf(x)`, for example) now says so in its list of assumptions, by name. If that function is not repeatable, the proof does not hold. See the [full reference](../docs/provers.md#volatile-calls).
 
+## MySQL rounds a ratio that passes through a derived table
+
+In MySQL, `1 / 3` is not exactly one third, but it keeps a few more digits than it shows: `1 / 3 * 100` is `33.3333`. When the ratio is first computed inside a subquery in the `FROM` clause (or a `WITH` query) that MySQL has to build as a temporary table, it is stored with only four decimals, so `0.3333 * 100` outside it is `33.3300`. The same goes for `AVG`. The provers used to read such a subquery as if it were pasted into the outer query, and so said these two return the same number when MySQL does not:
+
+```sql
+SELECT t.q * 100 FROM (SELECT SUM(paid = due) / COUNT(*) AS q FROM bill) AS t   -- 33.3300 on three bills, one paid in full
+SELECT SUM(paid = due) / COUNT(*) * 100 FROM bill                                 -- 33.3333
+```
+
+Now, for MySQL, a ratio or average that comes out of such a subquery and is then used in arithmetic, a comparison or `ROUND` is treated as a value of its own, equal only to the same ratio taken through the same kind of subquery. A rewrite that only works by pasting the subquery in is answered "not proven". Two cases keep their proofs: a ratio that is only returned at the very end (MySQL rounds it to the same four decimals either way), and a subquery that is a plain select-from-where, which MySQL pastes in itself. The check is for MySQL only; DuckDB divides into a floating-point number and does not round. One honest cost: `ROUND(t.q * 100, 2)` over such a ratio really is the same as the direct `ROUND(S / C * 100, 2)`, but the prover does not know the column's scale and answers "not proven" for it too. Full details: [the reference](../docs/provers.md).
+
 ## The parser is checked too
 
 The provers also refuse to trust the parser blindly. Before a proof counts, the text is read a second time by a small separate reader that knows each engine's operator order, and if the two readings group the operators differently (for example `a | b & c` in BigQuery, or `a = b < c` in MySQL) the answer is "not proven" with the reason "parser disagreement". The limit is that this can only take proofs away, and a construct the second reader does not know is left to sqlglot's reading. See [parser checks](parser-checks.md).
