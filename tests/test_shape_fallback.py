@@ -141,3 +141,46 @@ def test_no_second_attempt_for_a_very_large_pair(monkeypatch):
     assert not prove_equivalent_algebraic(left, right, compare_names=False, **options).proven
     monkeypatch.setattr(shape_fallback, "MAX_CHARS", len(left) + len(right))
     assert prove_equivalent_algebraic(left, right, compare_names=False, **options).proven
+
+
+def test_ninth_batch_rules_fire_only_where_no_older_attempt_is_changed():
+    """They fire on the first attempt and on a narrow attempt that switches off rules of their own batch; the attempt
+    without the shape rules, the attempts with the late rules and a narrow attempt with an older rule off read the pair
+    as before the batch."""
+
+    assert shape_fallback.ninth_batch_enabled()
+    with shape_fallback.without("own_row_copies"), shape_fallback.without("distinct_match_joins"):
+        assert shape_fallback.ninth_batch_enabled()
+    with shape_fallback.without_all(shape_fallback.NINTH_BATCH):
+        assert shape_fallback.ninth_batch_enabled() and not shape_fallback.rule_enabled("own_column_lists")
+    with shape_fallback.disabled():
+        assert not shape_fallback.ninth_batch_enabled()
+    with shape_fallback.late():
+        assert not shape_fallback.ninth_batch_enabled()
+    with shape_fallback.without("own_key_membership"):
+        assert not shape_fallback.ninth_batch_enabled()
+    assert shape_fallback.ninth_batch_enabled() and shape_fallback.off() == frozenset()
+
+
+def test_a_ninth_batch_rule_stays_out_of_an_attempt_with_an_older_rule_off():
+    """With ``own_key_membership`` off, ``distinct_match_joins`` began to read the list of this query and cost a proof
+    that attempt used to give (``tests/test_self_key_membership.py`` has the pair)."""
+
+    sql = (
+        "SELECT DISTINCT sales.buyer_id AS buyer_id FROM product INNER JOIN sales ON sales.product_id = product.product_id "
+        "WHERE product_name = 'a' AND sales.buyer_id NOT IN (SELECT sales.buyer_id FROM product INNER JOIN sales ON sales.product_id = product.product_id WHERE product_name = 'b')"
+    )
+    options = {
+        "schema": {"product": ["product_id", "product_name"], "sales": ["product_id", "buyer_id"]},
+        "keys": {"product": [("product_id",)], "sales": [("buyer_id",)]},
+        "not_null": {"sales": frozenset({"buyer_id"})},
+        "dialect": "mysql",
+    }
+    with shape_fallback.tracking() as fired:
+        normalize(sql, **options)
+    assert "distinct_match_joins" not in fired  # ``own_key_membership`` reads the list first
+    with shape_fallback.without("own_key_membership"), shape_fallback.tracking() as fired:
+        older = normalize(sql, **options)
+    assert not fired & shape_fallback.NINTH_BATCH
+    with shape_fallback.without("own_key_membership"), shape_fallback.without_all(shape_fallback.NINTH_BATCH):
+        assert normalize(sql, **options) == older

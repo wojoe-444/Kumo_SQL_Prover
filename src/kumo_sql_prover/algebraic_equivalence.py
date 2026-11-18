@@ -4995,6 +4995,16 @@ def _narrow(name: str, rule, select):
     return result
 
 
+def _narrow_shape(name: str, rule, select):
+    """A narrow-retry rule of the ninth hardest-cases batch: it fires on the first attempt and on a narrow attempt that
+    switches off rules of that batch only (``shape_fallback.ninth_batch_enabled``), so every other attempt reads the pair
+    exactly as it was read before the batch."""
+
+    if not shape_fallback.ninth_batch_enabled():
+        return None
+    return _narrow(name, rule, select)
+
+
 def normalize(
     sql: str,
     *,
@@ -5107,7 +5117,7 @@ def normalize(
     from .absolute_values import read_absolute_values
     from .keyed_lookups import read_keyed_lookups
 
-    if shape_fallback.rule_enabled("lookup_names"):
+    if shape_fallback.ninth_batch_enabled() and shape_fallback.rule_enabled("lookup_names"):
         from .lookup_names import name_lookup_columns
 
         tree, named = name_lookup_columns(tree, schema, keys)  # pre-pass: bare names around a keyed lookup get their tables
@@ -5231,18 +5241,18 @@ def normalize(
         lambda sel: _narrow("own_key_membership", lambda s: read_own_key_membership(s, schema, keys, not_null, types_map), sel),
         lambda sel: _narrow("different_row_keys", lambda s: name_different_rows(s, keys, not_null, types_map), sel),
         lambda sel: _narrow("referenced_presence", lambda s: drop_referenced_presence(s, schema, not_null, foreign_keys, types_map), sel),
-        lambda sel: _narrow("own_row_copies", lambda s: drop_own_row_copies(s, not_null, types_map), sel),
-        lambda sel: _narrow("own_column_lists", lambda s: read_own_column_list(s, schema, types_map), sel),
-        lambda sel: _narrow("joined_key_lists", lambda s: test_joined_rows(s, keys, schema, types_map), sel),
-        lambda sel: _narrow("own_row_witness", lambda s: add_own_row_tests(s, not_null), sel),
-        lambda sel: _narrow("nested_test_groupings", group_as_distinct, sel),
-        lambda sel: _narrow("distinct_derived_joins", lambda s: read_derived_join(s, schema), sel),
-        lambda sel: _narrow("single_value_groups", lambda s: read_single_value_groups(s, types_map), sel),
+        lambda sel: _narrow_shape("own_row_copies", lambda s: drop_own_row_copies(s, not_null, types_map), sel),
+        lambda sel: _narrow_shape("own_column_lists", lambda s: read_own_column_list(s, schema, types_map), sel),
+        lambda sel: _narrow_shape("joined_key_lists", lambda s: test_joined_rows(s, keys, schema, types_map), sel),
+        lambda sel: _narrow_shape("own_row_witness", lambda s: add_own_row_tests(s, not_null), sel),
+        lambda sel: _narrow_shape("nested_test_groupings", group_as_distinct, sel),
+        lambda sel: _narrow_shape("distinct_derived_joins", lambda s: read_derived_join(s, schema), sel),
+        lambda sel: _narrow_shape("single_value_groups", lambda s: read_single_value_groups(s, types_map), sel),
         lambda sel: read_counted_presence(sel, not_null, types_map, schema),
         lambda sel: _narrow("anti_join_reading", read_unmatched_left_join, sel),
         lambda sel: _narrow("distinct_source_filters", lift_source_distinct, sel),
         lambda sel: _narrow("keyed_semijoin", lambda s: distinct_key_join_to_exists(s, keys, not_null, types_map, schema), sel),
-        lambda sel: _narrow("distinct_match_joins", lambda s: ask_unlisted_joins(s, types_map, schema), sel),
+        lambda sel: _narrow_shape("distinct_match_joins", lambda s: ask_unlisted_joins(s, types_map, schema), sel),
         lambda sel: _narrow("nested_correlation", lambda s: flatten_nested_correlation(s, types_map), sel),
         lambda sel: _narrow("presence_given_absence", lambda s: drop_implied_presence_filters(s, not_null, schema), sel),
         merge_preserved_join_source,
@@ -5521,6 +5531,13 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
         # The same for a pair too large for that attempt: only the rules that fired, one at a time, are switched off.
         for name in sorted(fired):
             with shape_fallback.without(name):
+                narrow = attempt()
+            if narrow.status is not SmtStatus.NOT_PROVEN:
+                return narrow
+        if fired & shape_fallback.NINTH_BATCH:
+            # The first attempt as it was before the ninth batch: its rules prove some pairs only together, and one of
+            # them off can let another begin to fire.
+            with shape_fallback.without_all(shape_fallback.NINTH_BATCH):
                 narrow = attempt()
             if narrow.status is not SmtStatus.NOT_PROVEN:
                 return narrow

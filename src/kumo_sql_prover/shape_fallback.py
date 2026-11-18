@@ -208,3 +208,42 @@ def without(name: str):
         yield
     finally:
         _OFF.reset(token)
+
+
+# The rules of the ninth hardest-cases batch (2026-11-18) read shapes that older rules also read, and one of them cost a
+# proof in an attempt made with an older rule off: with ``own_key_membership`` off, ``distinct_match_joins`` began to fire
+# and took the pair out of the shape that attempt used to prove. Switching rules off one at a time cannot find that. So
+# these rules fire only on the first attempt and on a narrow attempt that switches off rules of this batch alone; every
+# other attempt (without the shape rules, with the late rules, with an older rule off) reads the pair exactly as it was
+# read before the batch, and one more narrow attempt switches the whole batch off, which is the first attempt as it was.
+
+NINTH_BATCH = frozenset(
+    {
+        "own_row_copies",
+        "distinct_match_joins",
+        "own_column_lists",
+        "lookup_names",
+        "joined_key_lists",
+        "own_row_witness",
+        "single_value_groups",
+        "nested_test_groupings",
+        "distinct_derived_joins",
+    }
+)
+
+
+def ninth_batch_enabled() -> bool:
+    """Whether the rules of ``NINTH_BATCH`` may fire in the current attempt (see the comment above)."""
+
+    return _ENABLED.get() and not _LATE.get() and _OFF.get() <= NINTH_BATCH
+
+
+@contextmanager
+def without_all(names: frozenset):
+    """Run the block with every named narrow-fallback rule off."""
+
+    token = _OFF.set(_OFF.get() | frozenset(names))
+    try:
+        yield
+    finally:
+        _OFF.reset(token)
