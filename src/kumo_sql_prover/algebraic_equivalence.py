@@ -164,8 +164,10 @@ from .differing_self_joins import regroup_differing_self_join
 from .own_group_membership import read_own_group_membership
 from .different_row_keys import name_different_rows
 from .distinct_match_joins import ask_unlisted_joins
+from .joined_key_lists import test_joined_rows
 from .own_column_lists import read_own_column_list
 from .own_row_copies import drop_own_row_copies
+from .own_row_witness import add_own_row_tests
 from .referenced_presence import drop_referenced_presence
 from .own_key_membership import read_own_key_membership
 from .own_value_lists import read_own_value_list
@@ -5102,6 +5104,12 @@ def normalize(
     from .absolute_values import read_absolute_values
     from .keyed_lookups import read_keyed_lookups
 
+    if shape_fallback.rule_enabled("lookup_names"):
+        from .lookup_names import name_lookup_columns
+
+        tree, named = name_lookup_columns(tree, schema, keys)  # pre-pass: bare names around a keyed lookup get their tables
+        if named:
+            shape_fallback.note_fired("lookup_names")
     tree = read_keyed_lookups(tree, schema, keys)  # pre-pass: a filter on a value looked up by key is an EXISTS
     tree = read_absolute_values(tree, types)  # pre-pass: ABS(x) = n says x is n or -n
     tree = rewrite_quantified(tree, schema, not_null, keys)
@@ -5222,6 +5230,8 @@ def normalize(
         lambda sel: _narrow("referenced_presence", lambda s: drop_referenced_presence(s, schema, not_null, foreign_keys, types_map), sel),
         lambda sel: _narrow("own_row_copies", lambda s: drop_own_row_copies(s, not_null, types_map), sel),
         lambda sel: _narrow("own_column_lists", lambda s: read_own_column_list(s, schema, types_map), sel),
+        lambda sel: _narrow("joined_key_lists", lambda s: test_joined_rows(s, keys, schema, types_map), sel),
+        lambda sel: _narrow("own_row_witness", lambda s: add_own_row_tests(s, not_null), sel),
         lambda sel: read_counted_presence(sel, not_null, types_map, schema),
         lambda sel: _narrow("anti_join_reading", read_unmatched_left_join, sel),
         lambda sel: _narrow("distinct_source_filters", lift_source_distinct, sel),

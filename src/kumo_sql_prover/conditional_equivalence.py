@@ -328,6 +328,38 @@ def candidate_conditions(
                 projected = projected.this if isinstance(projected, exp.Alias) else projected
                 if isinstance(projected, exp.Column):
                     relate(node.this, projected)
+        for query in tree.find_all(exp.Subquery):
+            # x = (SELECT k FROM t WHERE name = 'n') reads one row of t: the columns its WHERE fixes must tell the
+            # rows of t apart, and x is related to k as it is through a list
+            inner, holder, held = query.this, query.parent, query
+            while isinstance(holder, exp.Paren):
+                holder, held = holder.parent, holder
+            if not isinstance(holder, (exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE)) or query.alias or not isinstance(inner, exp.Select):
+                continue
+            if len(inner.expressions) != 1 or inner.args.get("where") is None or any(inner.args.get(k) for k in ("joins", "group", "having", "distinct", "limit", "order", "qualify")):
+                continue
+            projected = inner.expressions[0]
+            projected = projected.this if isinstance(projected, exp.Alias) else projected
+            if not isinstance(projected, exp.Column):
+                continue
+            other = holder.expression if holder.this is held else holder.this
+            if isinstance(other, exp.Column):
+                relate(other, projected)
+            fixed: dict[tuple, tuple[_Occurrence, list[str]]] = {}
+            where = inner.args["where"].this
+            parts = list(where.flatten()) if isinstance(where, exp.And) else [where]
+            for part in parts:
+                if not isinstance(part, exp.EQ):
+                    continue
+                for column, value in ((part.this, part.expression), (part.expression, part.this)):
+                    if isinstance(column, exp.Column) and value.find(exp.Column, exp.Query) is None:
+                        occ = reader.owner(column)
+                        if occ is not None and column.find_ancestor(exp.Select) is inner:
+                            fixed.setdefault(occ.ident, (occ, []))[1].append(column.name.lower())
+            for occ, names in fixed.values():
+                names = sorted(dict.fromkeys(names))
+                for group in dict.fromkeys([*[(n,) for n in names], tuple(names)]):
+                    add("shape_unique", _make("unique", occ, group, dialect))
         for first, second, joined in pairs.values():
             for occ, other in ((first, second), (second, first)):
                 index = 0 if occ is first else 1
