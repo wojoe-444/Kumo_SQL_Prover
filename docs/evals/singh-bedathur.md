@@ -41,21 +41,21 @@ DuckDB runs with MySQL's NULL ordering and case-insensitive string comparison. A
 
 ## Scores
 
-Measured 2026-11-12 over all 2,800 pairs (`python tools/singh_bedathur_bench.py`, about 19 minutes on 4 cores, commit 951be35; 2,763 on 2026-11-10 on a861879 and again on b01aa90):
+Measured 2026-11-18 over all 2,800 pairs (`python tools/singh_bedathur_bench.py`, about 26 minutes on 4 cores, commit e203738; 2,765 on 2026-11-12 on 951be35, 2,763 on 2026-11-10 on a861879 and again on b01aa90):
 
-**2765/2800, 0 wrong**: 891 proved equivalent, 1,874 proved different, 35 unknown. Held-out fifth: 567/580 (565 before). The two extra proofs come from rules written for other evals ([QUITE](quite.md), VeriEQL); none was written for this one.
+**2766/2800, 0 wrong**: 892 proved equivalent, 1,874 proved different, 34 unknown. Held-out fifth: 568/580 (567 before). The extra proof since 2026-11-12 is a held-out pair labelled equivalent that the rules written for the [conditional eval](conditional-equivalence.md) on its development pairs now prove outright; it was not read, and it agrees on 1,800 generated databases. The two proofs before it came from rules written for other evals ([QUITE](quite.md), VeriEQL); none was written for this one.
 
 | Outcome | Pairs |
 | --- | ---: |
-| Proven equivalent | 891 |
+| Proven equivalent | 892 |
 | Refuted (counterexample) | 1,874 |
-| Unknown | 30 |
+| Unknown | 29 |
 | Unsupported (the prover cannot read a query, and no counterexample) | 5 |
 | Timeout | 0 |
 | Error | 0 |
 | Wrong | 0 |
 
-Supported subset: 2765/2795 (three pairs that compare a string with a number are now declined as unsupported, #542, #613 and the SELECT * and set-operation tracking that followed; the second is a dev pair whose `COALESCE(REFEREE_ID, 'SOME BOGUS VALUE') != 2` was proved equal to `REFEREE_ID <> 2 OR REFEREE_ID IS NULL`: right on MySQL only because the string reads as 0, DuckDB rejects the mixed `COALESCE`). Held-out fifth (pairs whose text hash is divisible by 5): **565/580, 0 wrong**. The split was made partway through, after the first rewrite rules, and later full-corpus runs were still read while tuning the counterexample search, so this is a weak check. From now on development runs use `--split dev`.
+Supported subset: 2766/2795 (three pairs that compare a string with a number are now declined as unsupported, #542, #613 and the SELECT * and set-operation tracking that followed; the second is a dev pair whose `COALESCE(REFEREE_ID, 'SOME BOGUS VALUE') != 2` was proved equal to `REFEREE_ID <> 2 OR REFEREE_ID IS NULL`: right on MySQL only because the string reads as 0, DuckDB rejects the mixed `COALESCE`). Held-out fifth (pairs whose text hash is divisible by 5): **568/580, 0 wrong**. The split was made partway through, after the first rewrite rules, and later full-corpus runs were still read while tuning the counterexample search, so this is a weak check. From now on development runs use `--split dev`.
 
 Column types: the pairs carry only column names, so `_text_types` in `tools/singh_bedathur_bench.py` declares every column the queries compare with a string as text, the reading the counterexample search already used. Without it the prover's check on untyped string columns (a column compared with two different strings that MySQL reads as the same number could be an integer column; see `docs/provers.md`) declined 17 proofs, 4 of them held out, all variants of one `NOT IN` query on product names. With the declaration the score and the 861 proofs of that time were unchanged. The held-out pairs were not read; the loss was found from the proof counts.
 
@@ -106,9 +106,9 @@ Three things went wrong on the way and are recorded here because each was found 
 
 | Verdict | Label "Equivalent" | Label "Non Equivalent" |
 | --- | ---: | ---: |
-| Proved equivalent | 891 | 0 |
+| Proved equivalent | 892 | 0 |
 | Proved different | 476 | 1,398 |
-| Unknown | 33 | 2 |
+| Unknown | 32 | 2 |
 
 No proof contradicts a label. The 476 pairs labelled equivalent that get a counterexample are equivalent only under LeetCode's constraints, which the files drop: most rely on a key (`UNION` versus `UNION ALL`), a NOT NULL column (`NOT IN` versus an anti-join) or a foreign key. A few differ outright, for example a typo inside a string literal (`'15 OR MORE AS BIN'`). Each comes with its counterexample: `--show-disagreements` prints them.
 
