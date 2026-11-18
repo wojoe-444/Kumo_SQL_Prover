@@ -508,13 +508,24 @@ def test_decorrelating_a_scalar_aggregate_preserves_results(sql):
         assert Counter(db.execute(sql).fetchall()) == Counter(db.execute(normalized).fetchall()), normalized
 
 
-def test_a_correlated_scalar_aggregate_equals_its_join_with_a_grouped_table():
-    result = prove_equivalent_algebraic(
-        "SELECT a.a FROM a WHERE a.x < (SELECT 2 * AVG(b.x) FROM b WHERE b.k = a.k)",
-        "SELECT a.a FROM a JOIN (SELECT b.k, 2 * AVG(b.x) AS m FROM b GROUP BY b.k) AS g ON g.k = a.k WHERE a.x < g.m",
-        schema=T_SCHEMA, compare_names=False, dialect="mysql",
-    )
+SCALAR_AVERAGE = (
+    "SELECT a.a FROM a WHERE a.x < (SELECT 2 * AVG(b.x) FROM b WHERE b.k = a.k)",
+    "SELECT a.a FROM a JOIN (SELECT b.k, 2 * AVG(b.x) AS m FROM b GROUP BY b.k) AS g ON g.k = a.k WHERE a.x < g.m",
+)
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "bigquery"])
+def test_a_correlated_scalar_aggregate_equals_its_join_with_a_grouped_table(dialect):
+    result = prove_equivalent_algebraic(*SCALAR_AVERAGE, schema=T_SCHEMA, compare_names=False, dialect=dialect)
     assert result.status is SmtStatus.PROVEN_EQUIVALENT, result.reason
+
+
+def test_in_mysql_the_grouped_table_stores_the_average_rounded():
+    """MySQL keeps the digits of a correlated subquery's ``AVG`` but rounds the one a grouped derived table holds
+    (``derived_rounding``, issue 45), so the two readings are not the same comparison on every table."""
+
+    result = prove_equivalent_algebraic(*SCALAR_AVERAGE, schema=T_SCHEMA, compare_names=False, dialect="mysql")
+    assert result.status is SmtStatus.NOT_PROVEN and "issue 45" in result.reason
 
 
 def test_a_correlated_count_is_not_a_join():

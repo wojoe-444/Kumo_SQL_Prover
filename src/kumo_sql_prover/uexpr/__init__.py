@@ -139,11 +139,16 @@ def _prove_bag_equivalent_as_written(left_sql: str, right_sql: str, **options):
     from ..smt_equivalence import without_volatile_proof
     from .ir import id_scope, in_id_scope
 
-    if in_id_scope():
-        result = _prove_bag_equivalent(left_sql, right_sql, **options)
-    else:
+    from .. import derived_rounding
+
+    def prove(left: str, right: str, **kwargs):
+        if in_id_scope():
+            return _prove_bag_equivalent(left, right, **kwargs)
         with id_scope():
-            result = _prove_bag_equivalent(left_sql, right_sql, **options)
+            return _prove_bag_equivalent(left, right, **kwargs)
+
+    # MySQL stores a quotient a derived table materialises rounded to its declared scale (issue 45): the pair is read so.
+    result = derived_rounding.proved(prove, left_sql, right_sql, options)
     return without_volatile_proof(result, left_sql, right_sql, options.get("dialect", "bigquery"))
 
 
