@@ -23,7 +23,7 @@ Every conditional proof is checked three ways, and a failure of the first or the
 
 ## Singh and Bedathur LeetCode pairs
 
-All 2,800 pairs, MySQL dialect, table and column names only, plus `DATE` for the columns the queries use as dates (the [Singh page](singh-bedathur.md) has the data and its licence note). Measured 2026-11-17 on commit 9dadccb (the fourth and fifth hardest-cases batches on main 2cf0154), about 130 minutes on 4 cores, in 14 parts with other jobs beside it part of the time. Main 2cf0154's prover (commit 711a01b) measured the same way on the same machine: 890 outright, 972 conditional, 357 refuted, 581 unknown.
+All 2,800 pairs, MySQL dialect, table and column names only, plus `DATE` for the columns the queries use as dates (the [Singh page](singh-bedathur.md) has the data and its licence note). Re-measured 2026-11-18 on commit e75c9a3 (the VeriEQL worker rules merged with main edb3ae3, Kumo_SQL_Prover PR 36; 4,533 seconds on 4 cores): 1,395 outright, 394 conditional, 1,200 unknown, 11 not re-checkable, 0 wrong. The conditional count fell from 413 and the outright count rose from 1,196 because the worker rules prove outright (with the spec's own keys) many cases that needed a condition before: together the proofs rose from 1,609 to 1,789. The two runs were not compared case by case, so the sum, not a list of cases, is what is known. Earlier, measured 2026-11-17 on commit 9dadccb (the fourth and fifth hardest-cases batches on main 2cf0154), about 130 minutes on 4 cores, in 14 parts with other jobs beside it part of the time. Main 2cf0154's prover (commit 711a01b) measured the same way on the same machine: 890 outright, 972 conditional, 357 refuted, 581 unknown.
 
 | Count | Pairs |
 | --- | ---: |
@@ -57,17 +57,17 @@ The same problems as VeriEQL ships them, with types, primary keys, NOT NULL colu
 
 | Count | Cases |
 | --- | ---: |
-| Proved outright | 1,196 |
-| **Proved under named conditions** | **413** |
+| Proved outright | 1,395 |
+| **Proved under named conditions** | **394** |
 | Refuted with every candidate holding | 0 |
-| Unknown | 1,380 |
+| Unknown | 1,200 |
 | Conditional but not re-checkable | 11 |
 | Wrong | 0 |
 | Harness crashes | 0 |
 
 Measured 2026-11-17 on commit 9dadccb (the fourth and fifth hardest-cases batches on main 2cf0154). Main's prover (commit 711a01b) measured the same way on the same sample: 1,189 outright, 379 conditional, 1,422 unknown, 10 not re-checkable. The sample was not rerun after main's date fix for counterexamples (b8df3d5) was merged into the branch.
 
-- The 413 use 593 conditions (456 NOT NULL, 120 unique keys, 17 foreign keys); one condition suffices for 289 cases, two for 87, and three to six for 37. All 413 pass the executed counterexample search with the conditions added to the spec (300 databases, then 300 wider ones), and each proof is lost when any one condition is dropped; 141 are separated by a database that breaks the conditions.
+- The 394 use 588 conditions (466 NOT NULL, 111 unique keys, 11 foreign keys); one condition suffices for 260 cases, two for 94, and three to six for 40. All 394 pass the executed counterexample search with the conditions added to the spec (300 databases, then 300 wider ones), and each proof is lost when any one condition is dropped; 144 are separated by a database that breaks the conditions.
 - Eleven more conditional proofs cannot be re-checked and are not scored: 7 rest on a composite foreign key that the executed check cannot impose, and 4 hold only when a column is NOT NULL and make both queries constant on every test database.
 - **The count rose from 379 to 413 on 2026-11-17 (batches 4 and 5).** Compared case by case with the run on main's prover: 36 unknown cases became conditional, 5 unknown cases and 2 conditional ones became outright proofs, 1 unknown case became a conditional proof that is not re-checkable, 4 conditional proofs name a different minimal set, and no proof is lost. 23 of the 36 read the sales table and 4 the insurance table. The rules were written on development pairs of the Singh eval above, which holds some of the same LeetCode problems; this sample was run for scoring and its cases were not read.
 - Earlier measurements: 374 conditional and 929 outright on 2026-11-12 (commit 395b5c1, the third hardest-cases batch; main 0e94662 then had 335 and 879), and 297 conditional and 866 outright on 2026-10-04. In October the constant-result check began to run on VeriEQL type names and rejected 24 proofs that held only because the returned conditions made both queries return one result on every test database (a unique key on a self join that asks for two different rows). The rise from 374 to 379 on main between 2026-11-12 and 2026-11-17 comes from rule batches merged in between and was not traced.
