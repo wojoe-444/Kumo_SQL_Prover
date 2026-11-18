@@ -117,7 +117,7 @@ from .constant_regroup_rules import collapse_constant_regroup
 from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
 from . import float_regrouping
-from . import shape_fallback
+from . import shape_fallback, worker_rules
 from . import union_source_names
 from .union_rollup import roll_up_grouped_union
 from .one_row_joins import cross_join_one_row
@@ -182,6 +182,12 @@ from .keyed_only_grouping import key_only_group_to_distinct
 from .one_row_groups import collapse_one_row_groups
 from .plain_grouping_calls import fold_plain_grouping_calls
 from .self_outer_join_columns import distinct_self_outer_join_column
+from .scalar_counts import scalar_counts_to_grouped_join
+from .counted_union_branches import ungroup_counted_branches
+from .grouped_join_keys import join_before_grouping
+from .indicator_sums import indicator_sum_rules
+from .keyed_union_branches import union_of_distinct_rows
+from .union_all_counts import count_over_union_all
 from .tagged_union_groups import split_tagged_union_group
 from .tailed_outer_aggregates import wrap_tailed_outer_join_aggregate
 from .scalar_having_groups import read_scalar_having_groups
@@ -5061,6 +5067,20 @@ def normalize(
     from .preserved_join_sources import merge_preserved_join_source
     from .single_source_columns import qualify_single_source_columns
     from .windowed_output_pruning import prune_windowed_outputs
+    from .derived_anti_join import derived_anti_join
+    from .keyed_self_membership import keyed_self_membership
+    from .own_group_aggregates import inner_own_group_join, own_group_join
+    from .own_group_keys import keyed_own_group_rows
+    from .exact_rounding import exact_rounding
+    from .exact_power_division import divide_by_power_of_ten
+    from .exact_scaling import scale_after_division
+    from .keyed_distinct_aggregates import drop_keyed_aggregate_distinct
+    from .joined_membership import join_to_membership
+    from .counted_outer_joins import counted_outer_join_to_inner
+    from .nonempty_group_counts import drop_nonempty_group_counts
+    from .grouped_membership_filters import grouped_membership_filters
+    from .grouped_source_dedup import drop_dedup_over_grouped
+    from .unique_join_membership import read_unique_joins, unique_join_to_membership
 
     shapes = shape_fallback.enabled()  # off on the second attempt for a pair these rules do not prove
     if shapes:
@@ -5086,7 +5106,18 @@ def normalize(
 
         tree = sqlite_date_text_rules(tree, dialect)  # pre-pass: SQLite's STRFTIME digits as text or as a number
     if shapes:
+        from .having_alias import read_having_aliases
+
+        tree = worker_rules.prepass(read_having_aliases, tree, schema)  # pre-pass: HAVING n > 1 after COUNT(x) AS n tests the count
         tree = qualify_single_source_columns(tree, schema, dialect)  # pre-pass: a bare column of a one-source select names its source
+        from .aliased_columns import qualify_aliased_columns
+        from .own_group_windows import read_own_group_windows
+
+        tree = worker_rules.prepass(read_own_group_windows, tree, schema, not_null)  # pre-pass: AGG(c) OVER (PARTITION BY k) is a join with the table's own grouped aggregate
+        tree = worker_rules.prepass(qualify_aliased_columns, tree, schema, dialect)  # pre-pass: a bare column in a select list, WHERE or ON is a source column
+        from .correlated_count_tests import read_correlated_count_tests
+
+        tree = worker_rules.prepass(read_correlated_count_tests, tree, schema, types)  # pre-pass: (SELECT COUNT(*) .. WHERE x.c = o.k) > 1 is o.k IN the groups counted so
         from .aggregate_membership import read_aggregate_membership
 
         tree = read_aggregate_membership(tree, schema, dialect)  # pre-pass: (k, v) IN (SELECT k, MIN(v) .. GROUP BY k) compares with the group's aggregate
@@ -5112,6 +5143,25 @@ def normalize(
             if read:
                 shape_fallback.note_fired("child_counts")
         tree = choose_key_groups(tree, schema, keys, not_null)  # pre-pass: grouping by any NOT NULL key of a table is one grouping, so name the first
+        from .membership_key_counts import read_membership_key_counts
+
+        tree = worker_rules.prepass(read_unique_joins, tree, schema)  # pre-pass: an inner join with a grouped derived table on all of its keys is an IN test
+        tree = worker_rules.prepass(read_membership_key_counts, tree, schema)  # pre-pass: COUNT(k) is COUNT(*) in the HAVING of x IN (SELECT k .. GROUP BY k ..)
+        from .repeated_groups import read_repeated_groups
+
+        tree = worker_rules.prepass(read_repeated_groups, tree, schema, not_null, keys, types)  # pre-pass: two different rows that agree on columns are a group of more than one row
+        from .count_membership import read_count_membership
+
+        tree = worker_rules.prepass(read_count_membership, tree, schema)  # pre-pass: a correlated COUNT(..) > n is membership in the groups that pass
+        from .one_row_aggregates import read_one_row_aggregates
+
+        tree = worker_rules.prepass(read_one_row_aggregates, tree, schema)  # pre-pass: a select that aggregates without GROUP BY is one row, as an IN list or a joined table
+        from .fk_membership import read_fk_membership
+
+        tree = worker_rules.prepass(read_fk_membership, tree, schema, foreign_keys)  # pre-pass: a foreign-key column is in its parent's key exactly when it is not NULL
+        from .unmatched_groups import read_unmatched_groups
+
+        tree = worker_rules.prepass(read_unmatched_groups, tree, schema, not_null, keys)  # pre-pass: LEFT JOIN .. GROUP BY key HAVING COUNT(joined) = 0 keeps the rows without a match
     # Not shape rules: each reads a comparison the prover could not read at all, so the second attempt (shapes off, which
     # drops merge_exists_disjunction) keeps them and can still match the separate EXISTS tests they produce.
     from .absolute_values import read_absolute_values
@@ -5205,6 +5255,8 @@ def normalize(
             tree, lambda t: _qualify_correlated_columns(_qualify_outer_join_columns(t, schema), schema), schema, dialect, "algebraic_qualification"
         )
     if shapes:
+        for _select in list(tree.find_all(exp.Select)):
+            worker_rules.step(derived_anti_join, _select)  # pre-pass: before the existence joins below spell the derived table's own join as EXISTS
         tree = read_existence_joins_everywhere(tree, schema)  # pre-pass: anti-, semi- and marker joins as EXISTS tests
     tree = merge_distinct_partitions(tree)
     if shapes:
@@ -5223,6 +5275,7 @@ def normalize(
         lambda sel: drop_mysql_exists_cast(sel, dialect),
         lambda sel: rewrite_case_arms(sel, dialect),
         lambda sel: drop_unmatched_left_join(sel, schema, dialect),
+        lambda sel: worker_rules.step(drop_nonempty_group_counts, sel, schema, not_null),  # COUNT(NOT NULL column) >= 1 holds for every group; before the next rule reads it as a NULL test
         lambda sel: rewrite_count_tests(sel, schema),
         lambda sel: rewrite_semijoin_shapes(sel, schema, types_map),
         lambda sel: string_spelling_rules(sel, types_map, dialect),
@@ -5302,6 +5355,25 @@ def normalize(
         push_filter_below_windows,
         lambda sel: literal_like_to_equality(sel, types_map, dialect),
         merge_exists_disjunction,
+        lambda sel: worker_rules.step(union_of_distinct_rows, sel, schema, keys, not_null),
+        lambda sel: worker_rules.step(scalar_counts_to_grouped_join, sel, schema, keys, not_null),
+        lambda sel: worker_rules.step(count_over_union_all, sel, schema, keys, not_null),
+        lambda sel: worker_rules.step(indicator_sum_rules, sel, schema, keys, not_null),
+        lambda sel: worker_rules.step(ungroup_counted_branches, sel, schema, keys, not_null),
+        lambda sel: worker_rules.step(join_before_grouping, sel, schema, keys),
+        lambda sel: worker_rules.step(derived_anti_join, sel),
+        lambda sel: worker_rules.step(keyed_self_membership, sel, schema, keys, not_null),
+        lambda sel: worker_rules.step(inner_own_group_join, sel, schema, not_null),
+        lambda sel: worker_rules.step(keyed_own_group_rows, sel, schema, keys, not_null),
+        lambda sel: worker_rules.step(exact_rounding, sel, types_map, dialect),
+        lambda sel: worker_rules.step(scale_after_division, sel, types_map, dialect),
+        lambda sel: worker_rules.step(divide_by_power_of_ten, sel, types_map, dialect),
+        lambda sel: worker_rules.step(counted_outer_join_to_inner, sel, schema),  # LEFT JOIN .. HAVING COUNT(right column) > 0 keeps no padded row
+        lambda sel: worker_rules.step(join_to_membership, sel, schema, types_map),  # a source joined only to be matched, under a select blind to repeats
+        lambda sel: worker_rules.step(grouped_membership_filters, sel, schema),  # a test on group keys with a subquery filters before the grouping
+        lambda sel: worker_rules.step(drop_dedup_over_grouped, sel, schema),  # DISTINCT or GROUP BY over the keys of a grouped derived table
+        lambda sel: worker_rules.step(drop_keyed_aggregate_distinct, sel, schema, keys, not_null),  # COUNT(DISTINCT c) where a key keeps c from repeating
+        lambda sel: worker_rules.step(unique_join_to_membership, sel, schema),  # a join on every key of a grouped derived table that other steps exposed
     ) if shapes else ()
 
     # shape rules that must read a select before ``_wrap_outer_join_aggregate`` wraps its outer joins
@@ -5338,7 +5410,7 @@ def normalize(
                 if node.parent is not None:
                     node.replace(fresh)
                 node = fresh
-            for rule in (null_contradiction, lambda sel: nullable_lateral_boolean_group(sel, schema, not_null), distribute_over_constant_union, collapse_named_counted_intersection, lambda sel: distinct_rules(sel, schema), _mean_times_count, _single_row_source, lambda sel: _drop_exists_witnessed_by_join(sel, dialect), _drop_empty_null_extended_side, _inline_constant_source, _constant_counts, _inline_constant_columns, lambda sel: _push_distinct_into_sources(sel, schema, keys), _push_filter_into_derived, push_filter_into_set_operation, _unwrap_distinct_projection, _drop_redundant_distinct_source, left_join_to_inner, lambda sel: join_rewrites(sel, schema, not_null, foreign_keys), strengthen_under_outer_on, _full_join_to_one_sided, lambda sel: _drop_unused_left_join(sel, keys), lambda sel: compare_with_extremum_as_exists(sel, schema) if shapes else None, lambda sel: decorrelation_step(sel, not_null, schema, dialect), lambda sel: _decorrelate_aggregate(sel, schema), lambda sel: _decorrelate_select_list(sel, schema), lambda sel: _inline_expression_projection(sel, schema), _inline_expression_projection, _prune_derived, _distinct_over_union_all, _merge_spj_source, _fold_filter_into_grouping, _merge_outer_right_filter, lambda sel: move_exists_into_padded_side(sel, schema), lambda sel: _drop_derived_null_guard(sel, not_null or {}), lambda sel: _pull_up_exists(sel, schema), lambda sel: _drop_implied_exists(sel, schema), _flatten_join_source, lambda sel: outer_join_rules(sel, keys), qualify, _order_grouped_columns, fold_literal_int_div, lambda sel: _fold_identity_casts(sel, types_map, dialect), lambda sel: fold_casts_and_constant_cases(sel, types_map, dialect), lambda sel: _shifted_sums(sel, types_map), *early_shape_rules, lambda sel: key_only_group_to_distinct(sel) if shapes else None, lambda sel: distinct_self_outer_join_column(sel) if shapes else None, lambda sel: count_preserved_not_null(sel, not_null, _null_extended) if shapes else None, _wrap_outer_join_aggregate, lambda sel: limit_rule(sel, types_map, dialect), _lift_limit_derived, _group_by_to_distinct, _unwrap_projection, key_having_to_where, window_rules, _collapse_aggregate, _drop_global_null_filter, _roll_up_aggregate, _regroup_distinct, lambda sel: regroup_arithmetic(sel, (_collapse_aggregate, _roll_up_aggregate, _regroup_distinct)), _split_aggregates, _distribute, unnest_grouped_source, flatten_grouped_join, lambda sel: pull_up_aggregate(sel, keys), lambda sel: read_back_eager_sums(sel, not_null), _key_aggregates, rewrite_aggregates, lambda sel: remove_keyed_grouping(sel, keys, not_null), lambda sel: drop_fk_join(sel, keys, not_null, foreign_keys), drop_unread_outer_join, strengthen_derived_outer_join, lambda sel: drop_grouped_sum_coalesce(sel, not_null or {}), lift_derived_expressions, lambda sel: _indicator_join_above(sel, keys), split_distinct_select, grouped_outer_join_rules, lambda sel: propagate_constant_correlations(sel, types_map), lambda sel: propagate_grouped_join_facts(sel, types_map), lambda sel: expose_correlated_key_groups(sel, keys, not_null or {}, types_map), lambda sel: exists_constant_rules(sel, schema, not_null, foreign_keys, types_map), collapse_constant_regroup, regroup_tuple_count, sum_of_grouped_counts,
+            for rule in (null_contradiction, lambda sel: nullable_lateral_boolean_group(sel, schema, not_null), distribute_over_constant_union, collapse_named_counted_intersection, lambda sel: distinct_rules(sel, schema), _mean_times_count, _single_row_source, lambda sel: _drop_exists_witnessed_by_join(sel, dialect), _drop_empty_null_extended_side, _inline_constant_source, _constant_counts, _inline_constant_columns, lambda sel: _push_distinct_into_sources(sel, schema, keys), _push_filter_into_derived, push_filter_into_set_operation, _unwrap_distinct_projection, _drop_redundant_distinct_source, left_join_to_inner, lambda sel: join_rewrites(sel, schema, not_null, foreign_keys), strengthen_under_outer_on, _full_join_to_one_sided, lambda sel: _drop_unused_left_join(sel, keys), lambda sel: compare_with_extremum_as_exists(sel, schema) if shapes else None, lambda sel: decorrelation_step(sel, not_null, schema, dialect), lambda sel: _decorrelate_aggregate(sel, schema), lambda sel: _decorrelate_select_list(sel, schema), lambda sel: _inline_expression_projection(sel, schema), _inline_expression_projection, _prune_derived, _distinct_over_union_all, _merge_spj_source, _fold_filter_into_grouping, _merge_outer_right_filter, lambda sel: move_exists_into_padded_side(sel, schema), lambda sel: _drop_derived_null_guard(sel, not_null or {}), lambda sel: _pull_up_exists(sel, schema), lambda sel: _drop_implied_exists(sel, schema), _flatten_join_source, lambda sel: outer_join_rules(sel, keys), qualify, _order_grouped_columns, fold_literal_int_div, lambda sel: _fold_identity_casts(sel, types_map, dialect), lambda sel: fold_casts_and_constant_cases(sel, types_map, dialect), lambda sel: _shifted_sums(sel, types_map), *early_shape_rules, lambda sel: key_only_group_to_distinct(sel) if shapes else None, lambda sel: distinct_self_outer_join_column(sel) if shapes else None, lambda sel: count_preserved_not_null(sel, not_null, _null_extended) if shapes else None, _wrap_outer_join_aggregate, lambda sel: limit_rule(sel, types_map, dialect), _lift_limit_derived, _group_by_to_distinct, _unwrap_projection, key_having_to_where, window_rules, _collapse_aggregate, _drop_global_null_filter, _roll_up_aggregate, _regroup_distinct, lambda sel: regroup_arithmetic(sel, (_collapse_aggregate, _roll_up_aggregate, _regroup_distinct)), _split_aggregates, _distribute, unnest_grouped_source, flatten_grouped_join, lambda sel: None if shapes and worker_rules.enabled() and own_group_join(sel, schema) else pull_up_aggregate(sel, keys), lambda sel: read_back_eager_sums(sel, not_null), _key_aggregates, rewrite_aggregates, lambda sel: remove_keyed_grouping(sel, keys, not_null), lambda sel: drop_fk_join(sel, keys, not_null, foreign_keys), drop_unread_outer_join, strengthen_derived_outer_join, lambda sel: drop_grouped_sum_coalesce(sel, not_null or {}), lift_derived_expressions, lambda sel: _indicator_join_above(sel, keys), split_distinct_select, grouped_outer_join_rules, lambda sel: propagate_constant_correlations(sel, types_map), lambda sel: propagate_grouped_join_facts(sel, types_map), lambda sel: expose_correlated_key_groups(sel, keys, not_null or {}, types_map), lambda sel: exists_constant_rules(sel, schema, not_null, foreign_keys, types_map), collapse_constant_regroup, regroup_tuple_count, sum_of_grouped_counts,
                     fold_boolean_identities,
                     relax_membership_dedup,
                     *shape_rules,
@@ -5529,7 +5601,14 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
                 return last
     if result.status is SmtStatus.NOT_PROVEN and fired and shape_fallback.enabled() and len(left_sql) + len(right_sql) <= shape_fallback.NARROW_MAX_CHARS:
         # The same for a pair too large for that attempt: only the rules that fired, one at a time, are switched off.
-        for name in sorted(fired):
+        if worker_rules.NAME in fired and worker_rules.enabled():
+            # The VeriEQL worker group fired: the whole prover as it was without it (every attempt and every narrow rule), so that
+            # a proof main finds by switching one of its own rules off, which the group can hide, is never lost.
+            with shape_fallback.without(worker_rules.NAME):
+                before_group = _prove_algebraic_levels(original[0], original[1], False, **kwargs)
+            if before_group.status is not SmtStatus.NOT_PROVEN:
+                return before_group
+        for name in sorted(fired - {worker_rules.NAME}):
             with shape_fallback.without(name):
                 narrow = attempt()
             if narrow.status is not SmtStatus.NOT_PROVEN:
