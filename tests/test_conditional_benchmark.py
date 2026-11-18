@@ -82,12 +82,11 @@ def test_a_pair_with_no_date_column_declares_nothing():
 
 
 # A made-up pair whose proof needs two different text literals to differ on the column: 'S' and 'I' are the same value to
-# MySQL when the column holds numbers, so the prover declines until the column is declared as text.
+# MySQL when the column holds numbers (then the second query returns nothing), so no condition helps and the prover
+# declines until the column is declared as text. The first query's NOT NULL test is what the condition is for.
 _LABELLED = (
-    "SELECT buyer FROM sale JOIN item ON sale.item_id = item.item_id WHERE label IN ('S', 'I') GROUP BY buyer "
-    "HAVING SUM(CASE WHEN label = 'I' THEN 1 ELSE 0 END) = 0",
-    "SELECT DISTINCT sale.buyer FROM item JOIN sale ON sale.item_id = item.item_id WHERE label = 'S' "
-    "AND sale.buyer NOT IN (SELECT sale.buyer FROM item JOIN sale ON sale.item_id = item.item_id WHERE label = 'I')",
+    "SELECT DISTINCT sale.buyer FROM sale JOIN item ON sale.item_id = item.item_id WHERE label = 'S' AND sale.buyer IS NOT NULL",
+    "SELECT DISTINCT sale.buyer FROM item JOIN sale ON sale.item_id = item.item_id WHERE label = 'S' AND label <> 'I'",
 )
 
 

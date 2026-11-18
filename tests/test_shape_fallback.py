@@ -184,3 +184,118 @@ def test_a_ninth_batch_rule_stays_out_of_an_attempt_with_an_older_rule_off():
     assert not fired & shape_fallback.NINTH_BATCH
     with shape_fallback.without("own_key_membership"), shape_fallback.without_all(shape_fallback.NINTH_BATCH):
         assert normalize(sql, **options) == older
+
+
+# --- the two stages of a proof (the ninth batch runs second) --------------------------------------------------
+
+from kumo_sql_prover import worker_rules  # noqa: E402
+
+PATRONS = {"patron": ["patron_id", "patron_name"], "loan": ["patron_id", "title"]}
+PATRON_FACTS = {
+    "patron": TableConstraints(not_null=frozenset({"patron_id", "patron_name"}), keys=(("patron_id",),)),
+    "loan": TableConstraints(not_null=frozenset({"patron_id", "title"})),
+}
+# Patrons who borrowed two titles and never a third, with joins under DISTINCT: ``distinct_match_joins`` of the ninth
+# batch reads the joins.
+JOINED = (
+    "SELECT DISTINCT p.patron_id, p.patron_name FROM patron AS p JOIN loan AS o1 ON p.patron_id = o1.patron_id AND o1.title = 'A' "
+    "JOIN loan AS o2 ON p.patron_id = o2.patron_id AND o2.title = 'B' WHERE p.patron_id NOT IN (SELECT patron_id FROM loan WHERE title = 'C')"
+)
+PATRON_OPTIONS = {"schema": PATRONS, "constraints": PATRON_FACTS, "compare_names": False, "dialect": "mysql"}
+# Buyers of one label only, as a test of the group and as a list: ``single_value_groups`` of the ninth batch reads the
+# first, and nothing older proves the pair.
+SALES = {"sale": ["buyer", "label", "paid"]}
+ONE_LABEL = "SELECT buyer FROM sale GROUP BY buyer HAVING COUNT(DISTINCT label) = 1 AND MIN(label) = 'S'"
+NEVER_ANOTHER = "SELECT DISTINCT buyer FROM sale WHERE label = 'S' AND buyer NOT IN (SELECT buyer FROM sale WHERE label <> 'S')"
+SALE_OPTIONS = {
+    "schema": SALES, "constraints": {"sale": TableConstraints(not_null=frozenset({"buyer", "label"}))}, "types": {"sale": {"label": "STRING"}},
+    "compare_names": False, "dialect": "mysql",
+}
+# A value looked up by a bare key name against a list: ``lookup_names``, the batch's pre-pass over the whole tree.
+ITEMS = {"item": ["item_id", "label"], "sale": ["buyer", "item_id", "paid"]}
+ITEM_FACTS = {"item": TableConstraints(keys=(("item_id",), ("label",))), "sale": TableConstraints()}
+BARE = "SELECT buyer FROM sale WHERE item_id = (SELECT item_id FROM item WHERE label = 'S')"
+LISTED = "SELECT s.buyer FROM sale AS s WHERE s.item_id IN (SELECT i.item_id FROM item AS i WHERE i.label = 'S')"
+ITEM_OPTIONS = {"schema": ITEMS, "constraints": ITEM_FACTS, "compare_names": False, "dialect": "mysql"}
+
+
+def stages_of(monkeypatch, left, right, **options):
+    """The proof's verdict, and for each step whether the ninth batch was on in it."""
+
+    seen = []
+    real = algebraic_equivalence._prove_algebraic
+
+    def watched(*args, **kwargs):
+        seen.append(shape_fallback.ninth_stage())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(algebraic_equivalence, "_prove_algebraic", watched)
+    return prove_equivalent_algebraic(left, right, **options), seen
+
+
+def test_the_stage_switches():
+    assert not shape_fallback.ninth_staged() and shape_fallback.ninth_batch_enabled()  # outside a proof the batch is on
+    with shape_fallback.ninth_deferred() as seen:
+        assert shape_fallback.ninth_staged() and not shape_fallback.ninth_batch_enabled() and shape_fallback.ninth_watching()
+        with shape_fallback.without_all(shape_fallback.NINTH_BATCH):
+            assert not shape_fallback.ninth_batch_enabled()
+        for older in (shape_fallback.disabled, shape_fallback.late, lambda: shape_fallback.without("own_key_membership")):
+            with older():
+                assert not shape_fallback.ninth_watching()  # stage two would not let the batch fire here either
+        with shape_fallback.without(worker_rules.NAME):
+            assert shape_fallback.ninth_watching()
+        shape_fallback.note_ninth_candidate()
+        assert seen == [True] and not shape_fallback.ninth_watching()  # one yes is enough
+        with shape_fallback.ninth_on():
+            assert shape_fallback.ninth_batch_enabled() and not shape_fallback.ninth_watching()
+            with shape_fallback.without(worker_rules.NAME):  # measured without the worker group, so it fires with the group off
+                assert shape_fallback.ninth_batch_enabled()
+                with shape_fallback.without("own_key_membership"):
+                    assert not shape_fallback.ninth_batch_enabled()
+    assert not shape_fallback.ninth_staged()
+    assert shape_fallback._BESIDE_NINTH == {worker_rules.NAME}
+
+
+def test_a_pair_proved_before_the_batch_never_sees_it(monkeypatch):
+    """Stage one is the prover as it was: a rule of the batch would fire on both queries, and no step has the batch on."""
+
+    with shape_fallback.tracking() as fired:
+        normalize(JOINED, schema=PATRONS, dialect="mysql")
+    assert "distinct_match_joins" in fired
+    result, seen = stages_of(monkeypatch, JOINED, JOINED.replace(" AS o1", " AS first").replace("o1.", "first."), **PATRON_OPTIONS)
+    assert result.proven and seen and not any(seen)
+
+
+@pytest.mark.parametrize("pair", [(ONE_LABEL, NEVER_ANOTHER, SALE_OPTIONS), (BARE, LISTED, ITEM_OPTIONS)], ids=["a rule of one select", "the pre-pass"])
+def test_a_pair_only_the_batch_proves_is_proved_in_stage_two(monkeypatch, pair):
+    left, right, options = pair
+    result, seen = stages_of(monkeypatch, left, right, **options)
+    assert result.proven
+    assert seen[0] is False and seen[-1] is True and seen == sorted(seen)  # all of stage one, then stage two
+    monkeypatch.undo()
+    with shape_fallback.ninth_deferred() as candidates:  # a proof inside a stage makes no stages of its own
+        assert not prove_equivalent_algebraic(left, right, **options).proven
+    assert candidates == [True]
+
+
+def test_no_stage_two_when_no_rule_of_the_batch_would_fire(monkeypatch):
+    result, seen = stages_of(
+        monkeypatch, "SELECT a FROM t WHERE b LIKE 'x%'", "SELECT a FROM t WHERE b LIKE 'x%' AND LENGTH(b) > 0", schema=SCHEMA, dialect="mysql"
+    )
+    assert not result.proven and seen and not any(seen)
+
+
+@pytest.mark.parametrize("sql,options", [(JOINED, {"schema": PATRONS}), (BARE, {"schema": ITEMS, "keys": {"item": [("label",)]}})], ids=["a rule of one select", "the pre-pass"])
+def test_stage_one_asks_the_rules_and_changes_nothing(sql, options):
+    """Trying a rule where it would fire tells stage one that stage two has work, and leaves the query as it reads with
+    the batch off."""
+
+    with shape_fallback.without_all(shape_fallback.NINTH_BATCH):
+        off = normalize(sql, dialect="mysql", **options)
+    with shape_fallback.ninth_deferred() as seen:
+        assert normalize(sql, dialect="mysql", **options) == off
+    assert seen == [True]
+    assert normalize(sql, dialect="mysql", **options) != off
+    with shape_fallback.ninth_deferred() as seen:
+        normalize("SELECT a FROM t WHERE a > 1", schema=SCHEMA, dialect="mysql")
+    assert seen == []

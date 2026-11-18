@@ -5002,11 +5002,15 @@ def _narrow(name: str, rule, select):
 
 
 def _narrow_shape(name: str, rule, select):
-    """A narrow-retry rule of the ninth hardest-cases batch: it fires on the first attempt and on a narrow attempt that
-    switches off rules of that batch only (``shape_fallback.ninth_batch_enabled``), so every other attempt reads the pair
-    exactly as it was read before the batch."""
+    """A narrow-retry rule of the ninth hardest-cases batch: it fires in the second stage of a proof, on the first attempt
+    and on a narrow attempt that switches off rules of that batch only (``shape_fallback.ninth_batch_enabled``), so the
+    first stage and every other attempt read the pair exactly as it was read before the batch. In the first stage the
+    rule is tried where it would fire and its result thrown away (no rule of the batch changes the select it is given),
+    which tells the prover whether the second stage has anything to do."""
 
     if not shape_fallback.ninth_batch_enabled():
+        if shape_fallback.ninth_watching() and shape_fallback.rule_enabled(name) and rule(select) is not None:
+            shape_fallback.note_ninth_candidate()  # stage one: the rule would fire here, so stage two is worth running
         return None
     return _narrow(name, rule, select)
 
@@ -5173,6 +5177,11 @@ def normalize(
         tree, named = name_lookup_columns(tree, schema, keys)  # pre-pass: bare names around a keyed lookup get their tables
         if named:
             shape_fallback.note_fired("lookup_names")
+    elif shape_fallback.ninth_watching() and schema and keys and tree.find(exp.Subquery) is not None:
+        from .lookup_names import name_lookup_columns
+
+        if name_lookup_columns(tree.copy(), schema, keys)[1]:  # it writes in place, so stage one asks a copy
+            shape_fallback.note_ninth_candidate()
     tree = read_keyed_lookups(tree, schema, keys)  # pre-pass: a filter on a value looked up by key is an EXISTS
     tree = read_absolute_values(tree, types)  # pre-pass: ABS(x) = n says x is n or -n
     tree = rewrite_quantified(tree, schema, not_null, keys)
@@ -5580,46 +5589,81 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
                         return retry
         return result
 
-    with shape_fallback.tracking() as fired, shape_fallback.watching_late() as late_seen:
-        result = attempt()
-    if result.status is SmtStatus.NOT_PROVEN and shape_fallback.worth_retrying(left_sql, right_sql):
-        # A shape rule that fires on one query only can hide a match: try the pair as it was read before them.
-        with shape_fallback.disabled():
-            plain = attempt()
-        if plain.status is not SmtStatus.NOT_PROVEN:
-            return plain
-        if late_seen:
-            # A late rule would have changed a query: try the pair with the late rules on, first beside the shape rules and
-            # then without them.
-            with shape_fallback.late():
-                third = attempt()
-            if third.status is not SmtStatus.NOT_PROVEN:
-                return third
-            with shape_fallback.disabled(), shape_fallback.late():
-                last = attempt()
-            if last.status is not SmtStatus.NOT_PROVEN:
-                return last
-    if result.status is SmtStatus.NOT_PROVEN and fired and shape_fallback.enabled() and len(left_sql) + len(right_sql) <= shape_fallback.NARROW_MAX_CHARS:
-        # The same for a pair too large for that attempt: only the rules that fired, one at a time, are switched off.
-        if worker_rules.NAME in fired and worker_rules.enabled():
-            # The VeriEQL worker group fired: the whole prover as it was without it (every attempt and every narrow rule), so that
-            # a proof main finds by switching one of its own rules off, which the group can hide, is never lost.
-            with shape_fallback.without(worker_rules.NAME):
-                before_group = _prove_algebraic_levels(original[0], original[1], False, **kwargs)
-            if before_group.status is not SmtStatus.NOT_PROVEN:
-                return before_group
-        for name in sorted(fired - {worker_rules.NAME}):
-            with shape_fallback.without(name):
-                narrow = attempt()
-            if narrow.status is not SmtStatus.NOT_PROVEN:
-                return narrow
-        if fired & shape_fallback.NINTH_BATCH:
-            # The first attempt as it was before the ninth batch: its rules prove some pairs only together, and one of
-            # them off can let another begin to fire.
-            with shape_fallback.without_all(shape_fallback.NINTH_BATCH):
-                narrow = attempt()
-            if narrow.status is not SmtStatus.NOT_PROVEN:
-                return narrow
+    def ladder() -> SmtEquivalenceResult:
+        with shape_fallback.tracking() as fired, shape_fallback.watching_late() as late_seen:
+            result = attempt()
+        if result.status is SmtStatus.NOT_PROVEN and shape_fallback.worth_retrying(left_sql, right_sql):
+            # A shape rule that fires on one query only can hide a match: try the pair as it was read before them.
+            with shape_fallback.disabled():
+                plain = attempt()
+            if plain.status is not SmtStatus.NOT_PROVEN:
+                return plain
+            if late_seen:
+                # A late rule would have changed a query: try the pair with the late rules on, first beside the shape rules and
+                # then without them.
+                with shape_fallback.late():
+                    third = attempt()
+                if third.status is not SmtStatus.NOT_PROVEN:
+                    return third
+                with shape_fallback.disabled(), shape_fallback.late():
+                    last = attempt()
+                if last.status is not SmtStatus.NOT_PROVEN:
+                    return last
+        if result.status is SmtStatus.NOT_PROVEN and fired and shape_fallback.enabled() and len(left_sql) + len(right_sql) <= shape_fallback.NARROW_MAX_CHARS:
+            # The same for a pair too large for that attempt: only the rules that fired, one at a time, are switched off.
+            if worker_rules.NAME in fired and worker_rules.enabled():
+                # The VeriEQL worker group fired: the whole prover as it was without it (every attempt and every narrow rule), so that
+                # a proof main finds by switching one of its own rules off, which the group can hide, is never lost.
+                with shape_fallback.without(worker_rules.NAME):
+                    before_group = _prove_algebraic_levels(original[0], original[1], False, **kwargs)
+                if before_group.status is not SmtStatus.NOT_PROVEN:
+                    return before_group
+            for name in sorted(fired - {worker_rules.NAME}):
+                with shape_fallback.without(name):
+                    narrow = attempt()
+                if narrow.status is not SmtStatus.NOT_PROVEN:
+                    return narrow
+            if fired & shape_fallback.NINTH_BATCH:
+                # The first attempt as it was before the ninth batch: its rules prove some pairs only together, and one of
+                # them off can let another begin to fire.
+                with shape_fallback.without_all(shape_fallback.NINTH_BATCH):
+                    narrow = attempt()
+                if narrow.status is not SmtStatus.NOT_PROVEN:
+                    return narrow
+        return result
+
+    def narrow_enough() -> bool:
+        return shape_fallback.enabled() and len(left_sql) + len(right_sql) <= shape_fallback.NARROW_MAX_CHARS
+
+    def ninth_attempts() -> tuple[SmtEquivalenceResult, set]:
+        """The attempts that have the ninth batch on: the first, and one for each of its rules that fired, switched off."""
+
+        with shape_fallback.tracking() as fired:
+            found = attempt()
+        if found.status is SmtStatus.NOT_PROVEN and narrow_enough():
+            for name in sorted(fired & shape_fallback.NINTH_BATCH):
+                with shape_fallback.without(name):
+                    narrow = attempt()
+                if narrow.status is not SmtStatus.NOT_PROVEN:
+                    return narrow, fired
+        return found, fired
+
+    if shape_fallback.ninth_staged():
+        result = ladder()  # a proof inside a staged proof: the stage it runs in decides whether the ninth batch is on
+    else:
+        # Stage one: the prover as it was before the ninth batch, at the cost it had (``shape_fallback.NINTH_BATCH``).
+        with shape_fallback.ninth_deferred() as ninth_seen:
+            result = ladder()
+        if result.status is SmtStatus.NOT_PROVEN and ninth_seen:
+            # Stage two: a rule of the batch would have fired. The batch was measured without the VeriEQL worker group, so
+            # when that group fires beside it the attempts are made once more with the group off.
+            with shape_fallback.ninth_on():
+                later, fired = ninth_attempts()
+                if later.status is SmtStatus.NOT_PROVEN and worker_rules.NAME in fired and worker_rules.enabled():
+                    with shape_fallback.without(worker_rules.NAME):
+                        later, _ = ninth_attempts()
+            if later.status is not SmtStatus.NOT_PROVEN:
+                return later
     if search and result.status is SmtStatus.NOT_PROVEN:
         from . import executed_refutation
 
@@ -5657,7 +5701,7 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
         shapes = shape_fallback.enabled()
 
         def normalized(sql, level):
-            key = (sql, level, shapes, shape_fallback.off(), shape_fallback.late_enabled())
+            key = (sql, level, shapes, shape_fallback.off(), shape_fallback.late_enabled(), shape_fallback.ninth_stage())
             if key not in cache:
                 assumptions = set()
                 text = normalize(sql, schema=kwargs.get("schema"), dialect=dialect,
@@ -5682,7 +5726,7 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
         state = (shapes, shape_fallback.off(), shape_fallback.late_enabled())
         order = [(True, frozenset(), False), (False, frozenset(), False), (True, frozenset(), True), (False, frozenset(), True)]  # the attempts in the order made
         earlier = order[: order.index(state)] if state in order else []
-        if any((left, right) == tuple(cache.get((sql, keyed_distinct, *before), (None,))[0] for sql in (left_sql, right_sql)) for before in earlier):
+        if any((left, right) == tuple(cache.get((sql, keyed_distinct, *before, shape_fallback.ninth_stage()), (None,))[0] for sql in (left_sql, right_sql)) for before in earlier):
             # An earlier attempt compared these same two texts.
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, shape_fallback.SKIPPED, assumptions=tuple(sorted(normalization_assumptions)))
         if keyed_distinct and (left, right) == (normalized(left_sql, 0), normalized(right_sql, 0)):
