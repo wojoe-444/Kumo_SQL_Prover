@@ -43,6 +43,7 @@ LEFT_ALONE = [
     "SELECT a.item_id FROM sale AS a WHERE a.item_id NOT IN (SELECT k.item_id FROM sale AS k WHERE k.paid > 5) GROUP BY a.item_id",  # one table: other rules read it
     GROUPED.replace("SELECT a.item_id, b.label FROM", "SELECT a.item_id + 1, b.label FROM"),
     GROUPED.replace("SELECT a.item_id, b.label FROM", "SELECT DISTINCT a.item_id, b.label FROM"),
+    GROUPED.replace("SELECT a.item_id, b.label FROM", "SELECT a.item_id, b.`LABEL` FROM"),  # a quoted name that differs by case is another column
 ]
 
 

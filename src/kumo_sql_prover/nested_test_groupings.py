@@ -50,7 +50,11 @@ def group_as_distinct(select: exp.Select) -> exp.Select | None:
     outputs = [item.this if isinstance(item, exp.Alias) else item for item in select.expressions]
     if any(not isinstance(value, exp.Column) or isinstance(value.this, exp.Star) for value in outputs):
         return None
-    if {key.sql().lower() for key in keys} != {value.sql().lower() for value in outputs}:
+    def text(column: exp.Column) -> str:
+        # a quoted name can differ from another by case alone
+        return column.sql() if any(part.args.get("quoted") for part in column.find_all(exp.Identifier)) else column.sql().lower()
+
+    if {text(key) for key in keys} != {text(value) for value in outputs}:
         return None
     result = select.copy()
     result.set("group", None)
