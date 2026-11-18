@@ -112,6 +112,23 @@ def _columns_of(schema: Mapping[str, list[str]] | None, key: str) -> set[str] | 
     return {c.lower() for c in matches[0]} if len(matches) == 1 else None
 
 
+_VIEW_PARTS = frozenset({"expressions", "from", "from_", "where", "comments", "kind", "hint"})
+
+
+def _star_view(select: exp.Expression | None) -> exp.Table | None:
+    """The base table a select shows whole: ``SELECT * FROM t [WHERE ..]``, which adds no column and renames none."""
+
+    if not isinstance(select, exp.Select) or any(v for k, v in select.args.items() if k not in _VIEW_PARTS):
+        return None
+    sources = _from_sources(select)
+    if len(sources) != 1 or not isinstance(sources[0], exp.Table) or len(select.expressions) != 1:
+        return None
+    star = select.expressions[0]
+    if isinstance(star, exp.Column) and isinstance(star.this, exp.Star) and star.table.lower() == sources[0].alias_or_name.lower():
+        return sources[0]
+    return sources[0] if isinstance(star, exp.Star) and not star.args.get("except_") and not star.args.get("replace") and not star.args.get("rename") else None
+
+
 class _Reader:
     """Which base table and occurrence each column of one query belongs to."""
 
@@ -120,6 +137,31 @@ class _Reader:
         self.schema = schema
         self.ctes = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
         self._scopes: dict[int, tuple[dict[str, _Occurrence], int]] = {}
+        # a CTE (named once, with no column list) or a derived table that shows one base table whole: a column
+        # read through it is that table's column
+        named = [c for c in tree.find_all(exp.CTE)]
+        names = [c.alias_or_name.lower() for c in named]
+        self._views: dict[str, exp.Select] = {
+            c.alias_or_name.lower(): c.this for c in named
+            if names.count(c.alias_or_name.lower()) == 1 and not (c.args.get("alias") is not None and c.args["alias"].args.get("columns")) and self._shown(c.this) is not None
+        }
+
+    def _shown(self, select: exp.Expression | None) -> exp.Table | None:
+        table = _star_view(select)
+        return None if table is None or (not table.db and table.name.lower() in self.ctes) else table
+
+    def _through(self, source: exp.Expression) -> _Occurrence | None:
+        """The occurrence behind a source that shows one base table whole."""
+
+        view = None
+        if isinstance(source, exp.Table) and not source.db:
+            view = self._views.get(source.name.lower())
+        elif isinstance(source, exp.Subquery) and not (source.args.get("alias") is not None and source.args["alias"].args.get("columns")) and not source.args.get("pivots"):
+            view = source.this if self._shown(source.this) is not None else None
+        if view is None:
+            return None
+        table = self._shown(view)
+        return _Occurrence(view, table.alias_or_name.lower(), table)
 
     def scope(self, select: exp.Select):
         if id(select) not in self._scopes:
@@ -141,17 +183,28 @@ class _Reader:
                 tables, _ = self.scope(select)
                 if alias in tables:
                     return tables[alias]
-                if any(s.alias_or_name.lower() == alias for s in _from_sources(select) if not isinstance(s, exp.Table) or s.alias):
-                    return None  # a derived table or CTE reference by that alias
+                named = [s for s in _from_sources(select) if s.alias_or_name.lower() == alias]
+                if named:
+                    # a derived table or CTE reference by that alias: its table's column when it shows one table whole
+                    return self._through(named[0]) if len(named) == 1 and self._has(named[0], column) else None
             return None
         tables, total = self.scope(selects[0])
         if len(tables) == 1 and total == 1:
             return next(iter(tables.values()))
+        if not tables and total == 1:
+            source = _from_sources(selects[0])[0]
+            return self._through(source) if self._has(source, column) else None
         if self.schema and tables and total == len(tables):
             found = [o for o in tables.values() if column.name.lower() in (_columns_of(self.schema, o.key) or ())]
             if len(found) == 1:
                 return found[0]
         return None
+
+    def _has(self, source: exp.Expression, column: exp.Column) -> bool:
+        """Whether the schema lists the column for the table a whole-table source shows (an unlisted name is not guessed)."""
+
+        occurrence = self._through(source)
+        return occurrence is not None and column.name.lower() in (_columns_of(self.schema, occurrence.key) or ())
 
 
 def _quote(name: str, dialect: str) -> str:
@@ -621,6 +674,14 @@ def add_conditions(
     uniques = [c for c in without_keys if c.kind == "unique"]
     if len(uniques) > 1:
         fewer += [tuple(c for c in without_keys if c is not left_out) for left_out in uniques[:MAX_LEFT_OUT]]
+    # A foreign key can be the fact a proof needs while a candidate key spoils it in the way described above ("every
+    # product has a sale" proves a pair that "a product is sold once" rewrites out of reach). The sets above hold
+    # the foreign keys only beside every unique key, so two more kinds are tried last: the NOT NULL facts with the
+    # foreign keys, and those with one unique key, for the first few keys.
+    foreign = [c for c in candidates if c.kind == "foreign_key"]
+    if foreign:
+        fewer.append(tuple(c for c in candidates if c.kind != "unique"))
+        fewer += [tuple(c for c in candidates if c.kind != "unique" or c is kept) for kept in uniques[:MAX_LEFT_OUT]]
     full = dict.fromkeys([tuple(without_keys), tuple(candidates)])
     for universe in dict.fromkeys([*full, *fewer]):
         if universe not in full and time.monotonic() > deadline:

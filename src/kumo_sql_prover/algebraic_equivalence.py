@@ -162,6 +162,8 @@ from .own_group_joins import inner_join_own_groups
 from .duplicate_self_joins import regroup_duplicate_self_join
 from .differing_self_joins import regroup_differing_self_join
 from .own_group_membership import read_own_group_membership
+from .different_row_keys import name_different_rows
+from .referenced_presence import drop_referenced_presence
 from .own_key_membership import read_own_key_membership
 from .own_value_lists import read_own_value_list
 from .one_row_tails import drop_one_row_tail
@@ -5258,6 +5260,8 @@ def normalize(
         lambda sel: _narrow("own_value_lists", lambda s: read_own_value_list(s, schema), sel),
         lambda sel: _narrow("own_group_membership", lambda s: read_own_group_membership(s, schema, keys, not_null, types_map), sel),
         lambda sel: _narrow("own_key_membership", lambda s: read_own_key_membership(s, schema, keys, not_null, types_map), sel),
+        lambda sel: _narrow("different_row_keys", lambda s: name_different_rows(s, keys, not_null, types_map), sel),
+        lambda sel: _narrow("referenced_presence", lambda s: drop_referenced_presence(s, schema, not_null, foreign_keys, types_map), sel),
         lambda sel: read_counted_presence(sel, not_null, types_map, schema),
         lambda sel: _narrow("anti_join_reading", read_unmatched_left_join, sel),
         lambda sel: _narrow("distinct_source_filters", lift_source_distinct, sel),
