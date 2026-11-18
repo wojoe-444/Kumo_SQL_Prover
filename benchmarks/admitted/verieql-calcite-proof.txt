@@ -193,7 +193,6 @@ b6a1077b45dd baseline calcite:297
 b9585bd7b7d4 baseline calcite:298
 4de64b51113b baseline calcite:299
 60833f7289f4 baseline calcite:3
-45e0902a239b baseline calcite:30
 69d2c7a0f021 baseline calcite:300
 28db7a935c66 baseline calcite:301
 4ad7568298a6 baseline calcite:302

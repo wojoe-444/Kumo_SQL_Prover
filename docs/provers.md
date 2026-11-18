@@ -334,6 +334,36 @@ Tests: `tests/test_statement_values.py` (rewrites proved under the condition in 
 
 Tests for the list: `tests/test_volatile_calls.py` (each listed call per dialect, functions that must not be listed, the reported pairs through the three solver-based provers, calls the rules remove, the assumption line, the structural prover's identical-and-in-place rule).
 
+### A quotient a MySQL derived table stores rounded
+
+In MySQL a division of exact numbers, and `AVG` of exact numbers, computes more digits than its declared scale (four more than the dividend's: nine fractional digits for whole numbers, cut off, not rounded). Used directly, those digits take part in what follows. When the quotient is an output of a derived table or CTE that MySQL materialises, it is stored in a `DECIMAL` column of the declared scale and rounded there. The provers read a derived table's output where it is used, as if the table were merged, so until 2026-11-18 (Kumo_SQL_Prover issue 45) they proved these two equal in the `mysql` dialect, and MySQL 8.0.46 returns different numbers for them:
+
+```text
+-- bill(id INT PRIMARY KEY, paid INT NOT NULL, due INT NOT NULL), rows (1,5,5) (2,1,3) (3,1,3): one bill of three paid in full
+SELECT t.q * 100 AS p FROM (SELECT SUM(CASE WHEN paid = due THEN 1 ELSE 0 END) / COUNT(*) AS q FROM bill) AS t    -- 33.3300
+SELECT SUM(CASE WHEN paid = due THEN 1 ELSE 0 END) / COUNT(*) * 100 AS p FROM bill                                 -- 33.3333
+```
+
+`ROUND(t.pct, 2)` over `100 * S / C AS pct` in a derived table against `ROUND(100 * S / C, 2)` goes wrong the same way (the double rounding: 49.51 against 49.50 on a 101-row table), as do a comparison (`paid / due = 0.3333` is false on the row and true through a derived table with `LIMIT`) and a grouped `AVG` rounded outside a CTE.
+
+**What rounds** (measured on MySQL 8.0.46): a derived table or CTE that has an aggregate, `GROUP BY`, `HAVING`, `DISTINCT`, `LIMIT`, a window function or a set operation, and a recursive CTE. **What does not:** one MySQL merges (a plain select-project-join, also when it is read twice or has a subquery in its select list), a scalar subquery, and the subqueries of `IN`, `ANY` and `EXISTS`. DuckDB divides into a floating-point number, so nothing is stored rounded there; no other engine was checked, and only the `mysql` dialect is read this way.
+
+**How.** `kumo_sql_prover.derived_rounding` runs inside the SMT, algebraic and bag provers. Before they see a pair in the `mysql` dialect it wraps each output of a materialising derived table or CTE that holds such a value (a division of operands not known to be floating point, `AVG`, and any arithmetic, `SUM`, `CASE`, `COALESCE` or function built on one) in a call to `KQ_STORED_QUOTIENT(..)`, a function the provers have no definition for. They read an unknown function as "equal arguments, equal result", which is what storing is: a function of the value stored. The wrapped output matches only the same wrapped output, so a proof that needed the table merged is lost, and a proof of the wrapped pair holds for the pair as written. The wrapper is left off where it cannot be seen or does not apply:
+
+| Left unwrapped | Why |
+| --- | --- |
+| an output the statement only returns, as a plain item of its outermost `SELECT` (no `DISTINCT`, `GROUP BY` or positional `ORDER BY`) | rounded to the same four decimals directly and through a derived table |
+| the columns of a derived table or CTE MySQL merges | the expression is read where it is used, as MySQL does |
+| `ROUND(x, d)` with `d` from 0 to 4, `CAST(.. AS DECIMAL/INT/DOUBLE)`, a comparison, `COUNT`, `DIV` | the value has no digit past the declared scale |
+| a division where either operand is known to be floating point (a column declared `DOUBLE`, `FLOAT` or `REAL` in `types`, a literal in exponent form, `CAST(.. AS DOUBLE)`, `SQRT`) | no declared scale, nothing stored rounded |
+| a division of two number literals whose value fits the declared scale (`24 / 100`) | nothing is lost |
+
+What is returned: a proof of the wrapped pair is returned as it is. A pair it does not prove is run as written once: a refutation of that run is kept, a proof of it becomes `not_proven` with a reason naming issue 45 (that is the proof this module exists to remove), anything else is returned as it was. A refutation of the wrapped pair alone is dropped, because the unknown function was free to differ.
+
+**Limits.** `ROUND(t.q * 100, 2)` over a derived quotient is exactly the direct `ROUND(S / C * 100, 2)` (rounding a ratio to four decimals and multiplying by 100 is rounding the percentage to two), but the wrapper does not know the declared scale, so it declines that pair too. A name two derived tables share, an output called by its text (`SELECT a / b` read as `` t.`a / b` ``) and `NATURAL JOIN` count every read of the table as a read of the output. Views and table functions are not read. An untyped column is assumed to be exact; declare `DOUBLE` columns in `types`.
+
+Tests: `tests/test_derived_rounding.py` (the five pairs of the issue unproven by each prover and unchanged on DuckDB, pairs that still prove, which outputs are wrapped and which are not, what is returned for each combination of wrapped and plain answers).
+
 ## Algebraic prover and SQLSolver (no admin rights)
 
 What makes [SQLSolver](https://github.com/SJTU-IPADS/SQLSolver) (SIGMOD 2024) strong is that it treats queries as arithmetic over tuple multiplicities: under bag semantics `UNION ALL` is addition, a join is multiplication, and aggregates over a sum split into partial aggregates combined arithmetically. `kumo_sql_prover.algebraic_equivalence` brings that into KumoSQL in pure Python on top of the existing Z3 prover, so it installs per user with `pip install --user -e ".[smt]"`:

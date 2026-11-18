@@ -2,17 +2,17 @@
   "suite": "SQLSolver TPC-H",
   "order": 12,
   "size": 22,
-  "score": "22/22, 0 wrong",
+  "score": "21/22, 0 wrong",
   "metric": "Equivalent query pairs proved; same checking as Calcite.",
   "docs": "docs/evals/sqlsolver.md#benchmark-coverage",
   "command": "python tools/sqlsolver_bench.py tpch",
-  "date": "2026-11-10",
-  "caveats": "Tuned on test. Was 21/22 from 2026-10-04 to 2026-11-10 while this row said 22/22 (pair 20; the floor is in the slow tier).",
+  "date": "2026-11-18",
+  "caveats": "Tuned on test. Was 21/22 from 2026-10-04 to 2026-11-10 while this row said 22/22 (pair 20; the floor is in the slow tier). 2026-11-18 (issue 45): 22 to 21. Pair 15 (TPC-H Q17: `l_quantity < (SELECT 0.2 * AVG(l_quantity) ..)` against a join with a grouped derived table that holds `0.2 * AVG(..)`) is no longer proved in MySQL, where the derived table stores the product rounded to its declared scale and the correlated subquery does not; a possible false proof, only on a table of ~100,000 rows per part that a two-decimal quantity can straddle, not shown on MySQL here. The floor in the slow tier is 21. The other 21 pairs are unchanged (base and change compared on this pair set, not the whole eval).",
   "evidence": "proof",
   "correctness": "0 false proofs",
   "coverage": {
-    "proven": 22,
-    "unknown": 0
+    "proven": 21,
+    "unknown": 1
   },
   "held_out": "none"
 }
