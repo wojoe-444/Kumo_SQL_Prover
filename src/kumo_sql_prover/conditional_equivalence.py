@@ -674,6 +674,14 @@ def add_conditions(
     uniques = [c for c in without_keys if c.kind == "unique"]
     if len(uniques) > 1:
         fewer += [tuple(c for c in without_keys if c is not left_out) for left_out in uniques[:MAX_LEFT_OUT]]
+    # A foreign key can be the fact a proof needs while a candidate key spoils it in the way described above ("every
+    # product has a sale" proves a pair that "a product is sold once" rewrites out of reach). The sets above hold
+    # the foreign keys only beside every unique key, so two more kinds are tried last: the NOT NULL facts with the
+    # foreign keys, and those with one unique key, for the first few keys.
+    foreign = [c for c in candidates if c.kind == "foreign_key"]
+    if foreign:
+        fewer.append(tuple(c for c in candidates if c.kind != "unique"))
+        fewer += [tuple(c for c in candidates if c.kind != "unique" or c is kept) for kept in uniques[:MAX_LEFT_OUT]]
     full = dict.fromkeys([tuple(without_keys), tuple(candidates)])
     for universe in dict.fromkeys([*full, *fewer]):
         if universe not in full and time.monotonic() > deadline:
