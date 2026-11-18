@@ -163,9 +163,11 @@ from .duplicate_self_joins import regroup_duplicate_self_join
 from .differing_self_joins import regroup_differing_self_join
 from .own_group_membership import read_own_group_membership
 from .different_row_keys import name_different_rows
+from .distinct_derived_joins import read_derived_join
 from .distinct_match_joins import ask_unlisted_joins
 from .joined_key_lists import test_joined_rows
 from .own_column_lists import read_own_column_list
+from .nested_test_groupings import group_as_distinct
 from .own_row_copies import drop_own_row_copies
 from .single_value_groups import read_single_value_groups
 from .own_row_witness import add_own_row_tests
@@ -5233,6 +5235,8 @@ def normalize(
         lambda sel: _narrow("own_column_lists", lambda s: read_own_column_list(s, schema, types_map), sel),
         lambda sel: _narrow("joined_key_lists", lambda s: test_joined_rows(s, keys, schema, types_map), sel),
         lambda sel: _narrow("own_row_witness", lambda s: add_own_row_tests(s, not_null), sel),
+        lambda sel: _narrow("nested_test_groupings", group_as_distinct, sel),
+        lambda sel: _narrow("distinct_derived_joins", lambda s: read_derived_join(s, schema), sel),
         lambda sel: _narrow("single_value_groups", lambda s: read_single_value_groups(s, types_map), sel),
         lambda sel: read_counted_presence(sel, not_null, types_map, schema),
         lambda sel: _narrow("anti_join_reading", read_unmatched_left_join, sel),
