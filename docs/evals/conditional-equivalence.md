@@ -23,7 +23,7 @@ Every conditional proof is checked three ways, and a failure of the first or the
 
 ## Singh and Bedathur LeetCode pairs
 
-All 2,800 pairs, MySQL dialect, table and column names only, plus `DATE` for the columns the queries use as dates (the [Singh page](singh-bedathur.md) has the data and its licence note). Measured 2026-11-18 on commit b39b665 (the seventh hardest-cases batch on main caee6e3), about 130 minutes on 4 cores, in 14 parts. Main's rules measured the same way on the same machine (on 7945aa7, the code of PR 40): 890 outright, 1,064 conditional, 355 refuted, 491 unknown.
+All 2,800 pairs, MySQL dialect, table and column names only, plus `DATE` for the columns the queries use as dates (the [Singh page](singh-bedathur.md) has the data and its licence note). A pair that is still unknown after that is decided a second time with the columns the queries compare with a string declared as text (`_text_types`, the declaration the plain Singh run uses): with no type, the prover rightly declines any step that needs two different strings to differ, since MySQL reads both as 0 beside a number column. A verdict reached that way says so in its detail, and its conditions are searched, minimised and re-run on databases like any other. Measured 2026-11-18 on commit b39b665 (the seventh hardest-cases batch on main caee6e3), about 130 minutes on 4 cores, in 14 parts. Main's rules measured the same way on the same machine (on 7945aa7, the code of PR 40): 890 outright, 1,064 conditional, 355 refuted, 491 unknown.
 
 | Count | Pairs |
 | --- | ---: |
