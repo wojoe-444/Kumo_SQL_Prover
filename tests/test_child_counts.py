@@ -85,6 +85,42 @@ def test_other_spellings_of_the_counts():
     assert reading(GROUPED + " ORDER BY i.bill_id") == READ.format(c="c")
 
 
+MEMBERS_ONLY = (
+    "SELECT i.bill_id, c.member_name, COALESCE(g.n, 0) AS friends, COALESCE(t.n, 0) AS trusted FROM bill AS i JOIN member AS c ON c.member_id = i.owner_id "
+    "LEFT JOIN (SELECT u.member_id, COUNT(*) AS n FROM member AS u JOIN friend AS o ON u.member_id = o.owner_id GROUP BY u.member_id) AS g ON i.owner_id = g.member_id "
+    "LEFT JOIN (SELECT u.member_id, COUNT(*) AS n FROM member AS u JOIN (SELECT * FROM friend WHERE friend_mail IN (SELECT DISTINCT mail FROM member)) AS o "
+    "ON u.member_id = o.owner_id GROUP BY u.member_id) AS t ON i.owner_id = t.member_id"
+)
+CHAINED = COUNTED.replace("AS t ON i.owner_id = t.owner_id", "AS t ON g.owner_id = t.owner_id")
+
+
+def test_counts_of_the_friends_of_members_only():
+    # the counts table drops the owners that are no member; the bill's owner is one (the inner lookup found it)
+    assert reading(MEMBERS_ONLY) == READ.format(c="c")
+    assert reading(MEMBERS_ONLY.replace("member AS u JOIN friend AS o ON u.member_id = o.owner_id", "friend AS o JOIN member AS u ON o.owner_id = u.member_id")) == READ.format(c="c")
+    # read from the member itself, padded or not: its id is a member's id or NULL
+    left = MEMBERS_ONLY.replace("bill AS i JOIN member", "bill AS i LEFT JOIN member").replace("ON i.owner_id = g.member_id", "ON c.member_id = g.member_id").replace("ON i.owner_id = t.member_id", "ON c.member_id = t.member_id")
+    assert reading(left, foreign=None) is not None
+    # no lookup of the owner: an owner that is no member reads 0 here and its friends elsewhere
+    bare = "SELECT i.bill_id, COALESCE(g.n, 0) AS n FROM bill AS i LEFT JOIN (SELECT u.member_id, COUNT(*) AS n FROM member AS u JOIN friend AS o ON u.member_id = o.owner_id GROUP BY u.member_id) AS g ON i.owner_id = g.member_id"
+    assert reading(bare) is None
+    assert reading(bare.replace("FROM bill AS i LEFT JOIN", "FROM bill AS i JOIN member AS c ON c.mail = i.owner_id LEFT JOIN")) is None  # another key of the member
+    # the joined column must be a key of the member, and the counts are of the friends
+    assert reading(MEMBERS_ONLY, keys={"bill": KEYS["bill"], "member": [("mail",)]}) is None
+    assert reading(MEMBERS_ONLY.replace("SELECT u.member_id, COUNT(*) AS n FROM member AS u JOIN friend", "SELECT u.member_id, COUNT(u.member_name) AS n FROM member AS u JOIN friend")) is None
+    assert reading(MEMBERS_ONLY.replace("ON u.member_id = o.owner_id GROUP BY u.member_id) AS g", "ON u.member_id = o.owner_id WHERE u.member_name = 'p' GROUP BY u.member_id) AS g")) is None
+    assert reading(MEMBERS_ONLY.replace("member AS u JOIN friend AS o ON u.member_id = o.owner_id GROUP BY u.member_id) AS g", "member AS u LEFT JOIN friend AS o ON u.member_id = o.owner_id GROUP BY u.member_id) AS g")) is None
+
+
+def test_a_counts_table_joined_on_the_key_of_an_earlier_one():
+    # every owner with a trusted friend has a friend: the second table finds its row through the first
+    assert reading(CHAINED) == READ.format(c="c")
+    # the other way round an owner with friends and no trusted one would lose its friends
+    wrong = COUNTED.replace("AS g ON i.owner_id = g.owner_id", "AS g ON t.owner_id = g.owner_id")
+    assert reading(wrong) is None
+    assert reading(CHAINED.replace("ON g.owner_id = t.owner_id", "ON g.n = t.owner_id")) is None
+
+
 def test_a_left_lookup_the_foreign_key_fills_is_an_inner_one():
     left = COUNTED.replace("bill AS i JOIN member", "bill AS i LEFT JOIN member")
     assert reading(left) == READ.format(c="c")
@@ -133,7 +169,8 @@ LEFT_ALONE = [
     "LEFT JOIN friend AS b ON a.member_id = b.owner_id GROUP BY a.member_id) AS t ON i.owner_id = t.member_id",
     FLAGGED.replace("SUM(v.flag)", "COUNT(v.flag)"),  # a flag is never NULL
     FLAGGED.replace("THEN 0 ELSE 1 END", "THEN 0 ELSE 2 END"),
-    FLAGGED.replace("ON f.friend_mail = m.mail) AS v", "ON f.friend_mail = m.mail WHERE f.friend_name <> 'y') AS v"),
+    FLAGGED.replace("ON f.friend_mail = m.mail) AS v", "ON f.friend_mail = m.mail WHERE f.friend_name <> 'y' OR m.mail IS NULL) AS v"),
+    FLAGGED.replace("ON f.friend_mail = m.mail) AS v", "ON f.friend_mail = m.mail LIMIT 5) AS v"),
     FLAGGED.replace("GROUP BY v.owner_id", "GROUP BY v.flag").replace("SELECT v.owner_id,", "SELECT v.flag AS owner_id,"),
     LISTED.replace("SELECT DISTINCT mail FROM member", "SELECT DISTINCT mail FROM member WHERE member_name = 'p'"),
     LISTED.replace("SELECT DISTINCT mail FROM member", "SELECT DISTINCT mail, member_name FROM member"),
@@ -177,6 +214,17 @@ def test_facts_that_are_needed():
 SPELLINGS = [
     GROUPED,
     COUNTED,
+    MEMBERS_ONLY,
+    FLAGGED.replace("ON f.friend_mail = m.mail) AS v", "ON f.friend_mail = m.mail WHERE f.friend_name <> 'y') AS v"),  # a view of some of the friends
+    CHAINED,
+    "SELECT i.bill_id, c.member_name, COALESCE(g.n, 0) AS a FROM bill i LEFT JOIN member c ON i.owner_id = c.member_id LEFT JOIN (SELECT o.owner_id, COUNT(o.friend_name) AS n "
+    "FROM friend o JOIN member u ON u.member_id = o.owner_id GROUP BY o.owner_id) g ON c.member_id = g.owner_id",
+    "SELECT i.bill_id, c.member_name, COALESCE(g.n, 0) AS a FROM bill i JOIN member c ON i.owner_id = c.member_id LEFT JOIN (SELECT u.member_id, COUNT(*) AS n FROM member u "
+    "INNER JOIN friend o ON u.member_id = o.owner_id WHERE o.friend_mail IN (SELECT mail FROM member c1) GROUP BY member_id) g ON g.member_id = c.member_id",
+    "SELECT i.bill_id, COALESCE(g.n, 0) AS a, COALESCE(t.n, 0) AS b FROM bill i LEFT JOIN (SELECT owner_id, COUNT(*) AS n FROM friend WHERE friend_name <> 'y' GROUP BY owner_id) g "
+    "ON i.owner_id = g.owner_id LEFT JOIN (SELECT owner_id, COUNT(friend_mail) AS n FROM friend WHERE friend_name <> 'y' AND friend_name <> 'x' GROUP BY owner_id) t ON g.owner_id = t.owner_id",
+    "SELECT c.member_id, c.member_name, COALESCE(g.n, 0) AS a FROM member c LEFT JOIN (SELECT u.member_id, COUNT(*) AS n FROM member u JOIN friend o ON u.member_id = o.owner_id "
+    "GROUP BY u.member_id) g ON c.member_id = g.member_id",
     PARENT_FIRST,
     PARENT_FIRST.replace("bill AS i JOIN (", "bill AS i LEFT JOIN ("),
     COUNTED.replace("bill AS i JOIN member", "bill AS i LEFT JOIN member"),
@@ -243,7 +291,7 @@ def test_the_reading_returns_the_rows_duckdb_returns_when_the_facts_hold(seed):
                 nonempty += bool(expected)
             else:
                 differs += not same
-    assert nonempty > 60 and differs > 0  # the facts are what make it true
+    assert nonempty > 90 and differs > 0  # the facts are what make it true
 
 
 z3 = pytest.importorskip("z3")
@@ -273,6 +321,8 @@ def test_the_spellings_are_proved_equal_under_the_keys():
     assert proved(GROUPED, PARENT_FIRST, facts())
     assert proved(COUNTED, PADDED, facts())
     assert proved(FLAGGED, LISTED, facts())
+    assert proved(GROUPED, MEMBERS_ONLY, facts())
+    assert proved(PARENT_FIRST, CHAINED, facts())
 
 
 def test_without_a_needed_fact_nothing_is_proved():

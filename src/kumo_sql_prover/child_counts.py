@@ -80,7 +80,19 @@ joined on one equality with a parent column, plus tests on its own columns; coun
 list ``(SELECT DISTINCT column FROM table)``, is only asked for a match: ``COUNT`` of its joined column counts the
 child rows whose value is ``IN`` that column. A counted-first table may read the child through a derived table that
 shows the child's rows with 0/1 flag columns (``CASE WHEN tests THEN 1 ELSE 0 END AS flag``) and add a flag up
-with ``SUM(flag)``. ``MIN``/``MAX``/``ANY_VALUE`` of a parent column is that column. No ``WHERE`` beside the
+with ``SUM(flag)``, or through ``(SELECT * FROM child WHERE tests)``. Two more counted-first tables are read:
+
+* one that first inner joins the child to a table on a declared one-column key
+  (``FROM member AS u JOIN friend AS o ON u.member_id = o.owner_id GROUP BY u.member_id``). The key finds at most
+  one row per child row, so the table holds the counts of the key values that are in ``member.member_id`` and no
+  row for any other. It is read only when the parent column it is joined on is equal to a parent column that *is*
+  that key of that table (the looked-up member's own ``member_id``): then the linked value is such a value or
+  NULL, and the dropped rows are never asked for.
+* one joined on the key of an earlier counts table over the same child (``LEFT JOIN .. AS t ON g.owner_id =
+  t.owner_id``), when the earlier one has no test this one lacks: it then has a row for every key value this one
+  has, so where it finds its row its key is the parent's value, and where it pads this one counts nothing either.
+
+``MIN``/``MAX``/``ANY_VALUE`` of a parent column is that column. No ``WHERE`` beside the
 joins, no ``DISTINCT``, ``HAVING``, window, tail, volatile call or quoted name.
 
 A narrow retry rule (``shape_fallback``): a pair it does not help is tried again without it.
@@ -162,6 +174,7 @@ class _Model:
     outputs: list[tuple[str | None, str, object]]  # (alias, "parent", expression) or (alias, "count", guards)
     guards: dict[tuple, exp.Expression | None] = field(default_factory=dict)  # comparison guards: key to expression
     held: set[str] = field(default_factory=set)  # the driving table's columns a grouped select groups by
+    within: list[tuple[str, str]] = field(default_factory=list)  # (table, key): counts kept only for values of that key
 
 
 class _Scope:
@@ -580,27 +593,53 @@ class _Reader:
         if any(value for key, value in inner.args.items() if key not in _COUNTS_ARGS):
             return None
         group = inner.args.get("group")
-        table = inner.args.get(FROM_KEY).this if inner.args.get(FROM_KEY) is not None else None
-        if table is None or group is None or len(group.expressions) != 1 or any(v for k, v in group.args.items() if k != "expressions"):
+        source = inner.args.get(FROM_KEY).this if inner.args.get(FROM_KEY) is not None else None
+        if source is None or group is None or len(group.expressions) != 1 or any(v for k, v in group.args.items() if k != "expressions"):
             return None
-        joins = inner.args.get("joins") or []
-        columns, flags, guards = self.columns(table), {}, {}
+        joins = list(inner.args.get("joins") or [])
+        # the child's rows may first be inner joined to a table on its key: the counts of the key values found there
+        holder: tuple[exp.Table, str, str] | None = None  # that table, its key, the child's column
+        first = _join(joins[0]) if joins else None
+        if first is not None and first[0] == "inner" and len(first[2]) == 1:
+            for keyed, other in ((source, first[1]), (first[1], source)):
+                if not self.columns(keyed) or not (self.columns(other) or self._child_view(other)):
+                    continue
+                pair = _Scope()
+                pair.add((keyed.alias_or_name or "").lower(), self.columns(keyed))
+                view = self._child_view(other) if not self.columns(other) else None
+                if not pair.add((other.alias_or_name or "").lower(), self.columns(other) or (view["columns"] | set(view["flags"]))):
+                    continue
+                ends = self._equality(first[2][0], pair)
+                if ends is None:
+                    continue
+                own, far = ends if ends[0][0] == (keyed.alias_or_name or "").lower() else ends[::-1]
+                if own[0] != (keyed.alias_or_name or "").lower() or far[0] != (other.alias_or_name or "").lower() or own[0] == far[0]:
+                    continue
+                if own[1] not in self.one_column_keys(keyed) or (view is not None and far[1] in view["flags"]):
+                    continue
+                holder, source, joins = (keyed, own[1], far[1]), other, joins[1:]
+                break
+        table, columns, flags, guards, base = source, self.columns(source), {}, {}, frozenset()
         if not columns:
-            view = self._child_view(table) if not joins else None
+            view = self._child_view(source) if not joins else None
             if view is None:
                 return None
-            table, columns, flags, guards = view["table"], view["columns"] | set(view["flags"]), view["flags"], view["guards"]
-        scope, alias = _Scope(), (inner.args.get(FROM_KEY).this.alias_or_name or "").lower()
+            table, columns, flags, guards, base = view["table"], view["columns"] | set(view["flags"]), view["flags"], view["guards"], view["base"]
+        scope, alias = _Scope(), (source.alias_or_name or "").lower()
         if not scope.add(alias, columns):
+            return None
+        if holder is not None and not scope.add((holder[0].alias_or_name or "").lower(), self.columns(holder[0])):
             return None
         for join in joins:
             listed = self.source_columns(join.this)
             if not listed or not scope.add((join.this.alias_or_name or "").lower(), listed):
                 return None
         key = scope.owner(group.expressions[0])
-        if key is None or key[0] != alias or key[1] in flags:
+        if holder is not None and key == ((holder[0].alias_or_name or "").lower(), holder[1]):
+            key = (alias, holder[2])  # the join makes the two equal
+        if key is None or key[0] != alias or key[1] in flags or (holder is not None and key[1] != holder[2]):
             return None
-        ctx = {"scope": scope, "child": alias, "table": table, "key": key[1], "presence": {}, "base": frozenset(), "star": True, "guards": guards, "flags": flags}
+        ctx = {"scope": scope, "child": alias, "table": table, "key": key[1], "presence": {}, "base": base, "star": True, "guards": guards, "flags": flags}
         for join in joins:
             read = _join(join)
             presence = self._presence(read[0], read[1], read[2], scope, alias) if read is not None else None
@@ -609,14 +648,15 @@ class _Reader:
             ctx["presence"][(join.this.alias_or_name or "").lower()] = presence
         where = inner.args.get("where")
         if where is not None:
-            base = self._tests(where.this, ctx)
-            if base is None:
+            tests = self._tests(where.this, ctx)
+            if tests is None:
                 return None
-            ctx["base"] = base
+            ctx["base"] = ctx["base"] | tests
         key_name, counts = None, {}
+        same = {key} | ({((holder[0].alias_or_name or "").lower(), holder[1])} if holder is not None else set())
         for item in inner.expressions:
             value = item.this if isinstance(item, exp.Alias) else item
-            if scope.owner(value) == key and key_name is None:
+            if scope.owner(value) in same and key_name is None:
                 key_name = (item.alias_or_name or "").lower()
                 continue
             tests = self._count(value, ctx) if isinstance(item, exp.Alias) else None
@@ -625,7 +665,8 @@ class _Reader:
             counts[item.alias.lower()] = tests
         if not key_name or not counts or key_name in counts:
             return None
-        return {"table": table, "key": key[1], "key_name": key_name, "counts": counts, "guards": ctx["guards"]}
+        within = (_full(holder[0]), holder[1]) if holder is not None else None
+        return {"table": table, "key": key[1], "key_name": key_name, "counts": counts, "guards": ctx["guards"], "base": ctx["base"], "within": within}
 
     def _child_view(self, source: exp.Expression) -> dict | None:
         """A derived table that is the child's rows with 0/1 flag columns beside its own: its table, columns and flags."""
@@ -635,7 +676,7 @@ class _Reader:
         if source.args["alias"].args.get("columns") or any(v for key, v in source.args.items() if key not in ("this", "alias")):
             return None
         inner = source.this
-        if any(value for key, value in inner.args.items() if key not in _JOINED_ARGS):
+        if any(value for key, value in inner.args.items() if key not in _JOINED_ARGS and key != "where"):
             return None
         table = inner.args.get(FROM_KEY).this if inner.args.get(FROM_KEY) is not None else None
         columns = self.columns(table) if table is not None else None
@@ -674,7 +715,12 @@ class _Reader:
             flags[item.alias.lower()] = tests
         if set(flags) & shown:
             return None
-        return {"table": table, "columns": shown, "flags": flags, "guards": ctx["guards"]}
+        base = frozenset()
+        if inner.args.get("where") is not None:
+            base = self._tests(inner.args["where"].this, ctx)  # only the child's rows that pass these
+            if base is None:
+                return None
+        return {"table": table, "columns": shown, "flags": flags, "guards": ctx["guards"], "base": base}
 
     def _joined(self, select: exp.Expression) -> _Model | None:
         """A select that joins its parents to tables of counts, or to one table of parents with their counts."""
@@ -716,8 +762,19 @@ class _Reader:
                 if ends is None:
                     return None
                 own, other = ends if ends[0][0] == alias else ends[::-1]
-                if own != (alias, info["key_name"]) or other[0] not in {p.alias for p in parents}:
+                if own != (alias, info["key_name"]):
                     return None
+                earlier = counts.get(other[0])
+                if earlier is not None:
+                    # joined on the key of an earlier counts table: that one has a row for every key value this
+                    # one has (same child, same key list, and no test this one lacks), so its key is the parent
+                    # column where this one finds a row, and both pad together otherwise
+                    if other[1] != earlier["key_name"] or not earlier["base"] <= info["base"] or earlier["within"] != info["within"]:
+                        return None
+                    other = earlier["link"]
+                elif other[0] not in {p.alias for p in parents}:
+                    return None
+                info["link"] = other
                 counts[alias] = info
                 links.append(other)
                 continue
@@ -780,7 +837,8 @@ class _Reader:
         outputs = self._outputs(select, scope, names, count)
         if outputs is None:
             return None
-        return _Model(parents, first["table"], first["key"], links, outputs, guards)
+        within = sorted({info["within"] for info in counts.values() if info["within"] is not None})
+        return _Model(parents, first["table"], first["key"], links, outputs, guards, within=within)
 
     def _real(self, parents: list[_Parent]) -> set[str]:
         """The parents that hold a row on every joined row: the driving table and the inner lookups from such a table."""
@@ -874,6 +932,11 @@ class _Reader:
         kinds = {self.type_of(by_alias[alias].table, name) for alias, name in equal} | {self.type_of(model.child, model.child_key)}
         if len(kinds) > 1:
             return None
+        for table, key in model.within:
+            # counts kept only for the values of a key: the linked value must be such a value (or NULL, which
+            # counts nothing either way), as a column equal to it that is that key of that table is
+            if not any(_full(by_alias[alias].table) == table and name == key for alias, name in equal):
+                return None
         link = min(equal, key=lambda column: (_full(by_alias[column[0]].table), column[1]))
 
         child = _CHILD
