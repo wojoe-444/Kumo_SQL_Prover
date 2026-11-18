@@ -164,6 +164,7 @@ from .differing_self_joins import regroup_differing_self_join
 from .own_group_membership import read_own_group_membership
 from .different_row_keys import name_different_rows
 from .distinct_match_joins import ask_unlisted_joins
+from .own_column_lists import read_own_column_list
 from .own_row_copies import drop_own_row_copies
 from .referenced_presence import drop_referenced_presence
 from .own_key_membership import read_own_key_membership
@@ -5220,11 +5221,12 @@ def normalize(
         lambda sel: _narrow("different_row_keys", lambda s: name_different_rows(s, keys, not_null, types_map), sel),
         lambda sel: _narrow("referenced_presence", lambda s: drop_referenced_presence(s, schema, not_null, foreign_keys, types_map), sel),
         lambda sel: _narrow("own_row_copies", lambda s: drop_own_row_copies(s, not_null, types_map), sel),
-        lambda sel: _narrow("distinct_match_joins", lambda s: ask_unlisted_joins(s, types_map, schema), sel),
+        lambda sel: _narrow("own_column_lists", lambda s: read_own_column_list(s, schema, types_map), sel),
         lambda sel: read_counted_presence(sel, not_null, types_map, schema),
         lambda sel: _narrow("anti_join_reading", read_unmatched_left_join, sel),
         lambda sel: _narrow("distinct_source_filters", lift_source_distinct, sel),
         lambda sel: _narrow("keyed_semijoin", lambda s: distinct_key_join_to_exists(s, keys, not_null, types_map, schema), sel),
+        lambda sel: _narrow("distinct_match_joins", lambda s: ask_unlisted_joins(s, types_map, schema), sel),
         lambda sel: _narrow("nested_correlation", lambda s: flatten_nested_correlation(s, types_map), sel),
         lambda sel: _narrow("presence_given_absence", lambda s: drop_implied_presence_filters(s, not_null, schema), sel),
         merge_preserved_join_source,

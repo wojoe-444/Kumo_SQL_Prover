@@ -1,4 +1,4 @@
-"""Under ``DISTINCT``, a joined table that no output reads is only asked for a match.
+"""Under ``DISTINCT`` or in an ``IN`` list, a joined table that no output reads is only asked for a match.
 
     SELECT DISTINCT p.patron_id, p.patron_name
     FROM patron AS p JOIN loan AS o1 ON p.patron_id = o1.patron_id AND o1.title = 'A'
@@ -23,13 +23,19 @@ connect. No key or other declared fact is needed: ``DISTINCT`` already removes w
 Two asked sources tied only through a kept column are separated first: ``a.x = p.z AND a.x = b.y`` is
 ``a.x = p.z AND p.z = b.y`` when ``nested_correlation.interchangeable`` lets one column be read for the other.
 
-``keyed_semijoin`` makes this step for two base tables when the list holds a key, and other rules read a select
-without nested queries. This rule reads three or more sources and a select that has a nested query, which those
-leave alone, and leaves one ``SELECT DISTINCT`` over the kept sources for the rules that follow.
+The list of an ``IN`` or ``NOT IN`` is read the same way, with or without ``DISTINCT``: the test asks which
+values the list holds (and whether it holds a NULL), not how often, and a kept row lists its value exactly when
+asked rows complete it.
 
-**What is read.** A ``SELECT DISTINCT`` (no ``ON``) over three or more base tables under inner, cross or comma
-joins with ``ON`` only, each under its own name, with no grouping, aggregate, window, ``ORDER BY`` or row limit,
-that holds at least one nested query; outputs are plain columns; every column, at any depth, names its source (the bare columns of a nested one-table
+    x NOT IN (SELECT s.buyer FROM item AS i JOIN sale AS s ON s.item_id = i.item_id WHERE i.label = 'I')
+    x NOT IN (SELECT s.buyer FROM sale AS s WHERE EXISTS (SELECT 1 FROM item AS i WHERE s.item_id = i.item_id AND i.label = 'I'))
+
+``keyed_semijoin`` makes the ``DISTINCT`` step for two base tables when the list holds a key (it runs first), and
+other rules read a ``DISTINCT`` select without nested queries, which this rule leaves to them.
+
+**What is read.** A ``SELECT DISTINCT`` (no ``ON``) that holds at least one nested query, or the select of an
+``IN`` list, over two or more base tables under inner, cross or comma joins with ``ON`` only, each under its own
+name, with no grouping, aggregate, window, ``ORDER BY`` or row limit; outputs are plain columns; every column, at any depth, names its source (the bare columns of a nested one-table
 query are given that table when the caller supplied its columns); no nested query reuses a source's name; every asked source is read by some conjunct. A volatile call leaves the
 select as it is.
 
@@ -58,7 +64,9 @@ def ask_unlisted_joins(select: exp.Select, types: dict | None = None, schema: di
     distinct = select.args.get("distinct")
     from_ = select.args.get(FROM_KEY)
     joins = select.args.get("joins") or []
-    if distinct is None or distinct.args.get("on") or from_ is None or len(joins) < 2 or any(select.args.get(key) for key in _BANNED):
+    holder = select.parent
+    listing = isinstance(holder, exp.Subquery) and not holder.alias and isinstance(holder.parent, exp.In) and holder.arg_key == "query"
+    if (distinct is None and not listing) or (distinct is not None and distinct.args.get("on")) or from_ is None or not joins or any(select.args.get(key) for key in _BANNED):
         return None
     for join in joins:
         if join.side or (join.kind or "").upper() not in ("", "INNER", "CROSS") or any(join.args.get(key) for key in _JOIN_EXTRAS):
@@ -74,7 +82,7 @@ def ask_unlisted_joins(select: exp.Select, types: dict | None = None, schema: di
     distinct, from_, joins = select.args.get("distinct"), select.args.get(FROM_KEY), select.args.get("joins") or []
     sources = [from_.this] + [join.this for join in joins]
     nested = [node for node in select.find_all(exp.Select) if node is not select]
-    if not nested:
+    if not nested and not listing:
         return None  # left to the rules that read a select without nested queries
     if any(node.find_ancestor(exp.Select) is select for node in select.find_all(exp.AggFunc, exp.Window)) or select.find(exp.Star) is not None:
         return None
@@ -154,7 +162,8 @@ def ask_unlisted_joins(select: exp.Select, types: dict | None = None, schema: di
         probe.set("where", exp.Where(this=exp.and_(*inside, copy=False)))
         tests.append(exp.Exists(this=probe))
     result = exp.Select(expressions=[item.copy() for item in select.expressions])
-    result.set("distinct", distinct.copy())
+    if distinct is not None:
+        result.set("distinct", distinct.copy())
     result.set(FROM_KEY, exp.From(this=by_name[kept[0]].copy()))
     if kept[1:]:
         result.set("joins", [exp.Join(this=by_name[name].copy()) for name in kept[1:]])

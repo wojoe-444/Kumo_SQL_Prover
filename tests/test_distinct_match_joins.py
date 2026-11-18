@@ -4,6 +4,7 @@ import random
 
 import pytest
 import sqlglot
+from sqlglot import exp
 
 from kumo_sql_prover.distinct_match_joins import ask_unlisted_joins
 
@@ -45,10 +46,50 @@ def test_tables_no_output_reads_are_asked_for_a_match():
     )
 
 
+def list_reading(sql: str, types=None, schema=SCHEMA) -> str | None:
+    """``sql`` with the select of its first ``IN`` list read, or None when the rule leaves that list alone."""
+
+    tree = sqlglot.parse_one(sql, read="mysql")
+    test = tree.find(exp.In)
+    result = ask_unlisted_joins(test.args["query"].this, types, schema)
+    if result is None:
+        return None
+    test.args["query"].set("this", result)
+    return tree.sql(dialect="mysql")
+
+
+NEVER = "SELECT p.patron_id FROM patron AS p WHERE p.patron_id NOT IN (SELECT o.patron_id FROM loan AS o JOIN patron AS q ON q.patron_id = o.patron_id WHERE q.patron_name = 'n')"
+LISTS_WITH_JOINS = [
+    NEVER,
+    NEVER.replace("NOT IN", "IN"),
+    NEVER.replace("SELECT o.patron_id FROM", "SELECT DISTINCT o.patron_id FROM"),
+    NEVER.replace("loan AS o JOIN patron AS q ON q.patron_id = o.patron_id WHERE", "loan AS o, patron AS q WHERE q.patron_id = o.patron_id AND"),
+    # a list of titles; the asked table is tied to the outer row as well
+    "SELECT p.patron_id, p.patron_name FROM patron AS p WHERE p.patron_name NOT IN (SELECT o.title FROM loan AS o JOIN loan AS o2 ON o2.patron_id = o.patron_id AND o2.title <> o.title WHERE o2.patron_id = p.patron_id)",
+    "SELECT p.patron_id FROM patron AS p WHERE (p.patron_id, p.patron_name) IN (SELECT o.patron_id, o.title FROM loan AS o JOIN loan AS o2 ON o2.patron_id = o.patron_id WHERE o2.title = 'B')",
+]
+
+
+def test_the_list_of_an_in_test_is_read_with_or_without_distinct():
+    assert list_reading(NEVER) == (
+        "SELECT p.patron_id FROM patron AS p WHERE NOT p.patron_id IN (SELECT o.patron_id FROM loan AS o WHERE EXISTS(SELECT 1 FROM patron AS q WHERE q.patron_id = o.patron_id AND q.patron_name = 'n'))"
+    )
+    for sql in LISTS_WITH_JOINS:
+        assert list_reading(sql) is not None, sql
+    # the same select anywhere else counts its rows: a derived table, an EXISTS body, a scalar comparison
+    inner = "SELECT o.patron_id FROM loan AS o JOIN patron AS q ON q.patron_id = o.patron_id WHERE q.patron_name = 'n'"
+    for holder in (f"SELECT d.patron_id FROM ({inner}) AS d", f"SELECT p.patron_id FROM patron AS p WHERE EXISTS ({inner})", f"SELECT p.patron_id FROM patron AS p WHERE p.patron_id = ({inner})"):
+        tree = sqlglot.parse_one(holder, read="mysql")
+        nested = next(node for node in tree.find_all(exp.Select) if node is not tree)
+        assert ask_unlisted_joins(nested, None, SCHEMA) is None, holder
+    # a list whose every table is listed, or with a LEFT JOIN, is left alone
+    assert list_reading(NEVER.replace("SELECT o.patron_id FROM", "SELECT o.patron_id + q.patron_id FROM")) is None
+    assert list_reading(NEVER.replace("JOIN patron AS q", "LEFT JOIN patron AS q")) is None
+
+
 LEFT_ALONE = [
     JOINED.replace("SELECT DISTINCT", "SELECT"),  # the joins multiply the rows
     JOINED.replace(" WHERE p.patron_id NOT IN (SELECT patron_id FROM loan WHERE title = 'C')", ""),  # no nested query: other rules read it
-    JOINED.replace(" JOIN loan AS o2 ON p.patron_id = o2.patron_id AND o2.title = 'B'", ""),  # two tables: keyed_semijoin reads it
     JOINED.replace("JOIN loan AS o2", "LEFT JOIN loan AS o2"),
     JOINED.replace("p.patron_id, p.patron_name FROM", "p.patron_id, o1.title, o2.title FROM"),  # every table is listed
     JOINED.replace("p.patron_id, p.patron_name FROM", "p.patron_id, UPPER(p.patron_name) FROM"),
@@ -77,6 +118,7 @@ def test_columns_of_different_types_are_not_read_one_for_the_other():
 
 SPELLINGS = [
     JOINED,
+    JOINED.replace(" JOIN loan AS o2 ON p.patron_id = o2.patron_id AND o2.title = 'B'", ""),  # two tables
     JOINED.replace("p.patron_id = o2.patron_id", "o1.patron_id = o2.patron_id"),
     JOINED.replace("p.patron_id = o2.patron_id", "o1.title < o2.title"),
     "SELECT DISTINCT p.patron_id, o1.title FROM patron AS p, loan AS o1, loan AS o2, patron AS q WHERE p.patron_id = o1.patron_id AND o2.patron_id = q.patron_id "
@@ -95,6 +137,10 @@ def test_the_reading_returns_the_rows_duckdb_returns(seed):
         read = reading(sql)
         assert read is not None, sql
         pairs.append((sql, read))
+    for sql in LISTS_WITH_JOINS:
+        read = list_reading(sql)
+        assert read is not None, sql
+        pairs.append((sql, read))
     nonempty = 0
     for _ in range(30):
         # no fact is declared: NULLs and repeated rows everywhere
@@ -109,7 +155,7 @@ def test_the_reading_returns_the_rows_duckdb_returns(seed):
             expected = sorted(con.execute(sql).fetchall(), key=repr)
             assert expected == sorted(con.execute(read).fetchall(), key=repr), (sql, read)
             nonempty += bool(expected)
-    assert nonempty > 20
+    assert nonempty > 40
 
 
 z3 = pytest.importorskip("z3")
