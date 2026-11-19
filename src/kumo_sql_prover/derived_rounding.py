@@ -45,12 +45,20 @@ from typing import Callable
 import sqlglot
 from sqlglot import exp
 
+from . import declared_scale as scales
+
 DIALECTS = frozenset({"mysql"})
 WRAPPER = "KQ_STORED_QUOTIENT"
 DECLINED = (
     "unsupported: MySQL stores a quotient or AVG of exact numbers rounded to its declared scale when a derived table or CTE "
     "it materialises holds it, and one query reads it from there in arithmetic, a comparison or ROUND while the other does "
     "not (Kumo_SQL_Prover issue 45)"
+)
+
+DECLINED_SCALE = (
+    "unsupported: MySQL rounds a quotient or AVG of exact numbers to the number of decimals its expression declares, and "
+    "the two queries return one at a different declared scale, or one this check cannot work out (a decimal literal such "
+    "as 1.0 in a factor adds a decimal; Kumo_SQL_Prover issue 47)"
 )
 
 _ACTIVE: ContextVar[bool] = ContextVar("kumosql_derived_rounding_active", default=False)
@@ -62,6 +70,7 @@ _NUMBER_TARGETS = {
 }
 _FLOAT_FUNCTIONS = tuple(c for c in (getattr(exp, n, None) for n in ("Sqrt", "Exp", "Ln", "Log", "Pow", "Rand", "Sin", "Cos", "Tan", "Atan", "Asin", "Acos", "Stddev", "StddevPop", "StddevSamp", "Variance", "VariancePop")) if c)
 _MAX_DEPTH = 8
+_SCALE_DEPTH = 40  # a scale is worked out through a whole expression: a TPC-H revenue sum is eight levels deep
 
 
 def _from(select: exp.Select):
@@ -145,8 +154,10 @@ def _exact_literal_quotient(node: exp.Div) -> bool:
 class _Reading:
     """One statement: its derived tables and CTEs, which of them materialise, and which outputs hide digits."""
 
-    def __init__(self, tree: exp.Expression, types: dict | None):
+    def __init__(self, tree: exp.Expression, types: dict | None, schema: dict | None = None):
         self.tree = tree
+        self.schema = {str(t).lower(): {str(c).lower() for c in cols} for t, cols in (schema or {}).items() if isinstance(cols, (list, tuple, set, frozenset, dict))}
+        self.through = False  # True: a column of a materialising derived table is read as the value it stores
         self.types = {str(t).lower(): {str(c).lower(): str(v).upper() for c, v in cols.items()} for t, cols in (types or {}).items() if isinstance(cols, dict)}
         self.ctes: dict[str, tuple[exp.CTE, bool]] = {}
         for cte in tree.find_all(exp.CTE):
@@ -271,7 +282,7 @@ class _Reading:
             if found is None:
                 continue
             body, materialises = found
-            if materialises:
+            if materialises and not self.through:
                 continue
             for leaf in _leaves(body):
                 named = [item for item in leaf.expressions if _output_name(item) == column.name.lower()]
@@ -282,6 +293,172 @@ class _Reading:
                     if self.hidden(exp.column(column.name), leaf, depth + 1):
                         return True
         return False
+
+    # -- declared scales (issue 47) ---------------------------------------------------------------------------
+
+    def hidden_through(self, node: exp.Expression, select: exp.Select) -> bool:
+        """:meth:`hidden`, following a column of a materialising derived table to the expression it stores."""
+
+        self.through = True
+        try:
+            return self.hidden(node, select)
+        finally:
+            self.through = False
+
+    def scale(self, node: exp.Expression, select: exp.Select, depth: int = 0):
+        """The declared scale of ``node`` (see :mod:`kumo_sql_prover.declared_scale`), or None when it is not known."""
+
+        if depth > _SCALE_DEPTH:
+            return None
+        deeper = depth + 1
+        arg = lambda child: self.scale(child, select, deeper)  # noqa: E731
+        if isinstance(node, exp.Distinct):  # AVG(DISTINCT x): the one expression it is over
+            return arg(node.expressions[0]) if len(node.expressions) == 1 else None
+        if isinstance(node, (exp.Paren, exp.Neg, exp.Abs, exp.Min, exp.Max, exp.Sum, exp.Window, exp.Filter)):
+            return arg(node.this) if node.this is not None else None
+        if isinstance(node, exp.Literal):
+            return None if node.is_string else scales.of_literal(node.this)
+        if isinstance(node, exp.Null):
+            return scales.largest([])  # None: only a COALESCE or CASE arm gives it a meaning, handled there
+        if isinstance(node, (exp.Predicate, exp.Connector, exp.Not, exp.Boolean, exp.Count, exp.IntDiv)):
+            return scales.constant(0)
+        if isinstance(node, (exp.Add, exp.Sub, exp.Mod)):
+            return scales.largest([arg(node.this), arg(node.expression)])
+        if isinstance(node, exp.Mul):
+            return scales.plus(arg(node.this), arg(node.expression))
+        if isinstance(node, exp.Div):
+            dividend, divisor = arg(node.this), arg(node.expression)
+            if divisor is None or dividend is None:
+                return None
+            if scales.FLOAT in (dividend, divisor):
+                return scales.FLOAT
+            return scales.add_digits(dividend, scales.DIVISION_INCREMENT)
+        if isinstance(node, exp.Avg):
+            return scales.add_digits(arg(node.this), scales.DIVISION_INCREMENT)
+        if isinstance(node, (exp.Round, exp.Trunc)):
+            inner = arg(node.this)
+            digits = node.args.get("decimals") or node.args.get("expression")
+            if digits is None:
+                return scales.rounded(inner, 0)
+            if isinstance(digits, exp.Neg) and isinstance(digits.this, exp.Literal):
+                return scales.rounded(inner, 0)
+            if isinstance(digits, exp.Literal) and not digits.is_string and digits.this.isdigit():
+                return scales.rounded(inner, int(digits.this))
+            return None
+        if isinstance(node, (exp.Floor, exp.Ceil)):
+            inner = arg(node.this)
+            return inner if inner in (None, scales.FLOAT) else scales.constant(0)
+        if isinstance(node, (exp.Cast, exp.TryCast)):
+            return self._cast_scale(node)
+        if isinstance(node, exp.Case):
+            arms = [branch.args.get("true") for branch in node.args.get("ifs") or []] + [node.args.get("default")]
+            return scales.largest([arg(a) for a in arms if a is not None and not isinstance(a, exp.Null)])
+        if isinstance(node, exp.If):
+            return scales.largest([arg(a) for a in (node.args.get("true"), node.args.get("false")) if a is not None and not isinstance(a, exp.Null)])
+        if isinstance(node, (exp.Coalesce, exp.Greatest, exp.Least)):
+            operands = [node.this, *node.expressions]
+            return scales.largest([arg(a) for a in operands if a is not None and not isinstance(a, exp.Null)])
+        if isinstance(node, exp.Nullif):
+            return arg(node.this)
+        if isinstance(node, exp.Column):
+            return self._column_scale(node, select, depth)
+        if isinstance(node, (exp.Subquery, exp.Select)):
+            return self._item_scale(_body(node), 0, depth)
+        return None
+
+    def _cast_scale(self, node):
+        target = node.to
+        if target.this == exp.DataType.Type.DECIMAL:
+            params = [p.this for p in target.expressions if isinstance(p, exp.DataTypeParam)]
+            if len(params) >= 2 and isinstance(params[1], exp.Literal) and params[1].this.isdigit():
+                return scales.constant(int(params[1].this))
+            return scales.constant(0)
+        if target.this in (exp.DataType.Type.DOUBLE, exp.DataType.Type.FLOAT):
+            return scales.FLOAT
+        if target.this in _NUMBER_TARGETS:
+            return scales.constant(0)
+        return None
+
+    def _item_scale(self, body, position: int, depth: int):
+        """The scale of output ``position`` of a select or set operation: the largest over its branches."""
+
+        found = []
+        for leaf in _leaves(body):
+            if position >= len(leaf.expressions):
+                return None
+            item = leaf.expressions[position]
+            if isinstance(item, exp.Star) or (isinstance(item, exp.Column) and isinstance(item.this, exp.Star)):
+                return None
+            found.append(self.scale(item.unalias(), leaf, depth + 1))
+        return scales.largest(found)
+
+    def _derived_column_scale(self, body, name: str, depth: int):
+        """The scale of column ``name`` of a derived table: the largest over its branches; None where a branch lacks it."""
+
+        found = []
+        for leaf in _leaves(body):
+            named = [item for item in leaf.expressions if _output_name(item) == name]
+            if named:
+                found.append(self.scale(named[0].unalias(), leaf, depth + 1))
+            elif any(isinstance(i, exp.Star) or (isinstance(i, exp.Column) and isinstance(i.this, exp.Star)) for i in leaf.expressions):
+                found.append(self.scale(exp.column(name), leaf, depth + 1))
+            else:
+                return None
+        return scales.largest(found)
+
+    def _column_scale(self, node: exp.Column, select: exp.Select, depth: int):
+        if isinstance(node.this, exp.Star):
+            return None
+        name = node.name.lower()
+        options = []
+        for source in self._candidates(node, select):
+            found = self.derived(source)
+            if found is not None:
+                leaves = _leaves(found[0])
+                first = leaves[0].expressions if leaves else []
+                if any(_output_name(i) == name or isinstance(i, exp.Star) or (isinstance(i, exp.Column) and isinstance(i.this, exp.Star)) for i in first):
+                    options.append(self._derived_column_scale(found[0], name, depth))
+                continue
+            if isinstance(source, exp.Table):
+                columns = self.types.get(source.name.lower())
+                if columns is not None:
+                    if name in columns:  # a typed table that lacks the column is not the one it names
+                        options.append(scales.of_type(columns[name]))
+                    continue
+                known = self.schema.get(source.name.lower())
+                if known is not None and name not in known:  # the schema says this table has no such column
+                    continue
+                # An untyped table: the column is a symbol known by its name, the same in both queries whatever the tables are
+                # called or whether the read says which one (the schema is the same for both).
+                options.append(scales.column(name))
+        distinct = list(dict.fromkeys(options))
+        return distinct[0] if len(distinct) == 1 else None
+
+    def expanded_outputs(self, leaf: exp.Select):
+        """The output expressions of a select with each star replaced by the columns of the derived tables it covers.
+
+        None when a star covers a base table, a ``USING`` or ``NATURAL`` join, or a derived table whose first branch has
+        a star of its own."""
+
+        outputs = []
+        for item in leaf.expressions:
+            if not (isinstance(item, exp.Star) or (isinstance(item, exp.Column) and isinstance(item.this, exp.Star))):
+                outputs.append(item.unalias())
+                continue
+            if any(j.args.get("using") or str(j.args.get("method") or "").upper() == "NATURAL" for j in leaf.args.get("joins") or []):
+                return None
+            wanted = item.table.lower() if isinstance(item, exp.Column) else ""
+            covered = [s for s in _sources(leaf) if not wanted or (s.alias_or_name or "").lower() == wanted]
+            if not covered:
+                return None
+            for source in covered:
+                found = self.derived(source)
+                leaves = _leaves(found[0]) if found else []
+                if not leaves or any(isinstance(i, exp.Star) or (isinstance(i, exp.Column) and isinstance(i.this, exp.Star)) for i in leaves[0].expressions):
+                    return None
+                alias = source.alias_or_name
+                outputs.extend(exp.column(_output_name(i), table=alias or None) for i in leaves[0].expressions)
+        return outputs
 
     # -- reads of a derived table's columns -------------------------------------------------------------------
 
@@ -331,7 +508,7 @@ class _Reading:
     def wrap(self) -> int:
         """Wrap, in place, the hidden outputs of materialising derived tables and CTEs that are read other than plainly."""
 
-        jobs: list[tuple[exp.Expression, exp.Select]] = []
+        jobs: list[tuple[exp.Expression, exp.Expression, int]] = []
         bodies: list[tuple[exp.Expression, set[str]]] = []
         for sub in self.tree.find_all(exp.Subquery):
             if isinstance(sub.parent, (exp.From, exp.Join, exp.Lateral)) and sub.alias:
@@ -350,14 +527,21 @@ class _Reading:
                         continue
                     name = _output_name(first[position]) if position < len(first) else _output_name(item)
                     if self.hidden(item.unalias(), leaf) and self.needs_wrapper(aliases, name):
-                        jobs.append((item, leaf))
+                        jobs.append((item, body, position))
+        # The second argument is the scale the table stores the value at: two scales that differ are two functions. All are
+        # read before the first wrapper goes in, which would hide the value it wraps.
+        stored_scale = {}
+        for item, body, position in jobs:
+            inner = item.this if isinstance(item, exp.Alias) else item
+            stored_scale.setdefault(id(item), exp.Literal.string(scales.tag(self._item_scale(body, position, 0), inner.sql(dialect="mysql"))))
         done = set()
-        for item, _leaf in jobs:
+        for item, _body_, _position in jobs:
             if id(item) in done:
                 continue
             done.add(id(item))
             inner = item.this if isinstance(item, exp.Alias) else item
-            wrapped = exp.Anonymous(this=WRAPPER, expressions=[inner.copy()])
+            stored = stored_scale[id(item)]
+            wrapped = exp.Anonymous(this=WRAPPER, expressions=[inner.copy(), stored])
             if isinstance(item, exp.Alias):
                 item.set("this", wrapped)
             else:
@@ -394,7 +578,87 @@ def reading(left_sql: str, right_sql: str, dialect: str | None, types: dict | No
     return Found(texts[0], texts[1], total) if total else None
 
 
+def _output_scales(sql: str, types: dict | None, schema: dict | None = None):
+    """``(hidden, scales)`` per output column of a statement: does it return a value with digits past its declared scale,
+    and at which declared scale (an unknown one is written ``?`` and the expression's text). None when the outputs cannot
+    be listed (a star, a statement that is not a query)."""
+
+    try:
+        tree = sqlglot.parse_one(sql, read="mysql")
+    except Exception:  # noqa: BLE001 - the prover reports the parse error itself
+        return None
+    if not isinstance(tree, (exp.Select, *_SET_OPERATIONS)):
+        return None
+    reading = _Reading(tree, types)
+    leaves = _leaves(tree)
+    if not leaves or len({len(leaf.expressions) for leaf in leaves}) != 1:
+        return None
+    expanded = [reading.expanded_outputs(leaf) for leaf in leaves]
+    if any(items is None for items in expanded) or len({len(items) for items in expanded}) != 1:
+        return None
+    columns = []
+    for position in range(len(expanded[0])):
+        items = [(leaf, outputs[position]) for leaf, outputs in zip(leaves, expanded)]
+        hidden = any(reading.hidden_through(item, leaf) for leaf, item in items)
+        scale = scales.largest([reading.scale(item, leaf) for leaf, item in items])
+        columns.append((hidden, scale, scales.tag(scale, " UNION ".join(item.sql(dialect="mysql") for _, item in items))))
+    return columns
+
+
+def scale_differs(left_sql: str, right_sql: str, dialect: str | None, types: dict | None = None, schema: dict | None = None) -> bool:
+    """True when a column one query returns with digits past its declared scale is not at the other's declared scale.
+
+    ``paid * 1.0 / due`` and ``paid / due`` return the same quotient at five and at four decimals (issue 47). A column is
+    compared when either query's value carries such digits; a scale this module cannot work out matches only the same
+    expression text. When only one side carries them and its declared scale is the larger, the other side's value is a
+    number that scale holds exactly (``AVG(x)`` over a group of one row against ``x``), and the pair is not a difference."""
+
+    if (dialect or "bigquery").lower() not in DIALECTS:
+        return False
+    if all("/" not in sql and "avg" not in sql.lower() for sql in (left_sql, right_sql)):
+        return False
+    left, right = _output_scales(left_sql, types, schema), _output_scales(right_sql, types, schema)
+    if left is None or right is None or len(left) != len(right):
+        return False
+    return any(_loses_digits(a, b) for a, b in zip(left, right))
+
+
+def _loses_digits(first, second) -> bool:
+    """Whether one column of a pair proved equal could be returned with different digits (see :func:`scale_differs`)."""
+
+    (first_hidden, first_scale, first_tag), (second_hidden, second_scale, second_tag) = first, second
+    if not (first_hidden or second_hidden) or first_tag == second_tag:
+        return False
+    if first_hidden and second_hidden:
+        return True
+    # One value is exact at its declared scale. Proved equal to it, the other is that number, which the other's declared
+    # scale (the larger one) holds without rounding: AVG(x) over a group of one row is x, 5 is 5.0000.
+    hidden, exact = (first_scale, second_scale) if first_hidden else (second_scale, first_scale)
+    return not scales.dominates(hidden, exact)
+
+
 def proved(prove: Callable, left_sql: str, right_sql: str, kwargs: dict):
+    """The proof of the pair as MySQL reads it: see :func:`_proved_as_stored` and :func:`scale_differs`.
+
+    A proof of a pair that returns a quotient at two different declared scales is declined."""
+
+    result = _proved_as_stored(prove, left_sql, right_sql, kwargs)
+    if _ACTIVE.get() or result.status not in (_proof_statuses()):
+        return result
+    if not scale_differs(left_sql, right_sql, kwargs.get("dialect"), kwargs.get("types"), kwargs.get("schema")):
+        return result
+    from .smt_equivalence import SmtEquivalenceResult, SmtStatus
+
+    return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, DECLINED_SCALE, assumptions=tuple(result.assumptions))
+
+
+def _proof_statuses():
+    from .smt_equivalence import SmtStatus
+
+    return (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY)
+
+
+def _proved_as_stored(prove: Callable, left_sql: str, right_sql: str, kwargs: dict):
     """``prove(left_sql, right_sql, **kwargs)`` for a pair whose derived-table quotients are read as MySQL stores them.
 
     A pair with nothing to wrap is proved as it is. Otherwise see the module docstring: a proof of the wrapped pair is
