@@ -369,8 +369,12 @@ def test_the_tenth_stage_switches():
                 assert shape_fallback.tenth_watching()
         shape_fallback.note_tenth_candidate()
         assert seen == [True] and not shape_fallback.tenth_watching()  # one yes is enough
+    assert not shape_fallback.tenth_stage_running()
+    with shape_fallback.tenth_deferred():
+        assert not shape_fallback.tenth_stage_running()
     with shape_fallback.tenth_on():
         assert shape_fallback.stage_key() == (True, True) and shape_fallback.ninth_staged()  # stage three
+        assert shape_fallback.tenth_stage_running()
         assert shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled() and not shape_fallback.tenth_watching()
         with shape_fallback.without("if_cases"), shape_fallback.without(worker_rules.NAME):
             assert shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
@@ -388,6 +392,47 @@ def test_a_pair_only_the_tenth_batch_proves_is_proved_in_stage_three(monkeypatch
     first = tenth.index(True)
     assert first > 0 and not any(tenth[:first]) and all(tenth[first:])  # the prover as it was runs to its end first
     assert all(ninth[first:])  # the ninth batch is on beside the tenth
+
+
+FLAGGED = "SELECT ROUND(100 * SUM(flag) / COUNT(*), 2) AS share FROM (SELECT *, IF(paid = due, 1, 0) AS flag FROM bill) t"
+OTHER_ROUNDING = (
+    "SELECT ROUND(SUM(IF(paid = due, 1, 0)) / COUNT(*) * 100, 2) AS share, MIN(due) AS first FROM bill",
+    "SELECT ROUND(COUNT(*) / (SELECT COUNT(*) FROM bill) * 100, 1) AS share, (SELECT MIN(due) FROM bill) AS first FROM bill WHERE paid = due",
+)
+
+
+def tenth_steps(monkeypatch, left, right, **options):
+    """The proof's verdict, and for each step that has the tenth batch on (sub-proofs too) the rules of it switched off."""
+
+    steps = []
+    real = algebraic_equivalence._prove_algebraic
+
+    def watched(*args, **kwargs):
+        if shape_fallback.tenth_stage_running():
+            steps.append(frozenset(shape_fallback.off() & shape_fallback.TENTH_BATCH))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(algebraic_equivalence, "_prove_algebraic", watched)
+    return prove_equivalent_algebraic(left, right, **options), steps
+
+
+def test_stage_three_is_two_attempts_and_its_sub_proofs_one(monkeypatch):
+    """A pair the batch reads and does not prove costs two attempts, and no retry with another rule of the batch off:
+    with a retry for each rule that fired, such a pair went from seconds to minutes (the sub-proofs repeat)."""
+
+    result, steps = tenth_steps(monkeypatch, *OTHER_ROUNDING, **SHARE_OPTIONS)
+    assert not result.proven and steps
+    assert set(steps) == {frozenset(), frozenset({"aggregate_scalars"})}
+    first = [step for step in steps if not step]
+    assert steps[: len(first)] == first  # the attempt with every rule on comes first, with its sub-proofs
+    assert len(steps) <= 24  # two attempts of at most six steps, and one attempt for each sub-proof
+
+
+def test_the_second_attempt_of_stage_three_proves_a_pair_the_scalar_reading_hides(monkeypatch):
+    with shape_fallback.without_all(shape_fallback.TENTH_BATCH):
+        assert not prove_equivalent_algebraic(SHARE, FLAGGED, **SHARE_OPTIONS).proven
+    result, steps = tenth_steps(monkeypatch, SHARE, FLAGGED, **SHARE_OPTIONS)
+    assert result.proven and steps[-1] == frozenset({"aggregate_scalars"}) and not any(steps[:-1])
 
 
 def test_a_pair_proved_before_the_tenth_batch_never_sees_it(monkeypatch):

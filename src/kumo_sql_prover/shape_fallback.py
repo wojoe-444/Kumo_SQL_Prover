@@ -362,6 +362,12 @@ def tenth_on():
         _NINTH_STAGE.reset(ninth)
 
 
+def tenth_stage_running() -> bool:
+    """Whether stage three of a proof is running: a proof started inside it makes one attempt and no retries."""
+
+    return _TENTH_STAGE.get() is True
+
+
 def tenth_watching() -> bool:
     """Whether an earlier stage should try the tenth batch on a copy here: an attempt in which stage three would let it
     fire first (the shape rules on, the late rules off, no rule switched off), while no rule of it has said yes yet."""

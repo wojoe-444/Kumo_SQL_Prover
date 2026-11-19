@@ -5742,7 +5742,26 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
                 later, _ = batch_attempts(batch)
         return later
 
-    if shape_fallback.ninth_staged():
+    def third_stage() -> SmtEquivalenceResult:
+        """Stage three: the first attempt with the tenth batch on and, when ``aggregate_scalars`` fired, one more without it.
+
+        The stage is kept this short for the pairs it does not prove. ``aggregate_scalars`` writes a select of several
+        aggregates as one scalar subquery each, and every attempt compares those subqueries by sub-proofs; with a retry
+        for each rule that fired, a pair that stayed unknown went from seconds to minutes. Measured on the development
+        cases of the conditional VeriEQL sample, every proof the batch adds comes from one of these two attempts."""
+
+        with shape_fallback.tracking() as fired:
+            found = attempt()
+        if found.status is SmtStatus.NOT_PROVEN and "aggregate_scalars" in fired and narrow_enough():
+            with shape_fallback.without("aggregate_scalars"):
+                narrow = attempt()
+            if narrow.status is not SmtStatus.NOT_PROVEN:
+                return narrow
+        return found
+
+    if shape_fallback.tenth_stage_running():
+        result = attempt()  # a sub-proof of stage three: one attempt, for the same reason
+    elif shape_fallback.ninth_staged():
         result = ladder()  # a proof inside a staged proof: the stage it runs in decides which staged batches are on
     else:
         with shape_fallback.tenth_deferred() as tenth_seen:
@@ -5758,7 +5777,7 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
         if result.status is SmtStatus.NOT_PROVEN and tenth_seen:
             # Stage three: a rule of the tenth batch would have fired (``shape_fallback.TENTH_BATCH``).
             with shape_fallback.tenth_on():
-                later = staged(shape_fallback.TENTH_BATCH)
+                later = third_stage()
             if later.status is not SmtStatus.NOT_PROVEN:
                 return later
     if search and result.status is SmtStatus.NOT_PROVEN:
