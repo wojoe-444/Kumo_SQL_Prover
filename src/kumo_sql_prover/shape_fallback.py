@@ -32,7 +32,7 @@ A larger pair gets the first attempt only.
 The shape rules: ``single_source_columns``, ``grouped_self_membership``, ``disjoint_union``,
 ``tailed_grouping_sets``, ``mysql_exists_casts``, ``case_arm_rules``, ``unmatched_outer_join``,
 ``having_count_rules``, ``semijoin_shapes``, ``string_spelling_rules``, ``tailed_outer_aggregates``,
-``wrapped_join_filters``, ``one_row_tails``, ``grouped_source_filters``, ``keyed_union``, ``tailed_regroups``, ``union_join_grouping``, ``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence`` (hardest-cases batch 3, 2026-11-11), ``anti_join_reading``, ``distinct_source_filters``, ``keyed_semijoin``, ``nested_correlation`` and ``presence_given_absence`` (batch 4, 2026-11-16 and 17), ``differing_self_joins``, ``own_value_lists``, ``own_group_membership`` and ``own_key_membership`` (batch 5, 2026-11-17), ``different_row_keys`` (batch 6, 2026-11-17), ``referenced_presence`` (batch 7, 2026-11-17), ``child_counts`` (batch 8, 2026-11-18), ``own_row_copies``, ``distinct_match_joins``, ``own_column_lists``, ``lookup_names``, ``joined_key_lists``, ``own_row_witness``, ``single_value_groups``, ``nested_test_groupings`` and ``distinct_derived_joins`` (batch 9, 2026-11-18), and the derived-table and ``JOIN .. ON`` sources that
+``wrapped_join_filters``, ``one_row_tails``, ``grouped_source_filters``, ``keyed_union``, ``tailed_regroups``, ``union_join_grouping``, ``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence`` (hardest-cases batch 3, 2026-11-11), ``anti_join_reading``, ``distinct_source_filters``, ``keyed_semijoin``, ``nested_correlation`` and ``presence_given_absence`` (batch 4, 2026-11-16 and 17), ``differing_self_joins``, ``own_value_lists``, ``own_group_membership`` and ``own_key_membership`` (batch 5, 2026-11-17), ``different_row_keys`` (batch 6, 2026-11-17), ``referenced_presence`` (batch 7, 2026-11-17), ``child_counts`` (batch 8, 2026-11-18), ``own_row_copies``, ``distinct_match_joins``, ``own_column_lists``, ``lookup_names``, ``joined_key_lists``, ``own_row_witness``, ``single_value_groups``, ``nested_test_groupings`` and ``distinct_derived_joins`` (batch 9, 2026-11-18), ``shifted_equalities``, ``if_cases``, ``averaged_flags``, ``rounded_percentages``, ``counted_sum_ratios``, ``aggregate_scalars``, ``outer_side_aggregates`` and ``unique_count_arguments`` (batch 10, 2026-11-18), and the derived-table and ``JOIN .. ON`` sources that
 ``closed_sources`` lets the scalar-aggregate decorrelation read. Added on 2026-11-11 for the DSB rewrites of
 the QUITE eval: ``renamed_join_heads``, ``spread_aggregates``, ``scalar_having_groups``,
 ``star_source_columns``, ``count_column_bounds``, ``extreme_group_sources``, ``setop_operand_sources``,
@@ -246,12 +246,24 @@ _BESIDE_NINTH = frozenset({"verieql_worker_rules"})
 
 _NINTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_ninth_stage", default=None)
 _NINTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_ninth_seen", default=None)
+_TENTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_tenth_stage", default=None)
+_TENTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_tenth_seen", default=None)
+
+
+# The tenth batch (2026-11-18, shares and percentages) is one stage further out. Stage three runs only when stages one
+# and two leave the pair without a verdict and a rule of the tenth batch would have fired (the earlier stages run the
+# batch on a copy of the tree where it would fire, until one rule says yes): the first attempt with the ninth and the
+# tenth batch on, and a narrow attempt for each rule of the tenth batch that fired, switched off. A pair that was
+# proved before the batch is proved by the same steps in the same time, and an attempt with a ninth-batch rule off
+# reads the pair without the tenth batch, as it did before it.
+
+TENTH_BATCH = frozenset({"shifted_equalities", "if_cases", "averaged_flags", "rounded_percentages", "counted_sum_ratios", "aggregate_scalars", "outer_side_aggregates", "unique_count_arguments"})
 
 
 def ninth_batch_enabled() -> bool:
     """Whether the rules of ``NINTH_BATCH`` may fire in the current attempt (see the comment above)."""
 
-    return _NINTH_STAGE.get() is not False and _ENABLED.get() and not _LATE.get() and (_OFF.get() - _BESIDE_NINTH) <= NINTH_BATCH
+    return _NINTH_STAGE.get() is not False and _ENABLED.get() and not _LATE.get() and (_OFF.get() - _BESIDE_NINTH) <= NINTH_BATCH | TENTH_BATCH
 
 
 def ninth_staged() -> bool:
@@ -302,6 +314,66 @@ def note_ninth_candidate() -> None:
     """Record that a rule of the ninth batch would have fired in stage one."""
 
     seen = _NINTH_SEEN.get()
+    if seen is not None and not seen:
+        seen.append(True)
+
+
+def tenth_batch_enabled() -> bool:
+    """Whether the rules of ``TENTH_BATCH`` may fire in the current attempt: in the third stage of a proof (or outside
+    any proof), on a first attempt and on a narrow attempt that switches off rules of that batch only."""
+
+    return (
+        _TENTH_STAGE.get() is not False
+        and _NINTH_STAGE.get() is not False
+        and _ENABLED.get()
+        and not _LATE.get()
+        and (_OFF.get() - _BESIDE_NINTH) <= TENTH_BATCH
+    )
+
+
+def stage_key() -> tuple[bool, bool]:
+    """Which of the staged batches are on (part of any normalization cache key)."""
+
+    return (_NINTH_STAGE.get() is not False, _TENTH_STAGE.get() is not False)
+
+
+@contextmanager
+def tenth_deferred():
+    """Stages one and two: run the block with the tenth batch off, collecting whether one of its rules would have fired."""
+
+    seen: list = []
+    stage, watch = _TENTH_STAGE.set(False), _TENTH_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _TENTH_SEEN.reset(watch)
+        _TENTH_STAGE.reset(stage)
+
+
+@contextmanager
+def tenth_on():
+    """Stage three: run the block with the ninth and the tenth batch on."""
+
+    ninth, tenth = _NINTH_STAGE.set(True), _TENTH_STAGE.set(True)
+    try:
+        yield
+    finally:
+        _TENTH_STAGE.reset(tenth)
+        _NINTH_STAGE.reset(ninth)
+
+
+def tenth_watching() -> bool:
+    """Whether an earlier stage should try the tenth batch on a copy here: an attempt in which stage three would let it
+    fire first (the shape rules on, the late rules off, no rule switched off), while no rule of it has said yes yet."""
+
+    seen = _TENTH_SEEN.get()
+    return _TENTH_STAGE.get() is False and seen is not None and not seen and _ENABLED.get() and not _LATE.get() and not (_OFF.get() - _BESIDE_NINTH)
+
+
+def note_tenth_candidate() -> None:
+    """Record that a rule of the tenth batch would have fired in an earlier stage."""
+
+    seen = _TENTH_SEEN.get()
     if seen is not None and not seen:
         seen.append(True)
 

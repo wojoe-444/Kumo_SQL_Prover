@@ -5015,6 +5015,76 @@ def _narrow_shape(name: str, rule, select):
     return _narrow(name, rule, select)
 
 
+def _tenth_batch(tree, schema, keys, not_null, types, dialect):
+    """The pre-passes of the tenth hardest-cases batch (shares and percentages), in the order they were measured in.
+    Returns the tree and the names of the rules that rewrote something. Some of them write in place."""
+
+    fired: list[str] = []
+    if shape_fallback.rule_enabled("shifted_equalities"):
+        from .shifted_equalities import write_shifted_equalities
+
+        tree, shifted = write_shifted_equalities(tree, types, dialect)  # pre-pass: x = y - 1 and y - x = 1 written x + 1 = y
+        if shifted:
+            fired.append("shifted_equalities")
+    if shape_fallback.rule_enabled("if_cases"):
+        from .if_cases import write_if_calls_as_cases
+
+        tree, cased = write_if_calls_as_cases(tree)  # pre-pass: IF(p, a, b) written CASE WHEN p THEN a ELSE b END
+        if cased:
+            fired.append("if_cases")
+    if shape_fallback.rule_enabled("averaged_flags"):
+        from .averaged_flags import write_flag_averages
+
+        # pre-pass: ROUND(AVG(flag) * 100, 2) written with SUM(flag) / COUNT(*) (MySQL), before the sums are counted
+        tree, averaged = write_flag_averages(tree, not_null, dialect)
+        if averaged:
+            fired.append("averaged_flags")
+    if shape_fallback.rule_enabled("rounded_percentages"):
+        from .rounded_percentages import write_rounded_percentages
+
+        # pre-pass, a first time before the sums are counted: SUM(CASE WHEN p THEN 100 ELSE 0 END) / n is a sum of ones
+        tree, rounded = write_rounded_percentages(tree, dialect)
+        if rounded:
+            fired.append("rounded_percentages")
+    if shape_fallback.rule_enabled("counted_sum_ratios") and type(tree) is exp.Select:
+        from .counted_sum_ratios import read_counted_sum_ratios
+
+        # pre-pass: a sum of ones over a count is the count of the rows that pass (before the select is taken apart)
+        counted = read_counted_sum_ratios(tree, tree, not_null, dialect)
+        if counted is not None:
+            tree = counted
+            fired.append("counted_sum_ratios")
+    if shape_fallback.rule_enabled("aggregate_scalars"):
+        from .aggregate_scalars import split_one_row_select
+
+        tree, split = split_one_row_select(tree, schema)  # pre-pass: a one-row select of several aggregates, one scalar subquery each
+        if split:
+            fired.append("aggregate_scalars")
+    if shape_fallback.rule_enabled("outer_side_aggregates"):
+        from .outer_side_aggregates import join_matched_rows_everywhere
+
+        # pre-pass: aggregates of the outer side of a left join read the inner join (before a later pass wraps the join)
+        tree, joined = join_matched_rows_everywhere(tree)
+        if joined:
+            fired.append("outer_side_aggregates")
+    if shape_fallback.rule_enabled("unique_count_arguments"):
+        from .unique_count_arguments import drop_needless_count_distinct_everywhere
+
+        # pre-pass: COUNT(DISTINCT x) over rows that cannot repeat x is COUNT(x)
+        tree, counted = drop_needless_count_distinct_everywhere(tree, keys, types)
+        if counted:
+            fired.append("unique_count_arguments")
+    if shape_fallback.rule_enabled("rounded_percentages"):
+        from .rounded_percentages import write_rounded_percentages
+
+        # pre-pass, after the select is taken apart so that its counts are terms: ROUND(100 * n / d, 2) written
+        # ROUND(n / d * 100, 2) (MySQL)
+        tree, rounded = write_rounded_percentages(tree, dialect)
+        if rounded:
+            fired.append("rounded_percentages")
+    return tree, fired
+
+
 def normalize(
     sql: str,
     *,
@@ -5147,6 +5217,14 @@ def normalize(
             if read:
                 shape_fallback.note_fired("child_counts")
         tree = choose_key_groups(tree, schema, keys, not_null)  # pre-pass: grouping by any NOT NULL key of a table is one grouping, so name the first
+        if shape_fallback.tenth_batch_enabled():
+            tree, tenth_fired = _tenth_batch(tree, schema, keys, not_null, types, dialect)
+            for name in tenth_fired:
+                shape_fallback.note_fired(name)
+        elif shape_fallback.tenth_watching():
+            # An earlier stage asks a copy whether a rule of the batch would fire here, and changes nothing.
+            if _tenth_batch(tree.copy(), schema, keys, not_null, types, dialect)[1]:
+                shape_fallback.note_tenth_candidate()
         from .membership_key_counts import read_membership_key_counts
 
         tree = worker_rules.prepass(read_unique_joins, tree, schema)  # pre-pass: an inner join with a grouped derived table on all of its keys is an IN test
@@ -5641,33 +5719,46 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
     def narrow_enough() -> bool:
         return shape_fallback.enabled() and len(left_sql) + len(right_sql) <= shape_fallback.NARROW_MAX_CHARS
 
-    def ninth_attempts() -> tuple[SmtEquivalenceResult, set]:
-        """The attempts that have the ninth batch on: the first, and one for each of its rules that fired, switched off."""
+    def batch_attempts(batch: frozenset) -> tuple[SmtEquivalenceResult, set]:
+        """The attempts that have a staged batch on: the first, and one for each of its rules that fired, switched off."""
 
         with shape_fallback.tracking() as fired:
             found = attempt()
         if found.status is SmtStatus.NOT_PROVEN and narrow_enough():
-            for name in sorted(fired & shape_fallback.NINTH_BATCH):
+            for name in sorted(fired & batch):
                 with shape_fallback.without(name):
                     narrow = attempt()
                 if narrow.status is not SmtStatus.NOT_PROVEN:
                     return narrow, fired
         return found, fired
 
+    def staged(batch: frozenset) -> SmtEquivalenceResult:
+        """A later stage: the attempts with ``batch`` on. The staged batches were measured without the VeriEQL worker
+        group, so when that group fires beside them the attempts are made once more with the group off."""
+
+        later, fired = batch_attempts(batch)
+        if later.status is SmtStatus.NOT_PROVEN and worker_rules.NAME in fired and worker_rules.enabled():
+            with shape_fallback.without(worker_rules.NAME):
+                later, _ = batch_attempts(batch)
+        return later
+
     if shape_fallback.ninth_staged():
-        result = ladder()  # a proof inside a staged proof: the stage it runs in decides whether the ninth batch is on
+        result = ladder()  # a proof inside a staged proof: the stage it runs in decides which staged batches are on
     else:
-        # Stage one: the prover as it was before the ninth batch, at the cost it had (``shape_fallback.NINTH_BATCH``).
-        with shape_fallback.ninth_deferred() as ninth_seen:
-            result = ladder()
-        if result.status is SmtStatus.NOT_PROVEN and ninth_seen:
-            # Stage two: a rule of the batch would have fired. The batch was measured without the VeriEQL worker group, so
-            # when that group fires beside it the attempts are made once more with the group off.
-            with shape_fallback.ninth_on():
-                later, fired = ninth_attempts()
-                if later.status is SmtStatus.NOT_PROVEN and worker_rules.NAME in fired and worker_rules.enabled():
-                    with shape_fallback.without(worker_rules.NAME):
-                        later, _ = ninth_attempts()
+        with shape_fallback.tenth_deferred() as tenth_seen:
+            # Stage one: the prover as it was before the ninth batch, at the cost it had (``shape_fallback.NINTH_BATCH``).
+            with shape_fallback.ninth_deferred() as ninth_seen:
+                result = ladder()
+            if result.status is SmtStatus.NOT_PROVEN and ninth_seen:
+                # Stage two: a rule of the ninth batch would have fired.
+                with shape_fallback.ninth_on():
+                    later = staged(shape_fallback.NINTH_BATCH)
+                if later.status is not SmtStatus.NOT_PROVEN:
+                    return later
+        if result.status is SmtStatus.NOT_PROVEN and tenth_seen:
+            # Stage three: a rule of the tenth batch would have fired (``shape_fallback.TENTH_BATCH``).
+            with shape_fallback.tenth_on():
+                later = staged(shape_fallback.TENTH_BATCH)
             if later.status is not SmtStatus.NOT_PROVEN:
                 return later
     if search and result.status is SmtStatus.NOT_PROVEN:
@@ -5707,7 +5798,7 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
         shapes = shape_fallback.enabled()
 
         def normalized(sql, level):
-            key = (sql, level, shapes, shape_fallback.off(), shape_fallback.late_enabled(), shape_fallback.ninth_stage())
+            key = (sql, level, shapes, shape_fallback.off(), shape_fallback.late_enabled(), shape_fallback.stage_key())
             if key not in cache:
                 assumptions = set()
                 text = normalize(sql, schema=kwargs.get("schema"), dialect=dialect,
@@ -5732,7 +5823,7 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
         state = (shapes, shape_fallback.off(), shape_fallback.late_enabled())
         order = [(True, frozenset(), False), (False, frozenset(), False), (True, frozenset(), True), (False, frozenset(), True)]  # the attempts in the order made
         earlier = order[: order.index(state)] if state in order else []
-        if any((left, right) == tuple(cache.get((sql, keyed_distinct, *before, shape_fallback.ninth_stage()), (None,))[0] for sql in (left_sql, right_sql)) for before in earlier):
+        if any((left, right) == tuple(cache.get((sql, keyed_distinct, *before, shape_fallback.stage_key()), (None,))[0] for sql in (left_sql, right_sql)) for before in earlier):
             # An earlier attempt compared these same two texts.
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, shape_fallback.SKIPPED, assumptions=tuple(sorted(normalization_assumptions)))
         if keyed_distinct and (left, right) == (normalized(left_sql, 0), normalized(right_sql, 0)):

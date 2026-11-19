@@ -219,6 +219,9 @@ LISTED = "SELECT s.buyer FROM sale AS s WHERE s.item_id IN (SELECT i.item_id FRO
 ITEM_OPTIONS = {"schema": ITEMS, "constraints": ITEM_FACTS, "compare_names": False, "dialect": "mysql"}
 
 
+TENTH_SEEN: list = []  # for each step of the last proof ``stages_of`` ran, whether the tenth batch was on in it
+
+
 def stages_of(monkeypatch, left, right, **options):
     """The proof's verdict, and for each step whether the ninth batch was on in it."""
 
@@ -227,8 +230,10 @@ def stages_of(monkeypatch, left, right, **options):
 
     def watched(*args, **kwargs):
         seen.append(shape_fallback.ninth_stage())
+        TENTH_SEEN.append(shape_fallback.stage_key()[1])
         return real(*args, **kwargs)
 
+    TENTH_SEEN.clear()
     monkeypatch.setattr(algebraic_equivalence, "_prove_algebraic", watched)
     return prove_equivalent_algebraic(left, right, **options), seen
 
@@ -299,3 +304,115 @@ def test_stage_one_asks_the_rules_and_changes_nothing(sql, options):
     with shape_fallback.ninth_deferred() as seen:
         normalize("SELECT a FROM t WHERE a > 1", schema=SCHEMA, dialect="mysql")
     assert seen == []
+
+
+def test_tenth_batch_rules_fire_only_where_no_older_attempt_is_changed():
+    """The same confinement one level further out: on the first attempt and on a narrow attempt that switches off
+    rules of the tenth batch only. With a ninth-batch rule off the tenth batch stays out, as that attempt was made
+    before it; with tenth-batch rules off the ninth batch stays on."""
+
+    assert shape_fallback.tenth_batch_enabled()
+    with shape_fallback.without("counted_sum_ratios"), shape_fallback.without("aggregate_scalars"):
+        assert shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
+    with shape_fallback.without_all(shape_fallback.TENTH_BATCH):
+        assert shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
+        assert not shape_fallback.rule_enabled("shifted_equalities") and shape_fallback.rule_enabled("own_row_copies")
+    for older in ("own_row_copies", "own_key_membership"):
+        with shape_fallback.without(older):
+            assert not shape_fallback.tenth_batch_enabled()
+    with shape_fallback.without_all(shape_fallback.NINTH_BATCH):
+        assert not shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
+    with shape_fallback.disabled():
+        assert not shape_fallback.tenth_batch_enabled()
+    with shape_fallback.late():
+        assert not shape_fallback.tenth_batch_enabled()
+    assert not shape_fallback.TENTH_BATCH & shape_fallback.NINTH_BATCH
+
+
+def test_with_the_tenth_batch_off_a_pair_is_read_as_before_it():
+    sql = "SELECT ROUND(SUM(CASE WHEN b.paid = b.due - 1 THEN 1 ELSE 0 END) / COUNT(DISTINCT b.id), 2) AS share FROM bill AS b"
+    options = {"schema": {"bill": ["id", "paid", "due"]}, "types": {"bill": {"id": "INT", "paid": "INT", "due": "INT"}}, "dialect": "mysql"}
+    with shape_fallback.tracking() as fired:
+        first = normalize(sql, **options)
+    assert {"shifted_equalities", "counted_sum_ratios", "aggregate_scalars"} <= fired
+    with shape_fallback.without_all(shape_fallback.TENTH_BATCH), shape_fallback.tracking() as fired:
+        before = normalize(sql, **options)
+    assert not fired & shape_fallback.TENTH_BATCH and before != first
+    with shape_fallback.without("own_key_membership"), shape_fallback.tracking() as fired:
+        older = normalize(sql, **options)
+    assert not fired & shape_fallback.TENTH_BATCH
+    with shape_fallback.without("own_key_membership"), shape_fallback.without_all(shape_fallback.TENTH_BATCH):
+        assert normalize(sql, **options) == older
+
+
+BILLS = {"bill": ["id", "owner", "paid", "due"]}
+BILL_OPTIONS = {"schema": BILLS, "types": {"bill": {"id": "INT", "owner": "INT", "paid": "INT", "due": "INT"}}, "compare_names": False, "dialect": "mysql"}
+BY_IF = "SELECT owner, SUM(IF(paid = due, 1, 0)) / COUNT(*) AS share FROM bill GROUP BY owner"
+SHARE = "SELECT ROUND((SUM(paid = due) / COUNT(*)) * 100, 2) AS share FROM bill"
+COUNTED = "SELECT ROUND(COUNT(*) / (SELECT COUNT(*) FROM bill) * 100, 2) AS share FROM bill WHERE paid = due"
+SHARE_OPTIONS = {**BILL_OPTIONS, "constraints": {"bill": TableConstraints(not_null=frozenset({"id", "paid", "due"}), keys=(("id",),))}}
+
+
+def test_the_tenth_stage_switches():
+    assert shape_fallback.tenth_batch_enabled() and shape_fallback.stage_key() == (True, True)  # outside a proof both are on
+    with shape_fallback.tenth_deferred() as seen:
+        with shape_fallback.ninth_deferred():
+            assert shape_fallback.stage_key() == (False, False) and shape_fallback.tenth_watching()  # stage one
+            assert not shape_fallback.tenth_batch_enabled() and not shape_fallback.ninth_batch_enabled()
+        with shape_fallback.ninth_on():
+            assert shape_fallback.stage_key() == (True, False) and shape_fallback.tenth_watching()  # stage two
+            assert not shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
+            for older in (shape_fallback.disabled, shape_fallback.late, lambda: shape_fallback.without("own_row_copies")):
+                with older():
+                    assert not shape_fallback.tenth_watching()  # stage three would not let the batch fire here either
+            with shape_fallback.without(worker_rules.NAME):
+                assert shape_fallback.tenth_watching()
+        shape_fallback.note_tenth_candidate()
+        assert seen == [True] and not shape_fallback.tenth_watching()  # one yes is enough
+    with shape_fallback.tenth_on():
+        assert shape_fallback.stage_key() == (True, True) and shape_fallback.ninth_staged()  # stage three
+        assert shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled() and not shape_fallback.tenth_watching()
+        with shape_fallback.without("if_cases"), shape_fallback.without(worker_rules.NAME):
+            assert shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
+        with shape_fallback.without("own_row_copies"):
+            assert not shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
+    assert not shape_fallback.ninth_staged() and shape_fallback.stage_key() == (True, True)
+
+
+def test_a_pair_only_the_tenth_batch_proves_is_proved_in_stage_three(monkeypatch):
+    with shape_fallback.without_all(shape_fallback.TENTH_BATCH):
+        assert not prove_equivalent_algebraic(SHARE, COUNTED, **SHARE_OPTIONS).proven
+    result, ninth = stages_of(monkeypatch, SHARE, COUNTED, **SHARE_OPTIONS)
+    tenth = list(TENTH_SEEN)
+    assert result.proven
+    first = tenth.index(True)
+    assert first > 0 and not any(tenth[:first]) and all(tenth[first:])  # the prover as it was runs to its end first
+    assert all(ninth[first:])  # the ninth batch is on beside the tenth
+
+
+def test_a_pair_proved_before_the_tenth_batch_never_sees_it(monkeypatch):
+    """A rule of the batch would fire on both queries, and the pair is proved without it: no step has the batch on."""
+
+    with shape_fallback.tracking() as fired:
+        normalize(BY_IF, schema=BILLS, dialect="mysql")
+    assert "if_cases" in fired
+    result, _ = stages_of(monkeypatch, BY_IF, BY_IF.replace("AS share", "AS part"), **BILL_OPTIONS)
+    assert result.proven and TENTH_SEEN and not any(TENTH_SEEN)
+
+
+def test_no_stage_three_when_no_rule_of_the_tenth_batch_would_fire(monkeypatch):
+    result, _ = stages_of(monkeypatch, "SELECT a FROM t WHERE b > 1", "SELECT a FROM t WHERE b > 2", schema={"t": ["a", "b"]}, dialect="mysql")
+    assert not result.proven and TENTH_SEEN and not any(TENTH_SEEN)
+
+
+def test_earlier_stages_ask_a_copy_and_change_nothing():
+    """The trial of the tenth batch in an earlier stage runs on a copy: the text is what the batch switched off gives."""
+
+    options = {"schema": BILLS, "types": BILL_OPTIONS["types"], "dialect": "mysql"}
+    with shape_fallback.without_all(shape_fallback.TENTH_BATCH):
+        before = normalize(BY_IF, **options)
+    with shape_fallback.tenth_deferred() as seen, shape_fallback.ninth_on():
+        assert normalize(BY_IF, **options) == before
+    assert seen == [True]
+    assert normalize(BY_IF, **options) != before
+
