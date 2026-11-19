@@ -329,3 +329,19 @@ def test_a_scale_dominates_another_when_it_is_larger_whatever_the_columns_are():
     assert S.dominates(S.add_digits(paid, 4), paid)
     assert not S.dominates(S.add_digits(paid, 4), due)  # another column may declare more decimals
     assert S.dominates(S.plus(paid, due), paid)
+
+
+def test_a_filtered_aggregate_has_the_scale_of_its_argument():
+    assert scale_of("SUM(owed) FILTER (WHERE paid > 1)") == S.constant(2)
+    assert scale_of("AVG(paid) FILTER (WHERE paid > 1)") == S.constant(4)
+
+
+def test_a_deep_expression_still_has_a_scale():
+    assert scale_of("100.00 * SUM(CASE WHEN paid > 1 THEN owed * (1 - (due)) ELSE 0 END) / SUM(owed * (1 - due))") == S.constant(8)
+
+
+def test_the_schema_tells_which_table_an_unqualified_column_is_in():
+    tree = sqlglot.parse_one("SELECT paid FROM bill, other", read="mysql")
+    typed = {"bill": {"paid": "INT"}}
+    assert D._Reading(tree, typed, {"other": ["x"]}).scale(tree.expressions[0], tree) == S.constant(0)
+    assert D._Reading(tree, typed, {"other": ["paid"]}).scale(tree.expressions[0], tree) is None  # both tables could have it

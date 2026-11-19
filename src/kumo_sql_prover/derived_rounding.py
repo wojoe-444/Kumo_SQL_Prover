@@ -70,6 +70,7 @@ _NUMBER_TARGETS = {
 }
 _FLOAT_FUNCTIONS = tuple(c for c in (getattr(exp, n, None) for n in ("Sqrt", "Exp", "Ln", "Log", "Pow", "Rand", "Sin", "Cos", "Tan", "Atan", "Asin", "Acos", "Stddev", "StddevPop", "StddevSamp", "Variance", "VariancePop")) if c)
 _MAX_DEPTH = 8
+_SCALE_DEPTH = 40  # a scale is worked out through a whole expression: a TPC-H revenue sum is eight levels deep
 
 
 def _from(select: exp.Select):
@@ -153,8 +154,9 @@ def _exact_literal_quotient(node: exp.Div) -> bool:
 class _Reading:
     """One statement: its derived tables and CTEs, which of them materialise, and which outputs hide digits."""
 
-    def __init__(self, tree: exp.Expression, types: dict | None):
+    def __init__(self, tree: exp.Expression, types: dict | None, schema: dict | None = None):
         self.tree = tree
+        self.schema = {str(t).lower(): {str(c).lower() for c in cols} for t, cols in (schema or {}).items() if isinstance(cols, (list, tuple, set, frozenset, dict))}
         self.through = False  # True: a column of a materialising derived table is read as the value it stores
         self.types = {str(t).lower(): {str(c).lower(): str(v).upper() for c, v in cols.items()} for t, cols in (types or {}).items() if isinstance(cols, dict)}
         self.ctes: dict[str, tuple[exp.CTE, bool]] = {}
@@ -306,13 +308,13 @@ class _Reading:
     def scale(self, node: exp.Expression, select: exp.Select, depth: int = 0):
         """The declared scale of ``node`` (see :mod:`kumo_sql_prover.declared_scale`), or None when it is not known."""
 
-        if depth > _MAX_DEPTH:
+        if depth > _SCALE_DEPTH:
             return None
         deeper = depth + 1
         arg = lambda child: self.scale(child, select, deeper)  # noqa: E731
         if isinstance(node, exp.Distinct):  # AVG(DISTINCT x): the one expression it is over
             return arg(node.expressions[0]) if len(node.expressions) == 1 else None
-        if isinstance(node, (exp.Paren, exp.Neg, exp.Abs, exp.Min, exp.Max, exp.Sum, exp.Window)):
+        if isinstance(node, (exp.Paren, exp.Neg, exp.Abs, exp.Min, exp.Max, exp.Sum, exp.Window, exp.Filter)):
             return arg(node.this) if node.this is not None else None
         if isinstance(node, exp.Literal):
             return None if node.is_string else scales.of_literal(node.this)
@@ -412,16 +414,25 @@ class _Reading:
         for source in self._candidates(node, select):
             found = self.derived(source)
             if found is not None:
-                options.append(self._derived_column_scale(found[0], name, depth))
+                leaves = _leaves(found[0])
+                first = leaves[0].expressions if leaves else []
+                if any(_output_name(i) == name or isinstance(i, exp.Star) or (isinstance(i, exp.Column) and isinstance(i.this, exp.Star)) for i in first):
+                    options.append(self._derived_column_scale(found[0], name, depth))
                 continue
             if isinstance(source, exp.Table):
-                table = source.name.lower()
-                columns = self.types.get(table)
-                if columns is not None and name in columns:
-                    options.append(scales.of_type(columns[name]))
-                elif columns is None or not node.table:
-                    options.append(scales.column(f"{table}.{name}"))
-        return options[0] if len(options) == 1 else None
+                columns = self.types.get(source.name.lower())
+                if columns is not None:
+                    if name in columns:  # a typed table that lacks the column is not the one it names
+                        options.append(scales.of_type(columns[name]))
+                    continue
+                known = self.schema.get(source.name.lower())
+                if known is not None and name not in known:  # the schema says this table has no such column
+                    continue
+                # An untyped table: the column is a symbol known by its name, the same in both queries whatever the tables are
+                # called or whether the read says which one (the schema is the same for both).
+                options.append(scales.column(name))
+        distinct = list(dict.fromkeys(options))
+        return distinct[0] if len(distinct) == 1 else None
 
     def expanded_outputs(self, leaf: exp.Select):
         """The output expressions of a select with each star replaced by the columns of the derived tables it covers.
@@ -567,7 +578,7 @@ def reading(left_sql: str, right_sql: str, dialect: str | None, types: dict | No
     return Found(texts[0], texts[1], total) if total else None
 
 
-def _output_scales(sql: str, types: dict | None):
+def _output_scales(sql: str, types: dict | None, schema: dict | None = None):
     """``(hidden, scales)`` per output column of a statement: does it return a value with digits past its declared scale,
     and at which declared scale (an unknown one is written ``?`` and the expression's text). None when the outputs cannot
     be listed (a star, a statement that is not a query)."""
@@ -594,7 +605,7 @@ def _output_scales(sql: str, types: dict | None):
     return columns
 
 
-def scale_differs(left_sql: str, right_sql: str, dialect: str | None, types: dict | None = None) -> bool:
+def scale_differs(left_sql: str, right_sql: str, dialect: str | None, types: dict | None = None, schema: dict | None = None) -> bool:
     """True when a column one query returns with digits past its declared scale is not at the other's declared scale.
 
     ``paid * 1.0 / due`` and ``paid / due`` return the same quotient at five and at four decimals (issue 47). A column is
@@ -606,7 +617,7 @@ def scale_differs(left_sql: str, right_sql: str, dialect: str | None, types: dic
         return False
     if all("/" not in sql and "avg" not in sql.lower() for sql in (left_sql, right_sql)):
         return False
-    left, right = _output_scales(left_sql, types), _output_scales(right_sql, types)
+    left, right = _output_scales(left_sql, types, schema), _output_scales(right_sql, types, schema)
     if left is None or right is None or len(left) != len(right):
         return False
     return any(_loses_digits(a, b) for a, b in zip(left, right))
@@ -634,7 +645,7 @@ def proved(prove: Callable, left_sql: str, right_sql: str, kwargs: dict):
     result = _proved_as_stored(prove, left_sql, right_sql, kwargs)
     if _ACTIVE.get() or result.status not in (_proof_statuses()):
         return result
-    if not scale_differs(left_sql, right_sql, kwargs.get("dialect"), kwargs.get("types")):
+    if not scale_differs(left_sql, right_sql, kwargs.get("dialect"), kwargs.get("types"), kwargs.get("schema")):
         return result
     from .smt_equivalence import SmtEquivalenceResult, SmtStatus
 
