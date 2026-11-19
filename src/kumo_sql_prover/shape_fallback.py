@@ -32,7 +32,7 @@ A larger pair gets the first attempt only.
 The shape rules: ``single_source_columns``, ``grouped_self_membership``, ``disjoint_union``,
 ``tailed_grouping_sets``, ``mysql_exists_casts``, ``case_arm_rules``, ``unmatched_outer_join``,
 ``having_count_rules``, ``semijoin_shapes``, ``string_spelling_rules``, ``tailed_outer_aggregates``,
-``wrapped_join_filters``, ``one_row_tails``, ``grouped_source_filters``, ``keyed_union``, ``tailed_regroups``, ``union_join_grouping``, ``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence`` (hardest-cases batch 3, 2026-11-11), ``anti_join_reading``, ``distinct_source_filters``, ``keyed_semijoin``, ``nested_correlation`` and ``presence_given_absence`` (batch 4, 2026-11-16 and 17), ``differing_self_joins``, ``own_value_lists``, ``own_group_membership`` and ``own_key_membership`` (batch 5, 2026-11-17), ``different_row_keys`` (batch 6, 2026-11-17), ``referenced_presence`` (batch 7, 2026-11-17), and the derived-table and ``JOIN .. ON`` sources that
+``wrapped_join_filters``, ``one_row_tails``, ``grouped_source_filters``, ``keyed_union``, ``tailed_regroups``, ``union_join_grouping``, ``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence`` (hardest-cases batch 3, 2026-11-11), ``anti_join_reading``, ``distinct_source_filters``, ``keyed_semijoin``, ``nested_correlation`` and ``presence_given_absence`` (batch 4, 2026-11-16 and 17), ``differing_self_joins``, ``own_value_lists``, ``own_group_membership`` and ``own_key_membership`` (batch 5, 2026-11-17), ``different_row_keys`` (batch 6, 2026-11-17), ``referenced_presence`` (batch 7, 2026-11-17), ``child_counts`` (batch 8, 2026-11-18), ``own_row_copies``, ``distinct_match_joins``, ``own_column_lists``, ``lookup_names``, ``joined_key_lists``, ``own_row_witness``, ``single_value_groups``, ``nested_test_groupings`` and ``distinct_derived_joins`` (batch 9, 2026-11-18), and the derived-table and ``JOIN .. ON`` sources that
 ``closed_sources`` lets the scalar-aggregate decorrelation read. Added on 2026-11-11 for the DSB rewrites of
 the QUITE eval: ``renamed_join_heads``, ``spread_aggregates``, ``scalar_having_groups``,
 ``star_source_columns``, ``count_column_bounds``, ``extreme_group_sources``, ``setop_operand_sources``,
@@ -204,6 +204,113 @@ def without(name: str):
     """Run the block with the named narrow-fallback rule off."""
 
     token = _OFF.set(_OFF.get() | {name})
+    try:
+        yield
+    finally:
+        _OFF.reset(token)
+
+
+# The rules of the ninth hardest-cases batch (2026-11-18) read shapes that older rules also read, and one of them cost a
+# proof in an attempt made with an older rule off: with ``own_key_membership`` off, ``distinct_match_joins`` began to fire
+# and took the pair out of the shape that attempt used to prove. Switching rules off one at a time cannot find that. So
+# these rules fire only on a first attempt and on a narrow attempt that switches off rules of this batch alone; every
+# other attempt (without the shape rules, with the late rules, with an older rule off) reads the pair exactly as it was
+# read before the batch.
+#
+# They also cost time. A first attempt that reads a pair differently fails differently, and every failed attempt is
+# followed by its retries, also inside the proofs of parts of a pair: six QUITE proofs of about 25 seconds needed more
+# than 60 with the batch on from the start. So a proof runs in two stages (``_prove_algebraic_levels``). Stage one is
+# the whole prover as it was before the batch, every attempt of it, with the batch off also in the proofs inside it:
+# a pair that was proved before is proved by the same steps in the same time. Stage two runs only when stage one
+# leaves the pair without a verdict and a rule of the batch would have fired (stage one tries each rule where it
+# would fire and throws the result away, until one says yes): the attempts that have the batch on. Outside a proof
+# (``normalize`` called by itself) there is no stage and the batch is on.
+
+NINTH_BATCH = frozenset(
+    {
+        "own_row_copies",
+        "distinct_match_joins",
+        "own_column_lists",
+        "lookup_names",
+        "joined_key_lists",
+        "own_row_witness",
+        "single_value_groups",
+        "nested_test_groupings",
+        "distinct_derived_joins",
+    }
+)
+
+# The VeriEQL worker group (``worker_rules.NAME``) is switched off as a whole for a run of the prover as it was before
+# that group. The ninth batch was measured without the group, so it may fire beside the group and with the group off.
+_BESIDE_NINTH = frozenset({"verieql_worker_rules"})
+
+_NINTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_ninth_stage", default=None)
+_NINTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_ninth_seen", default=None)
+
+
+def ninth_batch_enabled() -> bool:
+    """Whether the rules of ``NINTH_BATCH`` may fire in the current attempt (see the comment above)."""
+
+    return _NINTH_STAGE.get() is not False and _ENABLED.get() and not _LATE.get() and (_OFF.get() - _BESIDE_NINTH) <= NINTH_BATCH
+
+
+def ninth_staged() -> bool:
+    """Whether a staged proof is running: a proof started inside it belongs to its stage and makes no stages of its own."""
+
+    return _NINTH_STAGE.get() is not None
+
+
+def ninth_stage() -> bool:
+    """Whether the ninth batch is on in the current stage (part of any normalization cache key)."""
+
+    return _NINTH_STAGE.get() is not False
+
+
+@contextmanager
+def ninth_deferred():
+    """Stage one: run the block with the ninth batch off, collecting whether one of its rules would have fired."""
+
+    seen: list = []
+    stage, watch = _NINTH_STAGE.set(False), _NINTH_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _NINTH_SEEN.reset(watch)
+        _NINTH_STAGE.reset(stage)
+
+
+@contextmanager
+def ninth_on():
+    """Stage two: run the block with the ninth batch on."""
+
+    token = _NINTH_STAGE.set(True)
+    try:
+        yield
+    finally:
+        _NINTH_STAGE.reset(token)
+
+
+def ninth_watching() -> bool:
+    """Whether stage one should try a rule of the batch without effect here: an attempt in which stage two would let it
+    fire first (the shape rules on, the late rules off, no rule switched off), while none has said yes yet."""
+
+    seen = _NINTH_SEEN.get()
+    return _NINTH_STAGE.get() is False and seen is not None and not seen and _ENABLED.get() and not _LATE.get() and not (_OFF.get() - _BESIDE_NINTH)
+
+
+def note_ninth_candidate() -> None:
+    """Record that a rule of the ninth batch would have fired in stage one."""
+
+    seen = _NINTH_SEEN.get()
+    if seen is not None and not seen:
+        seen.append(True)
+
+
+@contextmanager
+def without_all(names: frozenset):
+    """Run the block with every named narrow-fallback rule off."""
+
+    token = _OFF.set(_OFF.get() | frozenset(names))
     try:
         yield
     finally:

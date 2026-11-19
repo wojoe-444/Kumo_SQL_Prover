@@ -158,19 +158,25 @@ def _date_types(pair: singh.Pair) -> dict[str, dict[str, str]]:
     }
 
 
-def _prove_options(pair: singh.Pair) -> dict:
+def _prove_options(pair: singh.Pair, text: bool = False) -> dict:
+    """What the prover is told about a pair. ``text`` also declares the columns the queries use as text (the reading the plain
+    Singh harness passes, and the way the re-check fills those columns): the second attempt of ``decide_singh``."""
+
     options = dict(schema=pair.tables, compare_names=False, dialect="mysql", timeout_ms=4000, conditional_seconds=SEARCH_SECONDS)
-    dates = _date_types(pair)
-    if dates:
-        options["types"] = dates
+    types = singh._text_types(pair) if text else _date_types(pair)
+    if types:
+        options["types"] = types
     return options
 
 
-def _singh_prove(pair: singh.Pair):
+TEXT_NOTE = " (with the columns the queries use as text declared as text)"
+
+
+def _singh_prove(pair: singh.Pair, options: dict | None = None):
     from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
     from kumo_sql_prover.canonical_rules import canonicalize
 
-    options = _prove_options(pair)
+    options = _prove_options(pair) if options is None else options
     first = prove_equivalent_algebraic(pair.left, pair.right, conditional=True, **options)
     if first.status is SmtStatus.PROVEN_EQUIVALENT:
         return first, (pair.left, pair.right)
@@ -282,21 +288,35 @@ def decide_singh(pair: singh.Pair) -> Outcome:
         result, texts = _singh_prove(pair)
     except Exception as error:  # a crash is a failure to prove, never a proof
         return Outcome("unknown", f"{type(error).__name__}: {error}"[:200], seconds=time.time() - start, **base)
+    options, note = _prove_options(pair), ""
+    if result.status not in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
+        outcome = _refuted_or_unknown(pair, trees, texts, result, start, base)
+        typed = _prove_options(pair, text=True)
+        if outcome.kind != "unknown" or typed.get("types") == options.get("types"):
+            return outcome
+        # Second attempt, only for a pair that is still unknown: the columns the queries compare with text literals or pass
+        # to text functions are declared as text, as the re-check fills them. Untyped, the prover has to allow that such a
+        # column holds numbers, for which MySQL reads 'S8' and 'IPHONE' as the same value.
+        try:
+            retried, retried_texts = _singh_prove(pair, typed)
+        except Exception:  # a crash is a failure to prove, never a proof
+            return outcome
+        if retried.status not in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
+            return outcome
+        result, texts, options, note = retried, retried_texts, typed, TEXT_NOTE
     if result.status is SmtStatus.PROVEN_EQUIVALENT:
-        return Outcome("equivalent", "proved outright", seconds=time.time() - start, **base)
-    if result.status is not SmtStatus.PROVEN_CONDITIONALLY:
-        return _refuted_or_unknown(pair, trees, texts, result, start, base)
+        return Outcome("equivalent", "proved outright" + note, seconds=time.time() - start, **base)
     conditions = _conditions_of(result)
     if _reads_statement_values(conditions):
-        return Outcome("unchecked", result.reason, [c.to_json() for c in conditions], 0, seconds=time.time() - start, **base)
+        return Outcome("unchecked", result.reason + note, [c.to_json() for c in conditions], 0, seconds=time.time() - start, **base)
     checked = singh.Pair(pair.index, texts[0], texts[1], pair.tables, pair.gold)
     witness, ran = _singh_search(checked, trees, conditions, VALIDATION_DATABASES, seed=202)
     if witness:
         return Outcome("wrong", "proved under conditions but DuckDB separates the queries on a database that meets them", [c.to_json() for c in conditions], ran, **base)
     without, _ = _singh_search(checked, trees, [], WITHOUT_DATABASES, seed=7)
-    minimal = _each_needed(checked, conditions, _prove_options(pair))
+    minimal = _each_needed(checked, conditions, options)
     return Outcome(
-        "conditional", result.reason, [c.to_json() for c in conditions], ran, needed=without is not None, minimal=minimal,
+        "conditional", result.reason + note, [c.to_json() for c in conditions], ran, needed=without is not None, minimal=minimal,
         seconds=time.time() - start, **base,
     )
 
