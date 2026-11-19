@@ -310,7 +310,9 @@ class _Reading:
             return None
         deeper = depth + 1
         arg = lambda child: self.scale(child, select, deeper)  # noqa: E731
-        if isinstance(node, (exp.Paren, exp.Neg, exp.Abs, exp.Min, exp.Max, exp.Sum, exp.Window, exp.Distinct)):
+        if isinstance(node, exp.Distinct):  # AVG(DISTINCT x): the one expression it is over
+            return arg(node.expressions[0]) if len(node.expressions) == 1 else None
+        if isinstance(node, (exp.Paren, exp.Neg, exp.Abs, exp.Min, exp.Max, exp.Sum, exp.Window)):
             return arg(node.this) if node.this is not None else None
         if isinstance(node, exp.Literal):
             return None if node.is_string else scales.of_literal(node.this)
@@ -588,7 +590,7 @@ def _output_scales(sql: str, types: dict | None):
         items = [(leaf, outputs[position]) for leaf, outputs in zip(leaves, expanded)]
         hidden = any(reading.hidden_through(item, leaf) for leaf, item in items)
         scale = scales.largest([reading.scale(item, leaf) for leaf, item in items])
-        columns.append((hidden, scales.tag(scale, " UNION ".join(item.sql(dialect="mysql") for _, item in items))))
+        columns.append((hidden, scale, scales.tag(scale, " UNION ".join(item.sql(dialect="mysql") for _, item in items))))
     return columns
 
 
@@ -597,7 +599,8 @@ def scale_differs(left_sql: str, right_sql: str, dialect: str | None, types: dic
 
     ``paid * 1.0 / due`` and ``paid / due`` return the same quotient at five and at four decimals (issue 47). A column is
     compared when either query's value carries such digits; a scale this module cannot work out matches only the same
-    expression text."""
+    expression text. When only one side carries them and its declared scale is the larger, the other side's value is a
+    number that scale holds exactly (``AVG(x)`` over a group of one row against ``x``), and the pair is not a difference."""
 
     if (dialect or "bigquery").lower() not in DIALECTS:
         return False
@@ -606,7 +609,21 @@ def scale_differs(left_sql: str, right_sql: str, dialect: str | None, types: dic
     left, right = _output_scales(left_sql, types), _output_scales(right_sql, types)
     if left is None or right is None or len(left) != len(right):
         return False
-    return any((a[0] or b[0]) and a[1] != b[1] for a, b in zip(left, right))
+    return any(_loses_digits(a, b) for a, b in zip(left, right))
+
+
+def _loses_digits(first, second) -> bool:
+    """Whether one column of a pair proved equal could be returned with different digits (see :func:`scale_differs`)."""
+
+    (first_hidden, first_scale, first_tag), (second_hidden, second_scale, second_tag) = first, second
+    if not (first_hidden or second_hidden) or first_tag == second_tag:
+        return False
+    if first_hidden and second_hidden:
+        return True
+    # One value is exact at its declared scale. Proved equal to it, the other is that number, which the other's declared
+    # scale (the larger one) holds without rounding: AVG(x) over a group of one row is x, 5 is 5.0000.
+    hidden, exact = (first_scale, second_scale) if first_hidden else (second_scale, first_scale)
+    return not scales.dominates(hidden, exact)
 
 
 def proved(prove: Callable, left_sql: str, right_sql: str, kwargs: dict):

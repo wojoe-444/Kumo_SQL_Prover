@@ -134,3 +134,23 @@ def tag(scale, fallback: str) -> str:
     if scale == FLOAT:
         return FLOAT
     return "|".join(f"{a}+{'*'.join(b)}" + (f"<{cap}" if cap is not None else "") for a, b, cap in sorted(scale, key=repr))
+
+
+def dominates(big, small) -> bool:
+    """True when ``big`` is at least ``small`` whatever the unknown columns' scales are (neither is floating point or unknown).
+
+    Every term of ``small`` must be matched by a term of ``big`` over the same or more columns with a constant at least as
+    large, and no cap that ``small`` does not have."""
+
+    if big is None or small is None or FLOAT in (big, small):
+        return False
+
+    def covers(wide, narrow) -> bool:
+        pool = list(wide[1])
+        for name in narrow[1]:
+            if name not in pool:
+                return False
+            pool.remove(name)
+        return wide[0] >= narrow[0] and (wide[2] is None or wide[2] == narrow[2])
+
+    return all(any(covers(a, b) for a in big) for b in small)

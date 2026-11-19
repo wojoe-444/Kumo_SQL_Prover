@@ -155,6 +155,14 @@ STILL_PROVEN = {
         "SELECT id FROM bill WHERE paid * 1.0 / due > 0.5",
         "SELECT id FROM bill WHERE paid / due > 0.5",
     ),
+    "an average over a group of one row is the value": (
+        "SELECT id, AVG(paid) AS q FROM bill GROUP BY id",
+        "SELECT id, paid AS q FROM bill",
+    ),
+    "an average of one value across a union": (
+        "SELECT id, paid FROM bill GROUP BY id HAVING COUNT(*) = 1 UNION SELECT id, paid FROM bill WHERE due = 1",
+        "SELECT id, AVG(paid) FROM bill GROUP BY id HAVING COUNT(*) = 1 UNION SELECT id, paid FROM bill WHERE due = 1",
+    ),
     "a quotient floored": ("SELECT FLOOR(paid * 1.0 / due) AS q FROM bill", "SELECT FLOOR(paid / due) AS q FROM bill"),
 }
 
@@ -274,6 +282,10 @@ def test_a_declared_type_that_is_not_a_number_has_no_scale():
         ("SELECT paid / due FROM bill", "SELECT paid / due FROM bill", False),
         ("SELECT paid * 1.0 FROM bill", "SELECT paid FROM bill", False),  # no digit past the declared scale
         ("SELECT ROUND(paid * 1.0 / due, 2) FROM bill", "SELECT ROUND(paid / due, 2) FROM bill", False),
+        ("SELECT AVG(paid) FROM bill", "SELECT paid FROM bill", False),  # the exact value fits the larger scale
+        ("SELECT paid FROM bill", "SELECT AVG(paid) FROM bill", False),
+        ("SELECT paid / due FROM bill", "SELECT paid * 1.00000 FROM bill", True),  # the exact side has more decimals
+        ("SELECT AVG(owed) FROM bill", "SELECT owed FROM bill", False),
         ("SELECT * FROM bill", "SELECT paid / due FROM bill", False),  # outputs that cannot be listed are not compared
         ("SELECT * FROM (SELECT paid * 1.0 / due AS q FROM bill) AS t", "SELECT * FROM (SELECT paid / due AS q FROM bill) AS t", True),
         ("SELECT t.* FROM (SELECT paid * 1.0 / due AS q FROM bill) AS t, bill", "SELECT t.* FROM (SELECT paid / due AS q FROM bill) AS t, bill", True),
@@ -308,3 +320,12 @@ def test_the_wrapper_of_a_stored_quotient_carries_the_scale_it_is_stored_at():
     assert found is not None
     assert "KQ_STORED_QUOTIENT(SUM(paid) * 1.0 / COUNT(*), '5+')" in found.left_sql
     assert "KQ_STORED_QUOTIENT(SUM(paid) / COUNT(*), '4+')" in found.right_sql
+
+
+def test_a_scale_dominates_another_when_it_is_larger_whatever_the_columns_are():
+    assert S.dominates(S.constant(4), S.constant(0)) and S.dominates(S.constant(4), S.constant(4))
+    assert not S.dominates(S.constant(4), S.constant(5)) and not S.dominates(S.constant(4), S.FLOAT) and not S.dominates(None, S.constant(0))
+    paid, due = S.column("bill.paid"), S.column("bill.due")
+    assert S.dominates(S.add_digits(paid, 4), paid)
+    assert not S.dominates(S.add_digits(paid, 4), due)  # another column may declare more decimals
+    assert S.dominates(S.plus(paid, due), paid)
