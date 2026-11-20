@@ -5015,6 +5015,26 @@ def _narrow_shape(name: str, rule, select):
     return _narrow(name, rule, select)
 
 
+def _eleventh_batch(tree, schema, not_null, types, dialect):
+    """The pre-passes of the eleventh hardest-cases batch that run before the tenth batch (whose share rules read what
+    they write). Returns the tree and the names of the rules that rewrote something. Each rule copies before it writes."""
+
+    fired: list[str] = []
+    if shape_fallback.rule_enabled("boolean_sums"):
+        from .boolean_sums import write_boolean_sums
+
+        tree, summed = write_boolean_sums(tree, schema, not_null, types, dialect)  # pre-pass: SUM(p) written SUM(CASE WHEN p THEN 1 ELSE 0 END) (MySQL)
+        if summed:
+            fired.append("boolean_sums")
+    if shape_fallback.rule_enabled("added_sums"):
+        from .added_sums import split_added_sums
+
+        tree, split = split_added_sums(tree, schema, not_null, types)  # pre-pass: SUM(a + b) written SUM(a) + SUM(b) for never-NULL exact terms
+        if split:
+            fired.append("added_sums")
+    return tree, fired
+
+
 def _tenth_batch(tree, schema, keys, not_null, types, dialect):
     """The pre-passes of the tenth hardest-cases batch (shares and percentages), in the order they were measured in.
     Returns the tree and the names of the rules that rewrote something. Some of them write in place."""
@@ -5119,6 +5139,16 @@ def normalize(
     tree = _resolve_ordinals(tree, group_by=not group_by_constants)
     tree = _unwrap_output_columns(_lowercase_columns(tree))
     tree = _inline_ctes(tree)
+    if shape_fallback.rule_enabled("shared_group_names") and (shape_fallback.eleventh_batch_enabled() or shape_fallback.eleventh_watching()):
+        from .shared_group_names import qualify_shared_group_names
+
+        # pre-pass (eleventh batch): a bare GROUP BY name two joined tables share is the select-list column (MySQL)
+        named, renamed = qualify_shared_group_names(tree, dialect)
+        if renamed and shape_fallback.eleventh_batch_enabled():
+            tree = named
+            shape_fallback.note_fired("shared_group_names")
+        elif renamed:
+            shape_fallback.note_eleventh_candidate()  # an earlier stage: stage four is worth running
     if shape_fallback.enabled():
         from .joined_key_restrictions import drop_joined_key_restrictions
 
@@ -5217,6 +5247,14 @@ def normalize(
             if read:
                 shape_fallback.note_fired("child_counts")
         tree = choose_key_groups(tree, schema, keys, not_null)  # pre-pass: grouping by any NOT NULL key of a table is one grouping, so name the first
+        if shape_fallback.eleventh_batch_enabled():
+            tree, eleventh_fired = _eleventh_batch(tree, schema, not_null, types, dialect)
+            for name in eleventh_fired:
+                shape_fallback.note_fired(name)
+        elif shape_fallback.eleventh_watching():
+            # An earlier stage asks whether a rule of the batch would fire here, and changes nothing (the rules copy).
+            if _eleventh_batch(tree, schema, not_null, types, dialect)[1]:
+                shape_fallback.note_eleventh_candidate()
         if shape_fallback.tenth_batch_enabled():
             tree, tenth_fired = _tenth_batch(tree, schema, keys, not_null, types, dialect)
             for name in tenth_fired:
@@ -5759,24 +5797,37 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
                 return narrow
         return found
 
-    if shape_fallback.tenth_stage_running():
-        result = attempt()  # a sub-proof of stage three: one attempt, for the same reason
+    if shape_fallback.tenth_stage_running() or shape_fallback.eleventh_stage_running():
+        result = attempt()  # a sub-proof of stage three or four: one attempt, for the same reason
     elif shape_fallback.ninth_staged():
         result = ladder()  # a proof inside a staged proof: the stage it runs in decides which staged batches are on
     else:
-        with shape_fallback.tenth_deferred() as tenth_seen:
-            # Stage one: the prover as it was before the ninth batch, at the cost it had (``shape_fallback.NINTH_BATCH``).
-            with shape_fallback.ninth_deferred() as ninth_seen:
-                result = ladder()
-            if result.status is SmtStatus.NOT_PROVEN and ninth_seen:
-                # Stage two: a rule of the ninth batch would have fired.
-                with shape_fallback.ninth_on():
-                    later = staged(shape_fallback.NINTH_BATCH)
+        with shape_fallback.eleventh_deferred() as eleventh_seen:
+            with shape_fallback.tenth_deferred() as tenth_seen:
+                # Stage one: the prover as it was before the ninth batch, at the cost it had (``shape_fallback.NINTH_BATCH``).
+                with shape_fallback.ninth_deferred() as ninth_seen:
+                    result = ladder()
+                if result.status is SmtStatus.NOT_PROVEN and ninth_seen:
+                    # Stage two: a rule of the ninth batch would have fired.
+                    with shape_fallback.ninth_on():
+                        later = staged(shape_fallback.NINTH_BATCH)
+                    if later.status is not SmtStatus.NOT_PROVEN:
+                        return later
+            if result.status is SmtStatus.NOT_PROVEN and tenth_seen:
+                # Stage three: a rule of the tenth batch would have fired (``shape_fallback.TENTH_BATCH``).
+                with shape_fallback.tenth_on():
+                    later = third_stage()
                 if later.status is not SmtStatus.NOT_PROVEN:
                     return later
-        if result.status is SmtStatus.NOT_PROVEN and tenth_seen:
-            # Stage three: a rule of the tenth batch would have fired (``shape_fallback.TENTH_BATCH``).
-            with shape_fallback.tenth_on():
+        if result.status is SmtStatus.NOT_PROVEN and eleventh_seen:
+            # Stage four: a rule of the eleventh batch would have fired (``shape_fallback.ELEVENTH_BATCH``). One attempt
+            # with that batch beside the prover as it was before the ninth, then the attempts of stage three with the
+            # eleventh batch on beside the ninth and the tenth.
+            with shape_fallback.eleventh_alone():
+                later = attempt()
+            if later.status is not SmtStatus.NOT_PROVEN:
+                return later
+            with shape_fallback.eleventh_on():
                 later = third_stage()
             if later.status is not SmtStatus.NOT_PROVEN:
                 return later

@@ -354,13 +354,13 @@ SHARE_OPTIONS = {**BILL_OPTIONS, "constraints": {"bill": TableConstraints(not_nu
 
 
 def test_the_tenth_stage_switches():
-    assert shape_fallback.tenth_batch_enabled() and shape_fallback.stage_key() == (True, True)  # outside a proof both are on
+    assert shape_fallback.tenth_batch_enabled() and shape_fallback.stage_key()[:2] == (True, True)  # outside a proof both are on
     with shape_fallback.tenth_deferred() as seen:
         with shape_fallback.ninth_deferred():
-            assert shape_fallback.stage_key() == (False, False) and shape_fallback.tenth_watching()  # stage one
+            assert shape_fallback.stage_key()[:2] == (False, False) and shape_fallback.tenth_watching()  # stage one
             assert not shape_fallback.tenth_batch_enabled() and not shape_fallback.ninth_batch_enabled()
         with shape_fallback.ninth_on():
-            assert shape_fallback.stage_key() == (True, False) and shape_fallback.tenth_watching()  # stage two
+            assert shape_fallback.stage_key()[:2] == (True, False) and shape_fallback.tenth_watching()  # stage two
             assert not shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
             for older in (shape_fallback.disabled, shape_fallback.late, lambda: shape_fallback.without("own_row_copies")):
                 with older():
@@ -373,14 +373,14 @@ def test_the_tenth_stage_switches():
     with shape_fallback.tenth_deferred():
         assert not shape_fallback.tenth_stage_running()
     with shape_fallback.tenth_on():
-        assert shape_fallback.stage_key() == (True, True) and shape_fallback.ninth_staged()  # stage three
+        assert shape_fallback.stage_key()[:2] == (True, True) and shape_fallback.ninth_staged()  # stage three
         assert shape_fallback.tenth_stage_running()
         assert shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled() and not shape_fallback.tenth_watching()
         with shape_fallback.without("if_cases"), shape_fallback.without(worker_rules.NAME):
             assert shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
         with shape_fallback.without("own_row_copies"):
             assert not shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
-    assert not shape_fallback.ninth_staged() and shape_fallback.stage_key() == (True, True)
+    assert not shape_fallback.ninth_staged() and shape_fallback.stage_key() == (True, True, True)
 
 
 def test_a_pair_only_the_tenth_batch_proves_is_proved_in_stage_three(monkeypatch):
@@ -460,4 +460,126 @@ def test_earlier_stages_ask_a_copy_and_change_nothing():
         assert normalize(BY_IF, **options) == before
     assert seen == [True]
     assert normalize(BY_IF, **options) != before
+
+
+# The eleventh batch: a fourth stage.
+ITEM_SALES = {"sale": ["id", "buyer", "item_id", "paid"], "item": ["item_id", "label"]}
+ITEM_SALE_TYPES = {"sale": {"id": "INT", "buyer": "INT", "item_id": "INT", "paid": "INT"}, "item": {"item_id": "INT", "label": "VARCHAR"}}
+ITEM_SALE_OPTIONS = {
+    "schema": ITEM_SALES, "types": ITEM_SALE_TYPES, "compare_names": False, "dialect": "mysql",
+    "constraints": {"sale": TableConstraints(not_null=frozenset({"id", "buyer", "item_id"}), keys=(("id",),)), "item": TableConstraints(not_null=frozenset({"item_id", "label"}), keys=(("item_id",),))},
+}
+SOLD = "FROM sale AS s JOIN item AS i ON s.item_id = i.item_id"
+BY_SUMS = f"SELECT s.buyer {SOLD} GROUP BY s.buyer HAVING SUM(i.label = 'S') > 0 AND SUM(i.label = 'T') = 0"
+BY_LIST = f"SELECT DISTINCT s.buyer {SOLD} WHERE i.label = 'S' AND s.buyer NOT IN (SELECT s2.buyer FROM sale AS s2 JOIN item AS i2 ON s2.item_id = i2.item_id WHERE i2.label = 'T')"
+JOINED_SHARE = f"SELECT ROUND(SUM(i.label = 'S') / COUNT(*) * 100, 2) AS share {SOLD}"
+JOINED_COUNTED = f"SELECT ROUND(COUNT(CASE WHEN i.label = 'S' THEN 1 END) * 100 / COUNT(*), 2) AS share {SOLD}"
+
+
+def eleventh_steps(monkeypatch, left, right, **options):
+    """The proof's verdict, and for each step which of the three staged batches were on in it."""
+
+    steps = []
+    real = algebraic_equivalence._prove_algebraic
+
+    def watched(*args, **kwargs):
+        steps.append(shape_fallback.stage_key())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(algebraic_equivalence, "_prove_algebraic", watched)
+    return prove_equivalent_algebraic(left, right, **options), steps
+
+
+def test_the_eleventh_stage_switches():
+    assert shape_fallback.eleventh_batch_enabled() and shape_fallback.stage_key() == (True, True, True)  # outside a proof all are on
+    with shape_fallback.without("if_cases"):
+        assert shape_fallback.eleventh_batch_enabled()  # a rule of the tenth batch off: the stage's second attempt
+    for older in (shape_fallback.disabled, shape_fallback.late, lambda: shape_fallback.without("own_row_copies"), lambda: shape_fallback.without("own_key_membership")):
+        with older():
+            assert not shape_fallback.eleventh_batch_enabled()
+    with shape_fallback.eleventh_deferred() as seen:
+        with shape_fallback.tenth_deferred(), shape_fallback.ninth_deferred():
+            assert shape_fallback.stage_key() == (False, False, False) and shape_fallback.eleventh_watching() and not shape_fallback.eleventh_batch_enabled()
+        with shape_fallback.tenth_on():  # stage three is as it was before the batch
+            assert shape_fallback.stage_key() == (True, True, False) and not shape_fallback.eleventh_batch_enabled() and shape_fallback.tenth_batch_enabled()
+            for older in (shape_fallback.disabled, shape_fallback.late, lambda: shape_fallback.without("own_row_copies")):
+                with older():
+                    assert not shape_fallback.eleventh_watching()  # stage four would not let the batch fire here either
+        shape_fallback.note_eleventh_candidate()
+        assert seen == [True] and not shape_fallback.eleventh_watching()  # one yes is enough
+    assert not shape_fallback.eleventh_stage_running()
+    with shape_fallback.eleventh_alone():  # the first attempt of stage four: the prover before the ninth batch, and this batch
+        assert shape_fallback.stage_key() == (False, False, True) and shape_fallback.eleventh_stage_running()
+        assert shape_fallback.eleventh_batch_enabled() and not shape_fallback.tenth_batch_enabled() and not shape_fallback.ninth_batch_enabled()
+        assert not shape_fallback.ninth_watching() and not shape_fallback.tenth_watching()
+    with shape_fallback.eleventh_on():
+        assert shape_fallback.stage_key() == (True, True, True) and shape_fallback.eleventh_stage_running() and shape_fallback.tenth_stage_running()
+        assert shape_fallback.eleventh_batch_enabled() and shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
+        with shape_fallback.without("aggregate_scalars"):
+            assert shape_fallback.eleventh_batch_enabled() and shape_fallback.tenth_batch_enabled()
+    assert not shape_fallback.ninth_staged() and shape_fallback.stage_key() == (True, True, True)
+    assert not shape_fallback.ELEVENTH_BATCH & (shape_fallback.TENTH_BATCH | shape_fallback.NINTH_BATCH)
+
+
+def test_a_pair_the_eleventh_batch_proves_alone_is_proved_by_the_first_attempt_of_stage_four(monkeypatch):
+    with shape_fallback.without_all(shape_fallback.ELEVENTH_BATCH):
+        assert not prove_equivalent_algebraic(BY_SUMS, BY_LIST, **ITEM_SALE_OPTIONS).proven
+    result, steps = eleventh_steps(monkeypatch, BY_SUMS, BY_LIST, **ITEM_SALE_OPTIONS)
+    assert result.proven
+    first = next(index for index, step in enumerate(steps) if step[2])
+    assert first > 0 and not any(step[2] for step in steps[:first])  # the prover as it was runs to its end first
+    assert all(step == (False, False, True) for step in steps[first:])  # then the batch beside the prover before the ninth
+
+
+def test_a_pair_that_needs_the_tenth_batch_too_is_proved_by_the_later_attempts_of_stage_four(monkeypatch):
+    with shape_fallback.without_all(shape_fallback.ELEVENTH_BATCH):
+        assert not prove_equivalent_algebraic(JOINED_SHARE, JOINED_COUNTED, **ITEM_SALE_OPTIONS).proven
+    result, steps = eleventh_steps(monkeypatch, JOINED_SHARE, JOINED_COUNTED, **ITEM_SALE_OPTIONS)
+    assert result.proven and steps[-1] == (True, True, True)
+    assert (False, False, True) in steps and steps.index((False, False, True)) < steps.index((True, True, True))
+
+
+def test_a_pair_proved_before_the_eleventh_batch_never_sees_it(monkeypatch):
+    """A rule of the batch would fire on both queries, and the pair is proved without it: no step has the batch on."""
+
+    with shape_fallback.tracking() as fired:
+        normalize(BY_SUMS, schema=ITEM_SALES, dialect="mysql", types=ITEM_SALE_TYPES)
+    assert "boolean_sums" in fired
+    result, steps = eleventh_steps(monkeypatch, BY_SUMS, BY_SUMS.replace("s.buyer", "s.buyer AS b", 1), **ITEM_SALE_OPTIONS)
+    assert result.proven and steps and not any(step[2] for step in steps)
+
+
+def test_no_stage_four_when_no_rule_of_the_eleventh_batch_would_fire(monkeypatch):
+    result, steps = eleventh_steps(monkeypatch, "SELECT a FROM t WHERE b > 1", "SELECT a FROM t WHERE b > 2", schema={"t": ["a", "b"]}, dialect="mysql")
+    assert not result.proven and steps and not any(step[2] for step in steps)
+
+
+def test_a_pair_the_eleventh_batch_reads_and_does_not_prove_costs_three_attempts_at_most(monkeypatch):
+    other = BY_LIST.replace("i2.label = 'T'", "i2.label = 'U'")
+    result, steps = eleventh_steps(monkeypatch, BY_SUMS, other, **ITEM_SALE_OPTIONS)
+    assert not result.proven
+    fourth = [step for step in steps if step[2]]
+    assert fourth and set(fourth) <= {(False, False, True), (True, True, True)}
+
+
+def test_earlier_stages_ask_the_eleventh_batch_and_change_nothing():
+    options = {"schema": ITEM_SALES, "types": ITEM_SALE_TYPES, "dialect": "mysql", "not_null": {"sale": frozenset({"buyer", "item_id"}), "item": frozenset({"item_id", "label"})}}
+    for sql in (BY_SUMS, f"SELECT s.item_id, COUNT(*) AS n {SOLD} GROUP BY item_id", f"SELECT SUM(s.buyer + i.item_id) AS n {SOLD}"):
+        with shape_fallback.without_all(shape_fallback.ELEVENTH_BATCH), shape_fallback.without_all(shape_fallback.TENTH_BATCH):
+            try:
+                before = normalize(sql, **options)
+            except Exception as error:  # a query the prover declines without the batch
+                before = str(error)
+        with shape_fallback.eleventh_deferred() as seen, shape_fallback.tenth_deferred(), shape_fallback.ninth_on():
+            try:
+                now = normalize(sql, **options)
+            except Exception as error:
+                now = str(error)
+        assert now == before and seen == [True], sql
+        with shape_fallback.tracking() as fired:
+            normalize(sql, **options)
+        assert fired & shape_fallback.ELEVENTH_BATCH, sql
+    with shape_fallback.eleventh_deferred() as seen:
+        normalize("SELECT a FROM t WHERE a > 1", schema=SCHEMA, dialect="mysql")
+    assert seen == []
 
