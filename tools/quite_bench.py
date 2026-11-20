@@ -53,6 +53,7 @@ rewrites.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import datetime
 import hashlib
 import json
@@ -923,6 +924,16 @@ def _search(left: str, right: str, tables: dict[str, Table], replayer: Replayer,
     return (witness, f"targeted: {found.label}") if witness else (None, "")
 
 
+def _deadline_inside(error: BaseException) -> bool:
+    """Whether ``error`` is the deadline under another name. The alarm that lands while ctypes converts an argument
+    of a z3 call comes out as ``ctypes.ArgumentError("argument 1: _Deadline: ")``; one that lands inside another
+    handler comes out as that handler's error with the deadline as its cause or context. Both are a timeout."""
+
+    if isinstance(error.__cause__, _Deadline) or isinstance(error.__context__, _Deadline):
+        return True
+    return isinstance(error, ctypes.ArgumentError) and "_Deadline" in str(error)
+
+
 _REPLAYERS: dict[str, Replayer] = {}
 
 
@@ -962,7 +973,8 @@ def decide(pair: Pair, tables: dict[str, Table], instance: Path | None = None) -
     except _Deadline:
         proved, reason, proposed, crash = False, "", [], "timeout"
     except Exception as error:  # noqa: BLE001 - a crash is a failure to prove, never a proof
-        proved, reason, proposed, crash = False, "", [], f"{type(error).__name__}: {str(error)[:200]}"
+        crash = "timeout" if _deadline_inside(error) else f"{type(error).__name__}: {str(error)[:200]}"
+        proved, reason, proposed = False, "", []
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)

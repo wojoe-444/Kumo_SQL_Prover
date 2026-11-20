@@ -119,6 +119,33 @@ def test_a_deadline_that_is_dropped_once_still_ends_the_proof(monkeypatch):
     assert verdict.outcome != "proven"
 
 
+def test_a_deadline_wrapped_in_another_error_is_a_timeout(monkeypatch):
+    """The alarm that lands while ctypes converts an argument of a z3 call comes out as an ``ArgumentError`` that
+    names the deadline; one that lands inside another handler is that handler's error with the deadline behind it.
+    Neither is a crash of the prover."""
+
+    import ctypes
+
+    def converting(left, right, tables):
+        raise ctypes.ArgumentError("argument 1: _Deadline: ")
+
+    def handling(left, right, tables):
+        try:
+            raise bench._Deadline()
+        except bench._Deadline as deadline:
+            raise RuntimeError("interrupted") from deadline
+
+    def broken(left, right, tables):
+        raise ctypes.ArgumentError("argument 1: TypeError: wrong type")
+
+    pair = bench.Pair("calcite", "q", "SELECT empno FROM emp", "SELECT mgr FROM emp")
+    tables = bench.load_schema(DDL)
+    monkeypatch.setattr(bench, "search", lambda *args, **kwargs: (None, ""))
+    for prover, outcome in ((converting, "timeout"), (handling, "timeout"), (broken, "error")):
+        monkeypatch.setattr(bench, "prove", prover)
+        assert bench.decide(pair, tables).outcome == outcome, prover.__name__
+
+
 def test_tie_sensitive_and_random_queries_are_recognised():
     import sqlglot
 
