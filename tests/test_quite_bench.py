@@ -94,6 +94,31 @@ def test_replayed_databases_respect_the_schema():
     assert bench.legal(fixed, tables) and fixed["nation"] == [(1, "FRANCE", 1)]
 
 
+def test_a_deadline_that_is_dropped_once_still_ends_the_proof(monkeypatch):
+    """The alarm repeats until it is caught: Python raises it in whatever is running, and inside a ``__del__`` the
+    exception is printed and dropped. With a single alarm such a proof ran on with no limit."""
+
+    import time
+
+    dropped = []
+
+    def stubborn(left, right, tables):
+        try:
+            while True:
+                time.sleep(0.02)
+        except bench._Deadline:
+            dropped.append(True)  # as a ``__del__`` does
+        while True:
+            time.sleep(0.02)
+
+    monkeypatch.setattr(bench, "prove", stubborn)
+    monkeypatch.setattr(bench, "PROVE_SECONDS", 1)
+    started = time.time()
+    verdict = bench.decide(bench.Pair("calcite", "q", "SELECT empno FROM emp", "SELECT empno FROM emp WHERE mgr = 1"), bench.load_schema(DDL))
+    assert dropped == [True] and time.time() - started < 30
+    assert verdict.outcome != "proven"
+
+
 def test_tie_sensitive_and_random_queries_are_recognised():
     import sqlglot
 
