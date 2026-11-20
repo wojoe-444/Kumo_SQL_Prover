@@ -364,6 +364,7 @@ def decide_verieql(case: dict, declared: bool = True) -> Outcome:
     lower = {t.name.lower(): t for t in spec.tables.values()}
     schema = {n: [c.name.lower() for c in t.columns] for n, t in lower.items()}
     types = {n: {c.name.lower(): c.type for c in t.columns} for n, t in lower.items()}
+    checks = veri.declared_checks(case, spec) if declared else {}
     constraints = {
         n: TableConstraints(
             not_null=frozenset(c.name.lower() for c in t.columns if c.not_null),
@@ -373,6 +374,7 @@ def decide_verieql(case: dict, declared: bool = True) -> Outcome:
                 for child, column, parent, parent_column in spec.foreign_keys
                 if child.lower() == n
             ),
+            checks=checks.get(n, ()),
         )
         for n, t in lower.items()
     }

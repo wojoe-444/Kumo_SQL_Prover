@@ -447,7 +447,7 @@ def with_conditions(constraints: Mapping[str, TableConstraints] | None, conditio
             fk = (tuple(condition.columns), condition.parent, tuple(condition.parent_columns))
             if fk not in fks:
                 fks.append(fk)
-        merged[condition.table] = TableConstraints(not_null=frozenset(not_null), keys=tuple(keys), foreign_keys=tuple(fks))
+        merged[condition.table] = TableConstraints(not_null=frozenset(not_null), keys=tuple(keys), foreign_keys=tuple(fks), checks=facts.checks)
     return merged
 
 
