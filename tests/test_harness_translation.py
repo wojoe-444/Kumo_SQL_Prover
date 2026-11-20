@@ -201,3 +201,52 @@ def test_every_small_database_keeps_consecutive_ids():
     # a real difference is still found, on a database with ids 1..n
     outcome, found = cx.Searcher(spec, "SELECT ID FROM SEATS", "SELECT ID FROM SEATS WHERE ID > 1").exhaustive(2, 3000)
     assert outcome == "found"
+
+
+TIMED_CASE = {
+    "index": 7,
+    "schema": {"SHOP": {"SHOP_ID": "INT", "CITY": "VARCHAR"}},
+    "constraint": [{"primary": [{"value": "SHOP__SHOP_ID"}]}],
+    "pair": ["SELECT CITY FROM SHOP WHERE SHOP_ID > 3", "SELECT CITY FROM SHOP WHERE NOT SHOP_ID <= 3"],
+}
+
+
+def test_a_search_the_time_budget_interrupts_is_a_timeout_not_a_crash(monkeypatch):
+    """DuckDB reports the alarm that lands inside a query as its own RuntimeError caused by the harness's timeout. The
+    case ran out of time: before any search finished it is unknown, after one it "agrees" (no difference was seen)."""
+
+    import verieql_bench
+
+    def interrupted_after(calls_allowed):
+        calls = []
+
+        def search(self, *args, **kwargs):
+            calls.append(1)
+            if len(calls) <= calls_allowed:
+                return None
+            try:
+                raise verieql_bench._Timeout
+            except verieql_bench._Timeout as alarm:
+                raise RuntimeError("Query interrupted") from alarm
+
+        return search
+
+    monkeypatch.setattr(cx.Searcher, "search", interrupted_after(0))
+    verdict = verieql_bench.decide(dict(TIMED_CASE))
+    assert (verdict.status, verdict.detail) == (verieql_bench.UNKNOWN, "time budget")
+    monkeypatch.setattr(cx.Searcher, "search", interrupted_after(1))  # the recheck of the proof is interrupted
+    verdict = verieql_bench.decide(dict(TIMED_CASE))
+    assert (verdict.status, verdict.detail) == (verieql_bench.AGREES, "time budget")
+
+
+def test_another_runtime_error_in_a_search_is_still_a_crash(monkeypatch):
+    import verieql_bench
+
+    def broken(self, *args, **kwargs):
+        raise RuntimeError("something else")
+
+    monkeypatch.setattr(cx.Searcher, "search", broken)
+    with pytest.raises(RuntimeError, match="something else"):
+        verieql_bench.decide(dict(TIMED_CASE))
+    verdict = verieql_bench._work((dict(TIMED_CASE), {}))
+    assert (verdict.status, verdict.detail) == (verieql_bench.UNKNOWN, "crash: RuntimeError")

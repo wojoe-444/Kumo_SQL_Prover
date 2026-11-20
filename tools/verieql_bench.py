@@ -335,6 +335,14 @@ def _alarm(_signum, _frame):
     raise _Timeout
 
 
+def _interrupted(error: BaseException) -> bool:
+    """Whether ``error`` is the time budget ending a DuckDB query: DuckDB reports the alarm that arrives while it runs a
+    query as its own ``RuntimeError`` ("Query interrupted") caused by the ``_Timeout``. Such a case ran out of time; it
+    did not crash."""
+
+    return isinstance(error.__cause__, _Timeout) or isinstance(error.__context__, _Timeout)
+
+
 @dataclass
 class Verdict:
     index: int
@@ -396,6 +404,10 @@ def decide(case: dict, *, trials: int = 200, recheck_trials: int = 1000, more_tr
             return Verdict(index, DIFFERENT, "counterexample (all small databases)", time.time() - start)
         return Verdict(index, AGREES, result.reason[:80], time.time() - start)
     except _Timeout:
+        return Verdict(index, AGREES if searched else UNKNOWN, "time budget", time.time() - start)
+    except RuntimeError as error:
+        if not _interrupted(error):
+            raise
         return Verdict(index, AGREES if searched else UNKNOWN, "time budget", time.time() - start)
     finally:
         signal.alarm(0)
