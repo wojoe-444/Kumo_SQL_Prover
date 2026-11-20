@@ -30,7 +30,10 @@ from __future__ import annotations
 
 from fractions import Fraction
 
-import z3
+try:  # pragma: no cover
+    import z3
+except ImportError:  # pragma: no cover
+    z3 = None  # only ``facts`` needs the solver, and only the solver layer calls it
 
 ORDERINGS = ("<", "<=", ">", ">=")
 OPERATORS = ("=", "<>", *ORDERINGS)
