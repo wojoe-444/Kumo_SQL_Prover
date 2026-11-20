@@ -32,7 +32,7 @@ A larger pair gets the first attempt only.
 The shape rules: ``single_source_columns``, ``grouped_self_membership``, ``disjoint_union``,
 ``tailed_grouping_sets``, ``mysql_exists_casts``, ``case_arm_rules``, ``unmatched_outer_join``,
 ``having_count_rules``, ``semijoin_shapes``, ``string_spelling_rules``, ``tailed_outer_aggregates``,
-``wrapped_join_filters``, ``one_row_tails``, ``grouped_source_filters``, ``keyed_union``, ``tailed_regroups``, ``union_join_grouping``, ``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence`` (hardest-cases batch 3, 2026-11-11), ``anti_join_reading``, ``distinct_source_filters``, ``keyed_semijoin``, ``nested_correlation`` and ``presence_given_absence`` (batch 4, 2026-11-16 and 17), ``differing_self_joins``, ``own_value_lists``, ``own_group_membership`` and ``own_key_membership`` (batch 5, 2026-11-17), ``different_row_keys`` (batch 6, 2026-11-17), ``referenced_presence`` (batch 7, 2026-11-17), ``child_counts`` (batch 8, 2026-11-18), ``own_row_copies``, ``distinct_match_joins``, ``own_column_lists``, ``lookup_names``, ``joined_key_lists``, ``own_row_witness``, ``single_value_groups``, ``nested_test_groupings`` and ``distinct_derived_joins`` (batch 9, 2026-11-18), ``shifted_equalities``, ``if_cases``, ``averaged_flags``, ``rounded_percentages``, ``counted_sum_ratios``, ``aggregate_scalars``, ``outer_side_aggregates`` and ``unique_count_arguments`` (batch 10, 2026-11-18), ``boolean_sums``, ``added_sums`` and ``shared_group_names`` (batch 11, 2026-11-19), and the derived-table and ``JOIN .. ON`` sources that
+``wrapped_join_filters``, ``one_row_tails``, ``grouped_source_filters``, ``keyed_union``, ``tailed_regroups``, ``union_join_grouping``, ``own_group_joins``, ``duplicate_self_joins`` and ``counted_presence`` (hardest-cases batch 3, 2026-11-11), ``anti_join_reading``, ``distinct_source_filters``, ``keyed_semijoin``, ``nested_correlation`` and ``presence_given_absence`` (batch 4, 2026-11-16 and 17), ``differing_self_joins``, ``own_value_lists``, ``own_group_membership`` and ``own_key_membership`` (batch 5, 2026-11-17), ``different_row_keys`` (batch 6, 2026-11-17), ``referenced_presence`` (batch 7, 2026-11-17), ``child_counts`` (batch 8, 2026-11-18), ``own_row_copies``, ``distinct_match_joins``, ``own_column_lists``, ``lookup_names``, ``joined_key_lists``, ``own_row_witness``, ``single_value_groups``, ``nested_test_groupings`` and ``distinct_derived_joins`` (batch 9, 2026-11-18), ``shifted_equalities``, ``if_cases``, ``averaged_flags``, ``rounded_percentages``, ``counted_sum_ratios``, ``aggregate_scalars``, ``outer_side_aggregates`` and ``unique_count_arguments`` (batch 10, 2026-11-18), ``boolean_sums``, ``added_sums`` and ``shared_group_names`` (batch 11, 2026-11-19), ``date_windows`` (batch 12, 2026-11-19), ``listed_cte_names``, ``referencing_union_joins``, ``top_row_subqueries`` and ``lifted_aggregates`` (batch 13, 2026-11-20), and the derived-table and ``JOIN .. ON`` sources that
 ``closed_sources`` lets the scalar-aggregate decorrelation read. Added on 2026-11-11 for the DSB rewrites of
 the QUITE eval: ``renamed_join_heads``, ``spread_aggregates``, ``scalar_having_groups``,
 ``star_source_columns``, ``count_column_bounds``, ``extreme_group_sources``, ``setop_operand_sources``,
@@ -331,10 +331,16 @@ def tenth_batch_enabled() -> bool:
     )
 
 
-def stage_key() -> tuple[bool, bool, bool]:
+def stage_key() -> tuple[bool, bool, bool, bool, bool]:
     """Which of the staged batches are on (part of any normalization cache key)."""
 
-    return (_NINTH_STAGE.get() is not False, _TENTH_STAGE.get() is not False, _ELEVENTH_STAGE.get() is not False)
+    return (
+        _NINTH_STAGE.get() is not False,
+        _TENTH_STAGE.get() is not False,
+        _ELEVENTH_STAGE.get() is not False,
+        _TWELFTH_STAGE.get() is not False,
+        _THIRTEENTH_STAGE.get() is not False,
+    )
 
 
 @contextmanager
@@ -466,6 +472,183 @@ def note_eleventh_candidate() -> None:
     """Record that a rule of the eleventh batch would have fired in an earlier stage."""
 
     seen = _ELEVENTH_SEEN.get()
+    if seen is not None and not seen:
+        seen.append(True)
+
+
+# The twelfth batch (2026-11-19: a MySQL DATE column against a day worked out from a constant) is a fifth stage, built
+# like the fourth: it runs only when the four stages before it leave the pair without a verdict and its rule would have
+# fired (the earlier stages try the rule on a copy until it says yes). The rule writes date tests the way the prover as
+# it was already compares them, so the stage makes one attempt with the twelfth batch alone (``twelfth_alone``), then
+# the attempts of the third stage with every staged batch on (``twelfth_on``). A pair that was decided before the batch
+# is decided by the same steps in the same time.
+
+TWELFTH_BATCH = frozenset({"date_windows"})
+
+_TWELFTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_twelfth_stage", default=None)
+_TWELFTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_twelfth_seen", default=None)
+
+
+def twelfth_batch_enabled() -> bool:
+    """Whether the rules of ``TWELFTH_BATCH`` may fire in the current attempt: in the fifth stage of a proof (or
+    outside any proof), on a first attempt and on a narrow attempt that switches off rules of the tenth batch only."""
+
+    if _TWELFTH_STAGE.get() is False or not _ENABLED.get() or _LATE.get() or not (_OFF.get() - _BESIDE_NINTH) <= TENTH_BATCH:
+        return False
+    return _TWELFTH_STAGE.get() is True or (_NINTH_STAGE.get() is not False and _TENTH_STAGE.get() is not False and _ELEVENTH_STAGE.get() is not False)
+
+
+@contextmanager
+def twelfth_deferred():
+    """Stages one to four: run the block with the twelfth batch off, collecting whether its rule would have fired."""
+
+    seen: list = []
+    stage, watch = _TWELFTH_STAGE.set(False), _TWELFTH_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _TWELFTH_SEEN.reset(watch)
+        _TWELFTH_STAGE.reset(stage)
+
+
+@contextmanager
+def twelfth_alone():
+    """Stage five, first attempt: run the block with the twelfth batch on and the ninth, tenth and eleventh off."""
+
+    ninth, tenth, eleventh, twelfth = _NINTH_STAGE.set(False), _TENTH_STAGE.set(False), _ELEVENTH_STAGE.set(False), _TWELFTH_STAGE.set(True)
+    try:
+        yield
+    finally:
+        _TWELFTH_STAGE.reset(twelfth)
+        _ELEVENTH_STAGE.reset(eleventh)
+        _TENTH_STAGE.reset(tenth)
+        _NINTH_STAGE.reset(ninth)
+
+
+def twelfth_stage_running() -> bool:
+    """Whether stage five of a proof is running: a proof started inside it makes one attempt and no retries."""
+
+    return _TWELFTH_STAGE.get() is True
+
+
+@contextmanager
+def twelfth_on():
+    """Stage five, the later attempts: run the block with every staged batch on."""
+
+    ninth, tenth, eleventh, twelfth = _NINTH_STAGE.set(True), _TENTH_STAGE.set(True), _ELEVENTH_STAGE.set(True), _TWELFTH_STAGE.set(True)
+    try:
+        yield
+    finally:
+        _TWELFTH_STAGE.reset(twelfth)
+        _ELEVENTH_STAGE.reset(eleventh)
+        _TENTH_STAGE.reset(tenth)
+        _NINTH_STAGE.reset(ninth)
+
+
+def twelfth_watching() -> bool:
+    """Whether an earlier stage should try the twelfth batch on a copy here: an attempt in which stage five would let
+    it fire first (the shape rules on, the late rules off, no rule switched off), while it has not said yes yet."""
+
+    seen = _TWELFTH_SEEN.get()
+    return _TWELFTH_STAGE.get() is False and seen is not None and not seen and _ENABLED.get() and not _LATE.get() and not (_OFF.get() - _BESIDE_NINTH)
+
+
+def note_twelfth_candidate() -> None:
+    """Record that the rule of the twelfth batch would have fired in an earlier stage."""
+
+    seen = _TWELFTH_SEEN.get()
+    if seen is not None and not seen:
+        seen.append(True)
+
+
+# The thirteenth batch (2026-11-20: a column list on a WITH name, an outer join from a union of referencing columns, a
+# first-row subquery read as MAX or MIN, and a select of aggregate subqueries read as one aggregate select) is a sixth
+# stage, built like the fifth: it runs only when the five stages before it leave the
+# pair without a verdict and one of its rules would have fired (the earlier stages try the rules on a copy until one
+# says yes). One attempt with the thirteenth batch alone (``thirteenth_alone``), then the attempts of the third stage
+# with every staged batch on (``thirteenth_on``). A pair that was decided before the batch is decided by the same steps
+# in the same time.
+
+THIRTEENTH_BATCH = frozenset({"listed_cte_names", "referencing_union_joins", "top_row_subqueries", "lifted_aggregates"})
+
+_THIRTEENTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_thirteenth_stage", default=None)
+_THIRTEENTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_thirteenth_seen", default=None)
+
+
+def thirteenth_batch_enabled() -> bool:
+    """Whether the rules of ``THIRTEENTH_BATCH`` may fire in the current attempt: in the sixth stage of a proof (or
+    outside any proof), on a first attempt and on a narrow attempt that switches off rules of the tenth batch only."""
+
+    if _THIRTEENTH_STAGE.get() is False or not _ENABLED.get() or _LATE.get() or not (_OFF.get() - _BESIDE_NINTH) <= TENTH_BATCH:
+        return False
+    return _THIRTEENTH_STAGE.get() is True or (
+        _NINTH_STAGE.get() is not False and _TENTH_STAGE.get() is not False and _ELEVENTH_STAGE.get() is not False and _TWELFTH_STAGE.get() is not False
+    )
+
+
+@contextmanager
+def thirteenth_deferred():
+    """Stages one to five: run the block with the thirteenth batch off, collecting whether a rule of it would have fired."""
+
+    seen: list = []
+    stage, watch = _THIRTEENTH_STAGE.set(False), _THIRTEENTH_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _THIRTEENTH_SEEN.reset(watch)
+        _THIRTEENTH_STAGE.reset(stage)
+
+
+@contextmanager
+def thirteenth_alone():
+    """Stage six, first attempt: run the block with the thirteenth batch on and the ninth to the twelfth off."""
+
+    ninth, tenth, eleventh = _NINTH_STAGE.set(False), _TENTH_STAGE.set(False), _ELEVENTH_STAGE.set(False)
+    twelfth, thirteenth = _TWELFTH_STAGE.set(False), _THIRTEENTH_STAGE.set(True)
+    try:
+        yield
+    finally:
+        _THIRTEENTH_STAGE.reset(thirteenth)
+        _TWELFTH_STAGE.reset(twelfth)
+        _ELEVENTH_STAGE.reset(eleventh)
+        _TENTH_STAGE.reset(tenth)
+        _NINTH_STAGE.reset(ninth)
+
+
+def thirteenth_stage_running() -> bool:
+    """Whether stage six of a proof is running: a proof started inside it makes one attempt and no retries."""
+
+    return _THIRTEENTH_STAGE.get() is True
+
+
+@contextmanager
+def thirteenth_on():
+    """Stage six, the later attempts: run the block with every staged batch on."""
+
+    ninth, tenth, eleventh = _NINTH_STAGE.set(True), _TENTH_STAGE.set(True), _ELEVENTH_STAGE.set(True)
+    twelfth, thirteenth = _TWELFTH_STAGE.set(True), _THIRTEENTH_STAGE.set(True)
+    try:
+        yield
+    finally:
+        _THIRTEENTH_STAGE.reset(thirteenth)
+        _TWELFTH_STAGE.reset(twelfth)
+        _ELEVENTH_STAGE.reset(eleventh)
+        _TENTH_STAGE.reset(tenth)
+        _NINTH_STAGE.reset(ninth)
+
+
+def thirteenth_watching() -> bool:
+    """Whether an earlier stage should try the thirteenth batch on a copy here: an attempt in which stage six would let
+    it fire first (the shape rules on, the late rules off, no rule switched off), while no rule of it has said yes yet."""
+
+    seen = _THIRTEENTH_SEEN.get()
+    return _THIRTEENTH_STAGE.get() is False and seen is not None and not seen and _ENABLED.get() and not _LATE.get() and not (_OFF.get() - _BESIDE_NINTH)
+
+
+def note_thirteenth_candidate() -> None:
+    """Record that a rule of the thirteenth batch would have fired in an earlier stage."""
+
+    seen = _THIRTEENTH_SEEN.get()
     if seen is not None and not seen:
         seen.append(True)
 
