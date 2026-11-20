@@ -189,6 +189,73 @@ def build_spec(case: dict) -> cx.Spec:
     return spec
 
 
+_NUMBER_TYPES = ("INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL")
+_WHOLE_TYPES = ("INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT")
+_TEXT_TYPES = ("VARCHAR", "CHAR", "TEXT", "ENUM")
+_CHECK_OPERATORS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "=", "neq": "<>"}
+
+
+def declared_checks(case: dict, spec: cx.Spec) -> dict[str, tuple]:
+    """The value checks the case declares over one row of one table, in the grammar of
+    ``kumo_sql_prover.value_checks``, by lower-case table name: ``in``, ``between`` and the six comparisons, of a column against a constant of the column's own kind (a number for a
+    numeric column, a text for a text column) or against another numeric column of the same table. Everything else
+    (dates, ``imply``, two tables) is left out: a check that is not passed is a fact the prover does not use."""
+
+    kinds = {(t.name, c.name): c.type.upper().split("(")[0] for t in spec.tables.values() for c in t.columns}
+    out: dict[str, list] = {}
+
+    def column(node):
+        if not (isinstance(node, dict) and set(node) == {"value"}):
+            return None
+        for table in spec.tables.values():
+            prefix = table.name + "__"
+            if node["value"].startswith(prefix) and (table.name, node["value"][len(prefix):]) in kinds:
+                return table.name, node["value"][len(prefix):]
+        return None
+
+    def constant(node, kind: str):
+        value = node["literal"] if isinstance(node, dict) and set(node) == {"literal"} else node
+        if isinstance(value, bool):
+            return None
+        if kind in _NUMBER_TYPES and isinstance(value, int):
+            return value
+        if kind in _TEXT_TYPES and isinstance(value, str):
+            return value
+        return None
+
+    def add(table: str, check: tuple) -> None:
+        out.setdefault(table.lower(), []).append(check)
+
+    for constraint in case.get("constraint") or []:
+        (op, body), = constraint.items()
+        if op == "in" and isinstance(body, list) and len(body) == 2 and isinstance(body[1], list):
+            ref = column(body[0])
+            values = [constant(v, kinds[ref]) for v in body[1]] if ref else []
+            if ref and values and None not in values:
+                add(ref[0], ("in", ("column", ref[1].lower()), ("values", tuple(values))))
+        elif op == "between" and isinstance(body, list) and len(body) == 3:
+            ref = column(body[0])
+            if ref and kinds[ref] in _NUMBER_TYPES:
+                low, high = constant(body[1], kinds[ref]), constant(body[2], kinds[ref])
+                if low is not None and high is not None:
+                    add(ref[0], (">=", ("column", ref[1].lower()), ("value", low)))
+                    add(ref[0], ("<=", ("column", ref[1].lower()), ("value", high)))
+        elif op in _CHECK_OPERATORS and isinstance(body, list) and len(body) == 2:
+            left, right = column(body[0]), column(body[1])
+            sign = _CHECK_OPERATORS[op]
+            if left and right:
+                if left[0] == right[0] and kinds[left] in _NUMBER_TYPES and kinds[right] in _NUMBER_TYPES:
+                    add(left[0], (sign, ("column", left[1].lower()), ("column", right[1].lower())))
+            elif left:
+                value = constant(body[1], kinds[left])
+                if value is not None and (kinds[left] in _NUMBER_TYPES or sign in ("=", "<>")):
+                    add(left[0], (sign, ("column", left[1].lower()), ("value", value)))
+                    if kinds[left] in _WHOLE_TYPES and sign in ("<", ">"):
+                        # a whole number above 0 is at least 1: the solver's numbers are not whole, so it is told
+                        add(left[0], (sign + "=", ("column", left[1].lower()), ("value", value + (1 if sign == ">" else -1))))
+    return {table: tuple(checks) for table, checks in out.items()}
+
+
 def _check(constraint: dict, split) -> cx.Check:
     used: list[str] = []
 
@@ -299,10 +366,12 @@ def prove(case: dict, spec: cx.Spec, timeout_ms: int, pair: tuple[str, str] | No
     schema = {n: [c.name.lower() for c in t.columns] for n, t in lower.items()}
     types = {n: {c.name.lower(): c.type for c in t.columns} for n, t in lower.items()}
     left, right = pair or case["pair"]
+    checks = declared_checks(case, spec)
 
     def attempt(with_foreign_keys: bool):
         constraints = {
             n: TableConstraints(
+                checks=checks.get(n, ()),
                 not_null=frozenset(c.name.lower() for c in t.columns if c.not_null),
                 keys=tuple(tuple(k.lower() for k in key) for key in ([t.primary_key] if t.primary_key else []) + list(t.unique)),
                 foreign_keys=tuple(

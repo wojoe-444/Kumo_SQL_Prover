@@ -149,6 +149,9 @@ class TableConstraints:
     # matching row in the parent. The SMT encoding does not use it; the algebraic normalizer does
     # (``fk_rules``) and counterexamples must respect it.
     foreign_keys: tuple = ()
+    # Declared value checks over one row, in the grammar of ``value_checks`` (``("in", ("column", c), ("values", ..))``,
+    # ``(">", ("column", c), ("value", 0))``): the condition is TRUE or NULL on every row.
+    checks: tuple = ()
 
 
 BASE_ASSUMPTIONS = (
@@ -3332,6 +3335,11 @@ class _Prover:
             for name in list(occ.cols):
                 if name in constraint.not_null:
                     facts.append(z3.Not(occ.cols[name].null))
+            if constraint.checks:
+                from . import value_checks
+
+                for check in constraint.checks:
+                    facts.extend(value_checks.facts(check, occ.cols, _value_sort()))
         for i, first in enumerate(occs):
             for second in occs[i + 1:]:
                 constraint = self.constraints.get(first.table.lower())
@@ -3667,6 +3675,11 @@ class _Prover:
                 continue
             for row in rows:
                 if any(row.get(c, 1) is None for c in constraint.not_null):
+                    return None
+            if constraint.checks:
+                from . import value_checks
+
+                if any(value_checks.violated(check, row) for check in constraint.checks for row in rows):
                     return None
             if constraint.keys:
                 unique = list({tuple(sorted(r.items(), key=lambda kv: kv[0])): r for r in rows}.values())
