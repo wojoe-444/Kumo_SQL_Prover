@@ -8,8 +8,8 @@ import sqlglot
 
 from kumo_sql_prover import shape_fallback
 from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
-from kumo_sql_prover.lifted_tails import NAME, lift
-from kumo_sql_prover.smt_equivalence import TIE_ASSUMPTION, TableConstraints
+from kumo_sql_prover.lifted_tails import LIFT_ASSUMPTION, NAME, NUMBERED_ASSUMPTION, lift
+from kumo_sql_prover.smt_equivalence import LIMIT_SOURCE_ASSUMPTION, TIE_ASSUMPTION, TableConstraints
 
 SCHEMA = {
     "notes": ["id", "title", "made", "author", "kind"],
@@ -44,7 +44,7 @@ NUMBERED = (
     "SELECT title, made, replies FROM (SELECT n.id, n.title, n.made, COUNT(r.id) AS replies, ROW_NUMBER() OVER (ORDER BY n.made DESC, n.id) AS rn "
     "FROM notes AS n LEFT JOIN replies AS r ON n.id = r.note GROUP BY n.id, n.title, n.made) AS sub WHERE rn <= 3 ORDER BY made"
 )
-BOTH_CUT = f"SELECT t.title, p.name FROM ({TOP}) AS t LEFT JOIN people AS p ON t.author = p.id ORDER BY t.made DESC, t.id LIMIT 2"
+BOTH_CUT = f"SELECT t.title, p.name FROM ({TOP}) AS t LEFT JOIN people AS p ON t.author = p.id ORDER BY p.name LIMIT 3"  # the second cut removes nothing
 OFFSET = f"SELECT t.title, v.weight FROM ({TOP} OFFSET 1) AS t LEFT JOIN (SELECT * FROM votes WHERE weight > 0) AS v ON t.made = v.id"
 STARRED = "SELECT s.title, s.made FROM (SELECT * FROM notes ORDER BY made DESC, id LIMIT 4) AS s"
 READ = [DERIVED, NAMED, LISTED, JOINED, JOINED_BY_TOP, COUNTED_WITH, NUMBERED, NUMBERED.replace("rn <= 3", "sub.rn < 4"), BOTH_CUT, OFFSET, STARRED]
@@ -65,9 +65,9 @@ LEFT_ALONE = [
     DERIVED.replace("ORDER BY made DESC, id LIMIT 3", "ORDER BY kind LIMIT 3"),  # a key the driving table does not show
     DERIVED.replace("LIMIT 3", "LIMIT (SELECT 3)"),
     DERIVED.replace("ORDER BY made DESC, id LIMIT 3", "LIMIT 3"),
-    DERIVED + " LIMIT 2",  # another ordering than the driving table's (none)
-    BOTH_CUT.replace("ORDER BY t.made DESC, t.id LIMIT 2", "ORDER BY t.made, t.id LIMIT 2"),
-    BOTH_CUT.replace("LIMIT 2", "LIMIT 2 OFFSET 1"),
+    DERIVED + " LIMIT 2",  # a second, smaller cut: rows tied there need not be the rows one cut keeps
+    BOTH_CUT.replace("ORDER BY p.name LIMIT 3", "ORDER BY t.made DESC, t.id LIMIT 2"),
+    BOTH_CUT.replace("p.name LIMIT 3", "p.name LIMIT 3 OFFSET 1"),
     DERIVED.replace("LEFT JOIN people", "RIGHT JOIN people"),
     # the WITH query is read twice and the second reading is no restriction this module removes
     NAMED.replace(REPLIES, "(SELECT note, COUNT(*) AS n FROM replies WHERE id IN (SELECT id FROM top) GROUP BY note)"),
@@ -92,7 +92,8 @@ LEFT_ALONE = [
 
 
 def lifted(sql: str):
-    return lift(sql, "postgres", SCHEMA, KEYS, NOT_NULL)
+    found = lift(sql, "postgres", SCHEMA, KEYS, NOT_NULL)
+    return found[0] if found else None
 
 
 def prove(left: str, right: str):
@@ -129,12 +130,21 @@ def test_a_restriction_to_the_driving_rows_is_removed():
 
 def test_names_are_written_as_the_query_writes_them():
     sql = "SELECT T.Title FROM (SELECT Id, Title, Made AS Day FROM Notes ORDER BY Made DESC, Id LIMIT 3) AS T LEFT JOIN People AS P ON T.Id = P.Id"
-    assert lift(sql, "mysql", SCHEMA, KEYS, NOT_NULL).endswith("ON T.Id = P.Id ORDER BY T.Day DESC, T.Id LIMIT 3")
+    assert lift(sql, "mysql", SCHEMA, KEYS, NOT_NULL)[0].endswith("ON T.Id = P.Id ORDER BY T.Day DESC, T.Id LIMIT 3")
 
 
-def test_the_smaller_of_two_cuts_under_one_ordering_is_kept():
-    assert lifted(BOTH_CUT).endswith("ORDER BY t.made DESC, t.id LIMIT 2")
-    assert lifted(BOTH_CUT.replace("LIMIT 2", "LIMIT 7")).endswith("ORDER BY t.made DESC, t.id LIMIT 3")
+def test_a_second_cut_that_removes_nothing_is_replaced():
+    assert lifted(BOTH_CUT).endswith("ON t.author = p.id ORDER BY t.made DESC, t.id LIMIT 3")
+    assert lifted(BOTH_CUT.replace("p.name LIMIT 3", "p.name LIMIT 7")).endswith("ORDER BY t.made DESC, t.id LIMIT 3")
+    assert lifted(BOTH_CUT.replace("p.name LIMIT 3", "p.name LIMIT 2")) is None
+
+
+def test_each_reading_says_what_it_assumes_about_tied_rows():
+    assert lift(DERIVED, "postgres", SCHEMA, KEYS, NOT_NULL)[1] == (LIFT_ASSUMPTION,)
+    assert lift(STARRED, "postgres", SCHEMA, KEYS, NOT_NULL)[1] == ()  # a projection of the cut rows: nothing beyond the cut itself
+    assert lift(NUMBERED, "postgres", SCHEMA, KEYS, NOT_NULL)[1] == (NUMBERED_ASSUMPTION,)
+    assert lift(LISTED, "postgres", SCHEMA, KEYS, NOT_NULL)[1] == (LIMIT_SOURCE_ASSUMPTION, LIFT_ASSUMPTION)
+    assert lift(NAMED, "postgres", SCHEMA, KEYS, NOT_NULL)[1] == (LIFT_ASSUMPTION,)
 
 
 @pytest.mark.parametrize("sql", READ)
@@ -213,7 +223,8 @@ def test_duckdb_tells_the_refused_spellings_apart():
 def test_the_cut_first_and_the_cut_last_are_proved_equal(other):
     result = prove(LAST, other)
     assert result.proven, result.reason
-    assert TIE_ASSUMPTION in result.assumptions
+    assert TIE_ASSUMPTION in result.assumptions and LIFT_ASSUMPTION in result.assumptions
+    assert (LIMIT_SOURCE_ASSUMPTION in result.assumptions) is (other is not DERIVED)
     with shape_fallback.without(NAME):
         assert not prove(LAST, other).proven  # the step is what proves it
 
@@ -223,7 +234,7 @@ LIMITED = "SELECT n.title, n.made, COUNT(r.id) AS replies FROM notes AS n LEFT J
 
 def test_a_row_number_cut_is_proved_equal_to_a_limit():
     result = prove(NUMBERED, LIMITED)
-    assert result.proven and TIE_ASSUMPTION in result.assumptions
+    assert result.proven and TIE_ASSUMPTION in result.assumptions and NUMBERED_ASSUMPTION in result.assumptions
 
 
 @pytest.mark.parametrize("tail, proven", [("ORDER BY made DESC, id LIMIT 3", True), ("ORDER BY made DESC, id LIMIT 4", False), ("ORDER BY made, id LIMIT 3", False)])

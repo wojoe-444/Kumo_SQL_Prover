@@ -5715,13 +5715,10 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     quiet = {**kwargs, "search_counterexample": False}
     dialect = kwargs.get("dialect", "bigquery")
 
-    def tied(later: SmtEquivalenceResult, ties: bool) -> SmtEquivalenceResult:
-        assumptions = tuple(later.assumptions)
-        if ties and TIE_ASSUMPTION not in assumptions:
-            assumptions += (TIE_ASSUMPTION,)
-        return dataclasses.replace(later, assumptions=assumptions)
+    def tied(later: SmtEquivalenceResult, assumed: tuple[str, ...]) -> SmtEquivalenceResult:
+        return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
 
-    pair, ties = (left_sql, right_sql), False  # the pair the last step reads
+    pair, assumed = (left_sql, right_sql), ()  # the pair the last step reads, and what reading it that way assumes
     with shape_fallback.fifteenth_deferred() as fifteenth_seen:
         result = _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
         if result.status is not SmtStatus.NOT_PROVEN or not shape_fallback.enabled():
@@ -5733,32 +5730,33 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
             # proof is taken: the rows before the cut may differ where the first rows do not.
             peeled = peeled_tails.peel(left_sql, right_sql, dialect)
             if peeled is not None:
-                pair, ties = (peeled.left, peeled.right), peeled.ties
+                pair, assumed = (peeled.left, peeled.right), (TIE_ASSUMPTION,) * peeled.ties
                 later = _prove_equivalent_algebraic_whole(*pair, **quiet)
                 if later.status in proved:
-                    return tied(later, ties)
+                    return tied(later, assumed)
         if shape_fallback.rule_enabled(lifted_tails.NAME):
             # Then a LIMIT that a query applies to its driving rows before it extends them is written at the end of
             # the query (``lifted_tails``), and the pair is tried on those texts: without the tails when they are now
-            # the same. A proof found this way always says how tied rows are assumed to be cut.
+            # the same. A proof found this way says what the lift assumed about tied rows.
             constraints = kwargs.get("constraints") or {}
             facts = (kwargs.get("schema"), {t: [tuple(k) for k in c.keys] for t, c in constraints.items()}, {t: c.not_null for t, c in constraints.items()})
             lifted = [lifted_tails.lift(sql, dialect, *facts) for sql in (left_sql, right_sql)]
             if any(lifted):
-                pair, ties = (lifted[0] or left_sql, lifted[1] or right_sql), True
+                pair = (lifted[0][0] if lifted[0] else left_sql, lifted[1][0] if lifted[1] else right_sql)
+                assumed = tuple(text for side in lifted if side for text in side[1])
                 peeled = peeled_tails.peel(*pair, dialect) if peeling else None
                 if peeled is not None:
-                    pair = (peeled.left, peeled.right)
+                    pair, assumed = (peeled.left, peeled.right), assumed + (TIE_ASSUMPTION,) * peeled.ties
                 later = _prove_equivalent_algebraic_whole(*pair, **quiet)
                 if later.status in proved:
-                    return tied(later, ties)
+                    return tied(later, assumed)
     if fifteenth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.FIFTEENTH_BATCH):
         # The last step: a rule of the fifteenth batch would have fired (``shape_fallback.FIFTEENTH_BATCH``). The
         # staged proof once more with that batch on, on the last pair tried above. Only a proof is taken here too.
         with shape_fallback.fifteenth_on():
             later = _prove_equivalent_algebraic_whole(*pair, **quiet)
         if later.status in proved:
-            return tied(later, ties)
+            return tied(later, assumed)
     return result
 
 

@@ -28,13 +28,16 @@ So: pick the rows of ``D`` its tail may keep and extend each, or extend every ro
 the rows the same ordering and the same cut may keep. The two are the same sets of possible results, because the
 order keys are columns of ``D`` that each output row carries unchanged. Each order key must be an output column of
 ``D``; it is written as that column of ``d``. The query's own ``ORDER BY`` (it had no ``LIMIT``) only arranged the
-rows and is replaced. When the query has its own ``LIMIT n2`` under the very same ordering and neither has an
-``OFFSET``, the cut is the smaller of the two.
+rows and is replaced. A ``LIMIT n2`` of the query itself with ``n2 >= n`` removes nothing, since the query has at
+most ``n`` rows, and is replaced too; a smaller one would cut a second time and is not read. **Assumed**
+(``LIFT_ASSUMPTION``) when the query has joins: rows tied on the ordering are cut the same way before and after
+each row is extended.
 
 **2. A row number tested against a constant is a ``LIMIT``.** ``FROM (SELECT .., ROW_NUMBER() OVER (ORDER BY keys)
 AS rn FROM ..) AS d WHERE rn <= n``, where nothing else reads ``rn``, keeps the first ``n`` rows by ``keys``, tied
 rows numbered either way: the rows ``ORDER BY keys LIMIT n`` may keep. No ``PARTITION BY``, no ``DISTINCT`` beside
-the number, and no key that the select list would give another meaning as an ``ORDER BY`` name.
+the number, and no key that the select list would give another meaning as an ``ORDER BY`` name. **Assumed**
+(``NUMBERED_ASSUMPTION``): tied rows are numbered in the order the ``LIMIT`` keeps them.
 
 **3. A counted table restricted to the driving rows is the counted table.** The driving table is a ``WITH`` query
 ``T``. A joined table ``SELECT c.fk, aggregates FROM child AS c .. GROUP BY c.fk``, joined on ``d.id = fk``, that
@@ -42,15 +45,17 @@ keeps only the child rows of ``T``'s own rows, by ``WHERE c.fk IN (SELECT id FRO
 t.id``, has for every row of ``d`` the same group as without the restriction: ``d.id`` is one of ``T``'s ids. The
 groups it loses belong to no row of ``d``. The ``JOIN`` form needs ``T.id`` to be unique (``T`` selects from one
 plain table and ``id`` is its declared NOT NULL one-column key), since two rows of ``T`` with one id would count
-each child row twice. The restriction is removed. **Assumed**, and said in the proof (``TIE_ASSUMPTION``): a ``WITH``
-query that cuts tied rows is the same rows wherever the query reads it.
+each child row twice. The restriction is removed. **Assumed** when ``T`` cuts rows (the solver layer's
+``LIMIT_SOURCE_ASSUMPTION``): it is the same rows wherever the query reads it.
 
 Nothing else is read. An inner join to the driving rows is not (it can drop one of the first ``n`` rows, and the
 query written the other way then shows the next row instead), nor a ``WHERE`` above the cut, nor a join that may
 find two rows.
 
-A proof found on a lifted query always carries ``TIE_ASSUMPTION``. ``tests/test_lifted_tails.py`` replays each
-reading against DuckDB and holds the shapes that must be left alone.
+``lift`` returns the assumptions its readings made, and a proof found on a lifted query carries them (and
+``TIE_ASSUMPTION`` when the shared tail was then set aside and tied rows may differ). Without tied rows at a cut
+nothing is assumed. ``tests/test_lifted_tails.py`` replays each reading against DuckDB under orderings with no ties
+and holds the shapes that must be left alone.
 """
 
 from __future__ import annotations
@@ -62,6 +67,8 @@ from .ast_utils import FROM_KEY, LossySql, canonical_negation, distinct_on, fait
 from .keyed_join_groups import declared_columns
 
 NAME = "lifted_tails"
+LIFT_ASSUMPTION = "rows tied on the ORDER BY are cut by LIMIT the same way before and after each row is extended by its lookups"
+NUMBERED_ASSUMPTION = "ROW_NUMBER numbers rows tied on its ORDER BY in the order a LIMIT under the same ORDER BY keeps them"
 _ROOT_ARGS = frozenset({"expressions", FROM_KEY, "joins", "with", "with_", "order", "limit", "where"})
 _REFUSED = (exp.AggFunc, exp.Window, exp.Query, exp.Subquery)
 
@@ -456,8 +463,8 @@ def _mapped_order(query: _Query, body: exp.Select, alias: str) -> list[exp.Order
     return mapped
 
 
-def _lift(query: _Query, root: exp.Select) -> bool:
-    """Readings 2, 3 and then 1 on the query's own select."""
+def _lift(query: _Query, root: exp.Select, used: list[str]) -> bool:
+    """Readings 2, 3 and then 1 on the query's own select; ``used`` collects what a reading assumes about ties."""
 
     if not _only(root, _ROOT_ARGS) or root.args.get(FROM_KEY) is None:
         return False
@@ -465,11 +472,15 @@ def _lift(query: _Query, root: exp.Select) -> bool:
     if driver is None or driver[1] == "base":
         return False
     alias, kind, what = driver
-    if kind == "with" and query.reads(what) == 1 or kind == "derived":
-        _numbered_rows(query, root, alias, query.body(kind, what))
+    if (kind == "with" and query.reads(what) == 1 or kind == "derived") and _numbered_rows(query, root, alias, query.body(kind, what)):
+        used.append(NUMBERED_ASSUMPTION)
     if root.args.get("where") is not None:
         return False  # a filter above the cut
     changed = kind == "with" and _unrestrict(query, root, alias, what)
+    if changed and (query.body(kind, what).args.get("limit") is not None or query.body(kind, what).args.get("offset") is not None):
+        from .smt_equivalence import LIMIT_SOURCE_ASSUMPTION
+
+        used.append(LIMIT_SOURCE_ASSUMPTION)  # the WITH query was read more than once, and cuts rows
     if kind == "with" and query.reads(what) != 1:
         return changed
     body = query.body(kind, what)
@@ -503,33 +514,12 @@ def _lift(query: _Query, root: exp.Select) -> bool:
         return changed
     count = _whole_number(limit.expression)
     if root.args.get("limit") is not None:
-        # the query cuts too: only under the very same ordering, and without an OFFSET on either
-        own, order = root.args["limit"], root.args.get("order")
-        if type(own) is not exp.Limit or not _only(own, ("expression",)) or _whole_number(own.expression) is None or offset is not None or order is None:
+        # The query cuts too. Its LIMIT removes nothing when it is no smaller than the driving table's: the query has
+        # one row per driving row. A smaller one would cut a second time, and rows tied at that cut need not be the
+        # rows one cut keeps (``tests/test_limit_rules.py`` holds that pair), so it is not read.
+        own = root.args["limit"]
+        if type(own) is not exp.Limit or not _only(own, ("expression",)) or _whole_number(own.expression) is None or _whole_number(own.expression) < count:
             return changed
-        outputs = {item.alias.lower(): item.this for item in root.expressions if type(item) is exp.Alias}
-        keys = []
-        for item in order.expressions:
-            if type(item) is not exp.Ordered or not _only(item, ("this", "desc", "nulls_first")):
-                return changed
-            key = _unwrap(item.this)
-            if type(key) is exp.Literal:
-                number = _whole_number(key)
-                if number is None or not 1 <= number <= len(root.expressions):
-                    return changed
-                key = root.expressions[number - 1]
-                key = _unwrap(key.this if type(key) is exp.Alias else key)
-            elif type(key) is exp.Column and not key.table:
-                if key.name.lower() not in outputs:
-                    return changed
-                key = _unwrap(outputs[key.name.lower()])
-            column = _qualified(key)
-            if column is None or column[0] != alias:
-                return changed
-            keys.append((column[1], bool(item.args.get("desc")), item.args.get("nulls_first")))
-        if keys != [(item.this.name.lower(), bool(item.args.get("desc")), item.args.get("nulls_first")) for item in mapped]:
-            return changed
-        count = min(count, _whole_number(own.expression))
     # a key that the query shows is named by its position, the way the solver layer finds an output column
     single = not root.args.get("joins")
     for item in mapped:
@@ -541,6 +531,8 @@ def _lift(query: _Query, root: exp.Select) -> bool:
         ]
         if shown:
             item.set("this", exp.Literal.number(shown[0] + 1))
+    if root.args.get("joins"):
+        used.append(LIFT_ASSUMPTION)
     body.set("order", None)
     body.set("limit", None)
     body.set("offset", None)
@@ -551,9 +543,9 @@ def _lift(query: _Query, root: exp.Select) -> bool:
     return True
 
 
-def lift(sql: str, dialect: str, schema: dict | None, keys: dict | None, not_null: dict | None) -> str | None:
-    """``sql`` with the tail of its driving table lifted to the end of the query (see the module docstring), or
-    ``None`` when nothing is read."""
+def lift(sql: str, dialect: str, schema: dict | None, keys: dict | None, not_null: dict | None) -> tuple[str, tuple[str, ...]] | None:
+    """``(sql with the tail of its driving table lifted to the end of the query, what that assumes about tied rows)``
+    (see the module docstring), or ``None`` when nothing is read."""
 
     if not schema:
         return None
@@ -566,8 +558,9 @@ def lift(sql: str, dialect: str, schema: dict | None, keys: dict | None, not_nul
             return None
         if any(identifier.args.get("quoted") for identifier in tree.find_all(exp.Identifier)):
             return None  # names are compared without their case here
-        if not _lift(_Query(tree, schema, keys, not_null), tree):
+        used: list[str] = []
+        if not _lift(_Query(tree, schema, keys, not_null), tree, used):
             return None
-        return faithful_sql(tree, dialect)
+        return faithful_sql(tree, dialect), tuple(dict.fromkeys(used))
     except (_Declined, sqlglot.errors.SqlglotError, LossySql, RecursionError, TypeError, KeyError, AttributeError):
         return None
