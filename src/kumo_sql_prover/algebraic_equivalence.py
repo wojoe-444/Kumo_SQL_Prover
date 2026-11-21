@@ -5708,41 +5708,57 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     if shape_fallback.fifteenth_staged():
         # a proof inside a proof: the last steps below belong to the proof it runs in
         return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
-    from . import peeled_tails
+    from . import lifted_tails, peeled_tails
     from .smt_equivalence import TIE_ASSUMPTION
 
     proved = (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY)
     quiet = {**kwargs, "search_counterexample": False}
+    dialect = kwargs.get("dialect", "bigquery")
 
-    def tied(later: SmtEquivalenceResult) -> SmtEquivalenceResult:
+    def tied(later: SmtEquivalenceResult, ties: bool) -> SmtEquivalenceResult:
         assumptions = tuple(later.assumptions)
-        if peeled is not None and peeled.ties and TIE_ASSUMPTION not in assumptions:
+        if ties and TIE_ASSUMPTION not in assumptions:
             assumptions += (TIE_ASSUMPTION,)
         return dataclasses.replace(later, assumptions=assumptions)
 
-    peeled = None
+    pair, ties = (left_sql, right_sql), False  # the pair the last step reads
     with shape_fallback.fifteenth_deferred() as fifteenth_seen:
         result = _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
         if result.status is not SmtStatus.NOT_PROVEN or not shape_fallback.enabled():
             return result
-        if shape_fallback.rule_enabled(peeled_tails.NAME):
+        peeling = shape_fallback.rule_enabled(peeled_tails.NAME)
+        if peeling:
             # A later step (hardest-cases batch 15): a pair left unproved whose queries end in the same ORDER BY .. LIMIT
             # is tried once more without it, so that the rules that decline a select with a tail can read it. Only a
             # proof is taken: the rows before the cut may differ where the first rows do not.
-            peeled = peeled_tails.peel(left_sql, right_sql, kwargs.get("dialect", "bigquery"))
+            peeled = peeled_tails.peel(left_sql, right_sql, dialect)
             if peeled is not None:
-                later = _prove_equivalent_algebraic_whole(peeled.left, peeled.right, **quiet)
+                pair, ties = (peeled.left, peeled.right), peeled.ties
+                later = _prove_equivalent_algebraic_whole(*pair, **quiet)
                 if later.status in proved:
-                    return tied(later)
+                    return tied(later, ties)
+        if shape_fallback.rule_enabled(lifted_tails.NAME):
+            # Then a LIMIT that a query applies to its driving rows before it extends them is written at the end of
+            # the query (``lifted_tails``), and the pair is tried on those texts: without the tails when they are now
+            # the same. A proof found this way always says how tied rows are assumed to be cut.
+            constraints = kwargs.get("constraints") or {}
+            facts = (kwargs.get("schema"), {t: [tuple(k) for k in c.keys] for t, c in constraints.items()}, {t: c.not_null for t, c in constraints.items()})
+            lifted = [lifted_tails.lift(sql, dialect, *facts) for sql in (left_sql, right_sql)]
+            if any(lifted):
+                pair, ties = (lifted[0] or left_sql, lifted[1] or right_sql), True
+                peeled = peeled_tails.peel(*pair, dialect) if peeling else None
+                if peeled is not None:
+                    pair = (peeled.left, peeled.right)
+                later = _prove_equivalent_algebraic_whole(*pair, **quiet)
+                if later.status in proved:
+                    return tied(later, ties)
     if fifteenth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.FIFTEENTH_BATCH):
         # The last step: a rule of the fifteenth batch would have fired (``shape_fallback.FIFTEENTH_BATCH``). The
-        # staged proof once more with that batch on, on the queries without their tails when they share one. Only a
-        # proof is taken here too.
+        # staged proof once more with that batch on, on the last pair tried above. Only a proof is taken here too.
         with shape_fallback.fifteenth_on():
-            pair = (left_sql, right_sql) if peeled is None else (peeled.left, peeled.right)
             later = _prove_equivalent_algebraic_whole(*pair, **quiet)
         if later.status in proved:
-            return tied(later)
+            return tied(later, ties)
     return result
 
 
