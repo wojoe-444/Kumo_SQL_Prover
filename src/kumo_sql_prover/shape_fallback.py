@@ -678,11 +678,26 @@ def fifteenth_staged() -> bool:
     return _FIFTEENTH_STAGE.get() is not None
 
 
-@contextmanager
-def fifteenth_deferred():
-    """Run the block with the fifteenth batch off, collecting whether a rule of it would have fired."""
+def last_steps_worth_trying(left_sql: str, right_sql: str) -> bool:
+    """Whether a pair every earlier step leaves unproved gets the last steps of a proof.
 
-    seen: list = []
+    Each last step is another whole attempt on the pair, which about doubles the time of an unproved pair, and
+    the time grows faster than the query (see the module docstring). So the last steps have the size limit of the
+    attempt without the shape rules: a pair whose two texts together are over ``MAX_CHARS`` characters is proved as
+    it was before the steps existed.
+    """
+
+    return worth_retrying(left_sql, right_sql)
+
+
+@contextmanager
+def fifteenth_deferred(watch: bool = True):
+    """Run the block with the fifteenth batch off, collecting whether a rule of it would have fired.
+
+    With ``watch`` false nothing is collected: the batch is off for the whole proof, and for the proofs inside it.
+    """
+
+    seen: list | None = [] if watch else None
     stage, watch = _FIFTEENTH_STAGE.set(False), _FIFTEENTH_SEEN.set(seen)
     try:
         yield seen

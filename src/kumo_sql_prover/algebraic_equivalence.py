@@ -5708,6 +5708,11 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     if shape_fallback.fifteenth_staged():
         # a proof inside a proof: the last steps below belong to the proof it runs in
         return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
+    if not shape_fallback.last_steps_worth_trying(left_sql, right_sql):
+        # Each last step is another whole attempt, and a long pair that stays unproved would pay for every one of
+        # them: over the size limit the proof is the one before the steps, for this pair and the proofs inside it.
+        with shape_fallback.fifteenth_deferred(watch=False):
+            return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
     from . import lifted_tails, peeled_tails
     from .smt_equivalence import TIE_ASSUMPTION
 
@@ -5721,7 +5726,7 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     pair, assumed = (left_sql, right_sql), ()  # the pair the last step reads, and what reading it that way assumes
     with shape_fallback.fifteenth_deferred() as fifteenth_seen:
         result = _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
-        if result.status is not SmtStatus.NOT_PROVEN or not shape_fallback.enabled():
+        if result.status is not SmtStatus.NOT_PROVEN:
             return result
         peeling = shape_fallback.rule_enabled(peeled_tails.NAME)
         if peeling:

@@ -192,6 +192,8 @@ Since 2026-11-21 the prover also knows two ways to count several kinds of relate
 
 Since 2026-11-21 the prover also sees through a cut that is made early. "The ten newest posts with their comment counts" can pick the ten posts first and then look up the counts, or look up counts for every post and keep the ten newest at the end. When each post stays exactly one row on the way, both give the same ten rows, and the prover now reads the first as the second. The limits: every lookup must be one that cannot drop a post or turn it into two rows (an inner join can drop a post, and then the two queries really differ), nothing may filter the rows after the cut, and rows that tie in the sort may be cut either way (the proof says so). See [the full reference](../docs/provers.md) for the exact conditions.
 
+These three late steps are tried only on queries of moderate length. Each one is another whole attempt at a proof, so a long pair of queries that stays unproved would take about twice as long to say so. Long pairs are therefore handled exactly as before, and the gain is on short and medium queries, where an extra attempt costs a second or two.
+
 One mistake was found and fixed here. A pairing query that asks for `a.id < b.id AND a.id > b.id` can never return a row, since no number is both smaller and larger than another. The prover used to read it as the duplicate search anyway and so called two different queries equal. It now leaves such a query alone.
 
 ## "Bought this and never that", counted or filtered

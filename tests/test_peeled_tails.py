@@ -198,3 +198,37 @@ def test_proved_pairs_agree_in_duckdb():
             con.execute("INSERT INTO replies VALUES (?, ?, ?)", [i, rng.randrange(0, 12), rng.choice(["x", None])])
         for tail in tails:
             assert con.execute(grouped + tail).fetchall() == con.execute(counted + tail).fetchall(), tail
+
+
+def test_a_pair_over_the_size_limit_gets_no_last_step(monkeypatch):
+    # each last step is another whole attempt, so a long pair is proved as it was before the steps
+    tail = " ORDER BY n.made DESC LIMIT 10"
+    left, right = GROUPED + tail, COUNTED + tail
+    assert shape_fallback.last_steps_worth_trying(left, right) and prove(left, right).proven
+    monkeypatch.setattr(shape_fallback, "MAX_CHARS", len(left) + len(right) - 1)
+    assert not shape_fallback.last_steps_worth_trying(left, right)
+    assert not prove(left, right).proven
+    monkeypatch.setattr(shape_fallback, "MAX_CHARS", len(left) + len(right))
+    assert prove(left, right).proven
+
+
+def test_a_long_pair_runs_once_and_the_proofs_inside_it_take_no_last_step(monkeypatch):
+    from kumo_sql_prover import algebraic_equivalence
+
+    tail = " ORDER BY n.made DESC LIMIT 10"
+    left, right = GROUPED + tail, COUNTED + tail
+    runs = []
+    whole = algebraic_equivalence._prove_equivalent_algebraic_whole
+
+    def counted(*args, **kwargs):
+        runs.append((shape_fallback.fifteenth_staged(), shape_fallback.fifteenth_watching(), shape_fallback.fifteenth_batch_enabled()))
+        return whole(*args, **kwargs)
+
+    monkeypatch.setattr(algebraic_equivalence, "_prove_equivalent_algebraic_whole", counted)
+    monkeypatch.setattr(shape_fallback, "MAX_CHARS", 10)
+    assert not prove(left, right).proven
+    assert runs and set(runs) == {(True, False, False)}  # staged, so a proof inside returns at once; nothing watches
+    outer = len(runs)
+    runs.clear()
+    monkeypatch.setattr(shape_fallback, "MAX_CHARS", 4000)
+    assert prove(left, right).proven and len(runs) > outer
