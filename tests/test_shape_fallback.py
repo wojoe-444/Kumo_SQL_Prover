@@ -714,7 +714,7 @@ def thirteenth_steps(monkeypatch, left, right, **options):
     real = algebraic_equivalence._prove_algebraic
 
     def watched(*args, **kwargs):
-        steps.append(shape_fallback.stage_key())
+        steps.append(shape_fallback.stage_key()[:5])  # the staged batches; the sixth switch is the last step (test_distinct_child_counts)
         return real(*args, **kwargs)
 
     monkeypatch.setattr(algebraic_equivalence, "_prove_algebraic", watched)
@@ -722,7 +722,7 @@ def thirteenth_steps(monkeypatch, left, right, **options):
 
 
 def test_the_thirteenth_stage_switches():
-    assert shape_fallback.thirteenth_batch_enabled() and shape_fallback.stage_key() == ALL_ON  # outside a proof all are on
+    assert shape_fallback.thirteenth_batch_enabled() and shape_fallback.stage_key()[:5] == ALL_ON  # outside a proof all are on
     with shape_fallback.without("if_cases"):
         assert shape_fallback.thirteenth_batch_enabled()  # a rule of the tenth batch off: the stage's last attempt
     for older in (shape_fallback.disabled, shape_fallback.late, lambda: shape_fallback.without("own_row_copies"), lambda: shape_fallback.without("boolean_sums"), lambda: shape_fallback.without("date_windows")):
@@ -730,11 +730,11 @@ def test_the_thirteenth_stage_switches():
             assert not shape_fallback.thirteenth_batch_enabled()
     with shape_fallback.thirteenth_deferred() as seen:
         with shape_fallback.twelfth_deferred(), shape_fallback.eleventh_deferred(), shape_fallback.tenth_deferred(), shape_fallback.ninth_deferred():
-            assert shape_fallback.stage_key() == (False, False, False, False, False) and shape_fallback.thirteenth_watching() and not shape_fallback.thirteenth_batch_enabled()
+            assert shape_fallback.stage_key()[:5] == (False, False, False, False, False) and shape_fallback.thirteenth_watching() and not shape_fallback.thirteenth_batch_enabled()
         with shape_fallback.twelfth_alone():  # stage five is as it was before the batch
-            assert shape_fallback.stage_key() == (False, False, False, True, False) and shape_fallback.twelfth_batch_enabled() and not shape_fallback.thirteenth_batch_enabled()
+            assert shape_fallback.stage_key()[:5] == (False, False, False, True, False) and shape_fallback.twelfth_batch_enabled() and not shape_fallback.thirteenth_batch_enabled()
         with shape_fallback.twelfth_on():
-            assert shape_fallback.stage_key() == (True, True, True, True, False) and shape_fallback.twelfth_batch_enabled() and not shape_fallback.thirteenth_batch_enabled()
+            assert shape_fallback.stage_key()[:5] == (True, True, True, True, False) and shape_fallback.twelfth_batch_enabled() and not shape_fallback.thirteenth_batch_enabled()
             for older in (shape_fallback.disabled, shape_fallback.late, lambda: shape_fallback.without("own_row_copies")):
                 with older():
                     assert not shape_fallback.thirteenth_watching()  # stage six would not let the batch fire here either
@@ -742,17 +742,17 @@ def test_the_thirteenth_stage_switches():
         assert seen == [True] and not shape_fallback.thirteenth_watching()  # one yes is enough
     assert not shape_fallback.thirteenth_stage_running()
     with shape_fallback.thirteenth_alone():  # the first attempt of stage six: the prover before the ninth batch, and this batch
-        assert shape_fallback.stage_key() == THIRTEENTH_ONLY and shape_fallback.thirteenth_stage_running()
+        assert shape_fallback.stage_key()[:5] == THIRTEENTH_ONLY and shape_fallback.thirteenth_stage_running()
         assert shape_fallback.thirteenth_batch_enabled() and not shape_fallback.twelfth_batch_enabled() and not shape_fallback.eleventh_batch_enabled()
         assert not shape_fallback.tenth_batch_enabled() and not shape_fallback.ninth_batch_enabled()
         assert not shape_fallback.ninth_watching() and not shape_fallback.tenth_watching() and not shape_fallback.eleventh_watching() and not shape_fallback.twelfth_watching()
     with shape_fallback.thirteenth_on():
-        assert shape_fallback.stage_key() == ALL_ON and shape_fallback.thirteenth_stage_running()
+        assert shape_fallback.stage_key()[:5] == ALL_ON and shape_fallback.thirteenth_stage_running()
         assert shape_fallback.thirteenth_batch_enabled() and shape_fallback.twelfth_batch_enabled() and shape_fallback.eleventh_batch_enabled()
         assert shape_fallback.tenth_batch_enabled() and shape_fallback.ninth_batch_enabled()
         with shape_fallback.without("aggregate_scalars"):
             assert shape_fallback.thirteenth_batch_enabled() and shape_fallback.twelfth_batch_enabled()
-    assert not shape_fallback.ninth_staged() and shape_fallback.stage_key() == ALL_ON
+    assert not shape_fallback.ninth_staged() and shape_fallback.stage_key()[:5] == ALL_ON
     assert shape_fallback.THIRTEENTH_BATCH == {"listed_cte_names", "referencing_union_joins", "top_row_subqueries", "lifted_aggregates"}
     assert not shape_fallback.THIRTEENTH_BATCH & (shape_fallback.TWELFTH_BATCH | shape_fallback.ELEVENTH_BATCH | shape_fallback.TENTH_BATCH | shape_fallback.NINTH_BATCH)
 
