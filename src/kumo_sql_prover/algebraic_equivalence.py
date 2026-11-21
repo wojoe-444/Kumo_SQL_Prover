@@ -142,6 +142,8 @@ from .substring_casts import drop_substring_casts
 from .cased_group_sums import unnest_cased_sums
 from .counted_outer_groups import count_outer_groups
 from .discrete_bounds import close_strict_bounds, fold_chained_dates
+from .labelled_cases import read_labelled_cases
+from .quotient_comparisons import quotient_step
 from .group_total_windows import read_group_totals
 from .closed_scalar_outputs import inline_closed_outputs
 from .guarded_outer_counts import guard_outer_counts
@@ -5015,6 +5017,18 @@ def _narrow_shape(name: str, rule, select):
     return _narrow(name, rule, select)
 
 
+def _narrow_sixteenth(name: str, rule, select):
+    """A narrow-retry rule of the sixteenth hardest-cases batch: it fires only in the last step of a proof
+    (``shape_fallback.sixteenth_batch_enabled``). In the steps before, it is tried where it would fire and its result
+    thrown away (the rule copies the select it is given), which tells the prover that the last step is worth running."""
+
+    if not shape_fallback.sixteenth_batch_enabled():
+        if shape_fallback.sixteenth_watching() and shape_fallback.rule_enabled(name) and rule(select) is not None:
+            shape_fallback.note_sixteenth_candidate()
+        return None
+    return _narrow(name, rule, select)
+
+
 def _eleventh_batch(tree, schema, not_null, types, dialect):
     """The pre-passes of the eleventh hardest-cases batch that run before the tenth batch (whose share rules read what
     they write). Returns the tree and the names of the rules that rewrote something. Each rule copies before it writes."""
@@ -5171,6 +5185,17 @@ def normalize(
             shape_fallback.note_fired("date_windows")
         elif windowed:
             shape_fallback.note_twelfth_candidate()  # an earlier stage: stage five is worth running
+    if shape_fallback.rule_enabled("constant_bins") and (shape_fallback.sixteenth_batch_enabled() or shape_fallback.sixteenth_watching()):
+        from .constant_bins import read_constant_bins
+
+        # pre-pass (sixteenth batch): constant rows outer-joined to a table and aggregated per row, written as one
+        # aggregate select per row
+        binned, wrote = read_constant_bins(tree, schema, types, dialect)
+        if wrote and shape_fallback.sixteenth_batch_enabled():
+            tree = binned
+            shape_fallback.note_fired("constant_bins")
+        elif wrote:
+            shape_fallback.note_sixteenth_candidate()  # an earlier step: the step after the last is worth running
     if any(shape_fallback.rule_enabled(name) for name in shape_fallback.THIRTEENTH_BATCH) and (
         shape_fallback.thirteenth_batch_enabled() or shape_fallback.thirteenth_watching()
     ):
@@ -5512,6 +5537,8 @@ def normalize(
         lambda sel: fold_scalar_filter(sel, schema),
         lift_scalar_arithmetic,
         lambda sel: drop_substring_casts(sel, types_map),
+        lambda sel: _narrow_sixteenth("labelled_cases", read_labelled_cases, sel),
+        lambda sel: _narrow_sixteenth("quotient_comparisons", lambda s: quotient_step(s, types_map, dialect), sel),
         lambda sel: close_strict_bounds(sel, types_map, dialect),
         unnest_cased_sums,
         lambda sel: expand_row_membership(sel, dialect),
@@ -5711,8 +5738,24 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     if not shape_fallback.last_steps_worth_trying(left_sql, right_sql):
         # Each last step is another whole attempt, and a long pair that stays unproved would pay for every one of
         # them: over the size limit the proof is the one before the steps, for this pair and the proofs inside it.
-        with shape_fallback.fifteenth_deferred(watch=False):
+        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False):
             return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
+    with shape_fallback.sixteenth_deferred() as sixteenth_seen:
+        result, pair, assumed = _prove_with_last_steps(left_sql, right_sql, **kwargs)
+    if result.status is SmtStatus.NOT_PROVEN and sixteenth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.SIXTEENTH_BATCH):
+        # One more step (hardest-cases batch 16): a rule of the sixteenth batch would have fired. The staged proof
+        # once more with that batch on, on the last pair tried before. Only a proof is taken.
+        with shape_fallback.sixteenth_on():
+            later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
+        if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
+    return result
+
+
+def _prove_with_last_steps(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:
+    """The proof with the last steps of batch 15: the result, and for a pair left unproved the last pair tried (the
+    texts without a shared tail, or with a lifted one) and what reading the pair that way assumes."""
+
     from . import lifted_tails, peeled_tails
     from .smt_equivalence import TIE_ASSUMPTION
 
@@ -5727,7 +5770,7 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     with shape_fallback.fifteenth_deferred() as fifteenth_seen:
         result = _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
         if result.status is not SmtStatus.NOT_PROVEN:
-            return result
+            return result, pair, assumed
         peeling = shape_fallback.rule_enabled(peeled_tails.NAME)
         if peeling:
             # A later step (hardest-cases batch 15): a pair left unproved whose queries end in the same ORDER BY .. LIMIT
@@ -5738,7 +5781,7 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
                 pair, assumed = (peeled.left, peeled.right), (TIE_ASSUMPTION,) * peeled.ties
                 later = _prove_equivalent_algebraic_whole(*pair, **quiet)
                 if later.status in proved:
-                    return tied(later, assumed)
+                    return tied(later, assumed), pair, assumed
         if shape_fallback.rule_enabled(lifted_tails.NAME):
             # Then a LIMIT that a query applies to its driving rows before it extends them is written at the end of
             # the query (``lifted_tails``), and the pair is tried on those texts: without the tails when they are now
@@ -5754,15 +5797,15 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
                     pair, assumed = (peeled.left, peeled.right), assumed + (TIE_ASSUMPTION,) * peeled.ties
                 later = _prove_equivalent_algebraic_whole(*pair, **quiet)
                 if later.status in proved:
-                    return tied(later, assumed)
+                    return tied(later, assumed), pair, assumed
     if fifteenth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.FIFTEENTH_BATCH):
         # The last step: a rule of the fifteenth batch would have fired (``shape_fallback.FIFTEENTH_BATCH``). The
         # staged proof once more with that batch on, on the last pair tried above. Only a proof is taken here too.
         with shape_fallback.fifteenth_on():
             later = _prove_equivalent_algebraic_whole(*pair, **quiet)
         if later.status in proved:
-            return tied(later, assumed)
-    return result
+            return tied(later, assumed), pair, assumed
+    return result, pair, assumed
 
 
 def _prove_equivalent_algebraic_whole(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
