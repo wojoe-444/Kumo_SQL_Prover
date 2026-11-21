@@ -26,7 +26,10 @@ Rows tied on the ordering may be cut either way by either query: the proof says 
 (``smt_equivalence.TIE_ASSUMPTION``) unless the ordering covers every output column, exactly as the solver layer says
 it. Nothing is concluded when the two tails differ, when only one query has one, or when a tail is not read
 (``LIMIT`` without ``ORDER BY``, a ``LIMIT`` that is not a constant, an ``ORDER BY`` on a select alias inside an
-expression, a key that is not an output of a ``DISTINCT`` select or of a set operation, tails stacked in parentheses).
+expression, a key that is not an output of a ``DISTINCT`` select or of a set operation, tails stacked in parentheses),
+or when an ``ORDER BY`` key of either query is a number that is not a position in its select list: every engine
+rejects ``SELECT a FROM s ORDER BY 3``, the prover declines it even against itself, and taking the tail off would
+take the reason off with it (``_unread_position``).
 
 An ``ORDER BY`` without ``LIMIT`` or ``OFFSET`` at the top of a query does not change the bag it returns, which is
 what the prover compares (``canonical_rules.drop_order_without_limit`` drops it, but late: after the rules that
@@ -47,7 +50,7 @@ from dataclasses import dataclass
 import sqlglot
 from sqlglot import exp
 
-from .ast_utils import LossySql, canonical_negation, distinct_on, faithful_sql
+from .ast_utils import LossySql, canonical_negation, distinct_on, faithful_sql, merge_wrapper_tails, select_sources
 
 NAME = "peeled_tails"
 _QUERIES = (exp.Select, exp.Union, exp.Intersect, exp.Except)
@@ -76,12 +79,70 @@ def _without_bare_order(sql: str, dialect: str) -> str | None:
     return faithful_sql(tree, dialect)
 
 
+def _least_columns(select: exp.Select, depth: int = 0) -> int:
+    """A number of output columns that ``select`` is sure to have: one for each item, and for a ``*`` the least
+    number its sources are seen to show (a derived table shows what its own select has; any other source shows at
+    least one column)."""
+
+    sources = select_sources(select)
+    merged = any(
+        join.args.get("using") or join.args.get("method") or str(join.args.get("kind") or "").upper() in ("SEMI", "ANTI") for join in select.args.get("joins") or []
+    )  # USING and NATURAL show a joined column once, and a semijoin shows one side only
+
+    def shown(source: exp.Expression) -> int:
+        first = source.this if isinstance(source, exp.Subquery) else None
+        while isinstance(first, (exp.Union, exp.Intersect, exp.Except, exp.Subquery)):
+            first = first.this
+        return _least_columns(first, depth + 1) if isinstance(first, exp.Select) and depth < 8 else 1
+
+    total = 0
+    for item in select.expressions:
+        star = item if isinstance(item, exp.Star) else item.this if isinstance(item, exp.Column) and isinstance(item.this, exp.Star) else None
+        if star is None or any(value for value in star.args.values()):
+            total += 1  # an item, or a star with columns taken out of it
+        elif isinstance(item, exp.Star):
+            total += 1 if merged or not sources else sum(shown(source) for source in sources)
+        else:
+            named = [source for source in sources if source.alias_or_name.lower() == item.table.lower()]
+            total += shown(named[0]) if len(named) == 1 and not merged else 1
+    return total
+
+
+def _unread_position(sql: str, dialect: str) -> bool:
+    """Whether a top-level ``ORDER BY`` key is a number that is not seen to be a position in the select list.
+
+    ``ORDER BY 3`` under a select of one column is an error in every engine, and the prover declines such a query,
+    even against itself. ``_split_limit`` reads a number that is out of range as one more constant column, which is
+    right for the solver layer because the query was declined before it gets there; here it would take the
+    declined key off with the tail, and the pair would be proved on what is left. So a number key must be a whole
+    number from 1 to the number of columns the select list is sure to have (``_least_columns``). A ``*`` stands
+    for at least one column, so ``SELECT * .. ORDER BY 1`` is always a position; a larger number beside a star of
+    a plain table may be one too, but a table's columns are not counted here.
+    """
+
+    root = merge_wrapper_tails(canonical_negation(sqlglot.parse_one(sql, read=dialect)))
+    if not isinstance(root, _QUERIES) or root.args.get("order") is None:
+        return False
+    first = root
+    while isinstance(first, (exp.Union, exp.Intersect, exp.Except, exp.Subquery)):
+        first = first.this
+    for item in root.args["order"].expressions:
+        key = item.this if isinstance(item, exp.Ordered) else item
+        if not isinstance(key, exp.Literal) or key.is_string:
+            continue
+        if not isinstance(first, exp.Select) or not key.this.isdigit() or not 1 <= int(key.this) <= _least_columns(first):
+            return True
+    return False
+
+
 def peel(left_sql: str, right_sql: str, dialect: str) -> Peeled | None:
     """The pair without its tails when both tails say the same thing, else ``None`` (see the module docstring)."""
 
     from .smt_equivalence import _split_limit
 
     try:
+        if _unread_position(left_sql, dialect) or _unread_position(right_sql, dialect):
+            return None  # an ORDER BY number that names no output column: the query is not one the prover reads
         left_core, left_spec = _split_limit(left_sql, dialect)
         right_core, right_spec = _split_limit(right_sql, dialect)
         if left_core is None or right_core is None:

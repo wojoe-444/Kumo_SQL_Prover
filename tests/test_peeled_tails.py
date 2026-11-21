@@ -232,3 +232,79 @@ def test_a_long_pair_runs_once_and_the_proofs_inside_it_take_no_last_step(monkey
     runs.clear()
     monkeypatch.setattr(shape_fallback, "MAX_CHARS", 4000)
     assert prove(left, right).proven and len(runs) > outer
+
+
+# An ORDER BY number that names no output column, and a GROUP BY position of an aggregate: every engine rejects the
+# query, and the prover declines it even against itself. The step that takes a shared tail off must not take the
+# declined key off with it. The first three strings are KumoSQL's guard of the same name; main proved the second,
+# and every string here that says "ORDER BY 3", "ORDER BY 2", "ORDER BY 0" or "ORDER BY 5", from PR 53 until this test.
+POSITION_SCHEMA = {"s": ["a", "b"], "p": ["id", "k"], "q": ["k", "w"]}
+UNREAD_POSITIONS = [
+    "SELECT * FROM s ORDER BY 1 LIMIT 2",
+    "SELECT a FROM s ORDER BY 3 LIMIT 2",
+    "SELECT COUNT(*) FROM s GROUP BY 1",
+    "SELECT a FROM s ORDER BY 3",
+    "SELECT a FROM s ORDER BY 2",
+    "SELECT a FROM s ORDER BY 3 DESC",
+    "SELECT a FROM s ORDER BY 0 LIMIT 2",
+    "SELECT a FROM s ORDER BY 0",
+    "SELECT a FROM s ORDER BY 2 LIMIT 2",
+    "SELECT a, b FROM s ORDER BY 3 LIMIT 2",
+    "SELECT a FROM s ORDER BY 2 DESC, 1 LIMIT 1",
+    "SELECT a FROM s ORDER BY 3, a LIMIT 2",
+    "SELECT a FROM s ORDER BY a, 3",
+    "SELECT a FROM s GROUP BY a ORDER BY 2 LIMIT 2",
+    "SELECT * FROM s ORDER BY 5",
+    "SELECT *, a FROM s ORDER BY 3 LIMIT 2",
+    "SELECT *, a FROM s ORDER BY 3",
+    "SELECT * FROM (SELECT a, b FROM s) AS t ORDER BY 3",
+    "SELECT t.* FROM (SELECT a, b FROM s) AS t JOIN s AS u ON t.a = u.a ORDER BY 3",
+    "SELECT * FROM (SELECT a, b FROM s) AS t JOIN (SELECT a FROM s) AS u USING (a) ORDER BY 3",
+    "SELECT * EXCEPT (a) FROM (SELECT a, b FROM s) AS t ORDER BY 2",
+    "SELECT a FROM (SELECT a FROM s ORDER BY 3 LIMIT 2) AS t",
+]
+
+
+@pytest.mark.parametrize("sql", UNREAD_POSITIONS)
+@pytest.mark.parametrize("dialect", ["mysql", "postgres", "bigquery"])
+def test_column_positions_that_cannot_be_spelled_out_are_declined(sql, dialect):
+    assert not prove_equivalent_algebraic(sql, sql, schema=POSITION_SCHEMA, dialect=dialect).proven
+
+
+@pytest.mark.parametrize("sql", [sql for sql in UNREAD_POSITIONS if "ORDER BY 1 " not in sql and "GROUP BY 1" not in sql and "AS t" not in sql])
+def test_peel_declines_a_number_that_is_no_position(sql):
+    assert peel(sql, sql, "mysql") is None
+    assert peel(sql, "SELECT a FROM s", "mysql") is None
+    assert peel("SELECT a FROM s", sql, "mysql") is None
+
+
+def test_peel_reads_a_number_that_is_a_position():
+    peeled = peel("SELECT a, b FROM s ORDER BY 2 DESC LIMIT 2", "SELECT a, b FROM s ORDER BY b DESC LIMIT 2", "mysql")
+    assert peeled is not None and peeled.left == peeled.right == "SELECT a, b FROM s"
+    bare = peel("SELECT a, b FROM s ORDER BY 2, 1", "SELECT a, b FROM s", "mysql")
+    assert bare is not None and bare.left == "SELECT a, b FROM s"
+
+
+@pytest.mark.parametrize(
+    "ordered",
+    [
+        "SELECT * FROM s ORDER BY 1",
+        "SELECT *, a FROM s ORDER BY 2 DESC, 1",
+        "SELECT s.*, a + b AS c FROM s ORDER BY 1",
+        "SELECT * FROM (SELECT a, b, a + b AS c FROM s UNION SELECT b, a, 0 FROM s) AS t ORDER BY 1, 3",
+        "SELECT * FROM (SELECT a, b FROM s) AS t JOIN (SELECT a AS c FROM s) AS u ON t.a = u.c ORDER BY 3, 1",
+        "SELECT u.*, t.* FROM (SELECT a, b FROM s) AS t JOIN s AS u ON t.a = u.a ORDER BY 3",
+        "SELECT * FROM (SELECT * FROM (SELECT a, b FROM s) AS i) AS t ORDER BY 2",
+    ],
+)
+def test_a_position_within_the_columns_a_star_is_sure_to_have_is_a_position(ordered):
+    # A star stands for at least one column, and for what a derived table is seen to show, so these numbers are
+    # positions whatever the tables hold: the query is valid (DuckDB runs it), and an ORDER BY that cuts no rows
+    # does not change the rows it returns.
+    plain = ordered[: ordered.index(" ORDER BY")]
+    con = duckdb.connect()
+    con.execute("CREATE TABLE s (a INT, b INT)")
+    con.execute("INSERT INTO s VALUES (2, 1), (1, NULL), (1, 3), (NULL, NULL)")
+    assert sorted(con.execute(ordered).fetchall(), key=repr) == sorted(con.execute(plain).fetchall(), key=repr)
+    for dialect in ("mysql", "postgres"):
+        assert prove_equivalent_algebraic(ordered, plain, schema=POSITION_SCHEMA, dialect=dialect).proven
