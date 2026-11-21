@@ -5285,6 +5285,17 @@ def normalize(
         tree = read_join_distinct_aggregates(tree, schema)  # pre-pass: a join that only asks for a match, under COUNT(DISTINCT), is an IN
         from .key_group_choice import choose_key_groups
 
+        if shape_fallback.rule_enabled("distinct_child_counts") and (shape_fallback.fifteenth_batch_enabled() or shape_fallback.fifteenth_watching()):
+            from .distinct_child_counts import read_distinct_child_counts
+
+            # pre-pass (fifteenth batch): COUNT(DISTINCT key) of each LEFT-joined child table as one counted table per
+            # child, under a WHERE over the parent columns; before the next pass, which reads one child and no WHERE
+            counted, wrote = read_distinct_child_counts(tree, schema, keys, not_null, types)
+            if wrote and shape_fallback.fifteenth_batch_enabled():
+                tree = counted
+                shape_fallback.note_fired("distinct_child_counts")
+            elif wrote:
+                shape_fallback.note_fifteenth_candidate()  # an earlier step: the last step is worth running
         if shape_fallback.rule_enabled("child_counts"):
             from .child_counts import read_child_counts
 
@@ -5694,6 +5705,67 @@ def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs)
 
 
 def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
+    if shape_fallback.fifteenth_staged():
+        # a proof inside a proof: the last steps below belong to the proof it runs in
+        return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
+    if not shape_fallback.last_steps_worth_trying(left_sql, right_sql):
+        # Each last step is another whole attempt, and a long pair that stays unproved would pay for every one of
+        # them: over the size limit the proof is the one before the steps, for this pair and the proofs inside it.
+        with shape_fallback.fifteenth_deferred(watch=False):
+            return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
+    from . import lifted_tails, peeled_tails
+    from .smt_equivalence import TIE_ASSUMPTION
+
+    proved = (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY)
+    quiet = {**kwargs, "search_counterexample": False}
+    dialect = kwargs.get("dialect", "bigquery")
+
+    def tied(later: SmtEquivalenceResult, assumed: tuple[str, ...]) -> SmtEquivalenceResult:
+        return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
+
+    pair, assumed = (left_sql, right_sql), ()  # the pair the last step reads, and what reading it that way assumes
+    with shape_fallback.fifteenth_deferred() as fifteenth_seen:
+        result = _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
+        if result.status is not SmtStatus.NOT_PROVEN:
+            return result
+        peeling = shape_fallback.rule_enabled(peeled_tails.NAME)
+        if peeling:
+            # A later step (hardest-cases batch 15): a pair left unproved whose queries end in the same ORDER BY .. LIMIT
+            # is tried once more without it, so that the rules that decline a select with a tail can read it. Only a
+            # proof is taken: the rows before the cut may differ where the first rows do not.
+            peeled = peeled_tails.peel(left_sql, right_sql, dialect)
+            if peeled is not None:
+                pair, assumed = (peeled.left, peeled.right), (TIE_ASSUMPTION,) * peeled.ties
+                later = _prove_equivalent_algebraic_whole(*pair, **quiet)
+                if later.status in proved:
+                    return tied(later, assumed)
+        if shape_fallback.rule_enabled(lifted_tails.NAME):
+            # Then a LIMIT that a query applies to its driving rows before it extends them is written at the end of
+            # the query (``lifted_tails``), and the pair is tried on those texts: without the tails when they are now
+            # the same. A proof found this way says what the lift assumed about tied rows.
+            constraints = kwargs.get("constraints") or {}
+            facts = (kwargs.get("schema"), {t: [tuple(k) for k in c.keys] for t, c in constraints.items()}, {t: c.not_null for t, c in constraints.items()})
+            lifted = [lifted_tails.lift(sql, dialect, *facts) for sql in (left_sql, right_sql)]
+            if any(lifted):
+                pair = (lifted[0][0] if lifted[0] else left_sql, lifted[1][0] if lifted[1] else right_sql)
+                assumed = tuple(text for side in lifted if side for text in side[1])
+                peeled = peeled_tails.peel(*pair, dialect) if peeling else None
+                if peeled is not None:
+                    pair, assumed = (peeled.left, peeled.right), assumed + (TIE_ASSUMPTION,) * peeled.ties
+                later = _prove_equivalent_algebraic_whole(*pair, **quiet)
+                if later.status in proved:
+                    return tied(later, assumed)
+    if fifteenth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.FIFTEENTH_BATCH):
+        # The last step: a rule of the fifteenth batch would have fired (``shape_fallback.FIFTEENTH_BATCH``). The
+        # staged proof once more with that batch on, on the last pair tried above. Only a proof is taken here too.
+        with shape_fallback.fifteenth_on():
+            later = _prove_equivalent_algebraic_whole(*pair, **quiet)
+        if later.status in proved:
+            return tied(later, assumed)
+    return result
+
+
+def _prove_equivalent_algebraic_whole(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
     search = kwargs.pop("search_counterexample", False)
     for name in ("schema", "types", "constraints"):
         if kwargs.get(name):

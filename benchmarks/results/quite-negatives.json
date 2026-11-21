@@ -2,28 +2,29 @@
   "suite": "QUITE LLM rewrites, flagged unequal",
   "order": 343,
   "size": 498,
-  "score": "203/498 refuted, 34 proved, 0 wrong",
-  "metric": "Pairs the authors' run flagged unequal: 214 because the results differed, 197 because the rewrite failed to run, 85 because a query timed out, and the 2 documented TPC-H Q2 rewrites. Refuted means DuckDB returns different bags on a replayed database that respects the schema (by flag reason: 152 rows, 14 error, 35 timeout, 2 documented). A proof with a replayed difference would be wrong.",
+  "score": "204/498 refuted, 36 proved, 0 wrong",
+  "metric": "Pairs the authors' run flagged unequal: 214 because the results differed, 197 because the rewrite failed to run, 85 because a query timed out, and the 2 documented TPC-H Q2 rewrites. Refuted means DuckDB returns different bags on a replayed database that respects the schema (by flag reason: 153 rows, 14 error, 35 timeout, 2 documented). A proof with a replayed difference would be wrong.",
   "evidence": "executed",
-  "correctness": "0 wrong (a proof with a replayed difference). Of the 34 proofs, 14 rely on the prover's stated assumption that rows tied on ORDER BY are cut by LIMIT alike, where the authors' run saw tie-breaking; the others were flagged for a timeout or a failed run, not for different rows",
+  "correctness": "0 wrong (a proof with a replayed difference). Of the 36 proofs, 16 rely on the prover's stated assumption that rows tied on ORDER BY are cut by LIMIT alike, where the authors' run saw tie-breaking; the others were flagged for a timeout or a failed run, not for different rows",
   "coverage": {
-    "proven": 34,
-    "refuted": 203,
-    "unknown": 210,
+    "proven": 36,
+    "refuted": 204,
+    "unknown": 193,
     "unsupported": 43,
-    "timeout": 8
+    "timeout": 22
   },
-  "held_out": "43/106 refuted, 9 proved, 0 wrong",
-  "caveats": "A flag of unequal is not a semantic label: timeouts and rewrites that failed to run are flagged too, so only replayed differences count as negatives. Refutations come from KumoSQL's own databases (the authors' instances are not public; TPC-H also runs on a generated scale-0.01 instance, and a difference there counts only if the unoptimized plan finishes in 30 s and agrees). Data downloaded at a pinned commit. The rules written on 2026-11-10 for the flagged-equal development pairs also prove 5 development pairs flagged only for a timeout (20 to 25 proofs); each was read by hand and is equivalent as written (a correlated average decorrelated into a grouped join, comma joins written as JOIN). The rules written on 2026-11-12 for the TPC-H, Calcite and SQLStorm development pairs prove 6 more pairs flagged only for a failed run or a timeout (25 to 31 proofs: 2 TPC-H pairs flagged for a timeout and 1 for a failed run, TPC-H Q20 and Q11 rewrites with the same rows as written, and 3 Calcite window-function rewrites whose output alias is spelled with a digit); each was read by hand and is equivalent as written. On 2026-11-11 the directed search of tools/witness_search.py added refutations (134 refuted on 2026-11-10, 204 now; a rerun of main in the same container as this run refutes 114). The database search has an 8 s budget per pair, so a refutation near that limit is not found in every run. The held-out pairs were never read one by one. Run again on 2026-11-19 on 873f667 (hardest-cases batches 8 and 9 merged with main c97feeb): the same 34 proofs by count and 204 refuted, 0 wrong; the recorded score stays main's run.",
+  "held_out": "43/106 refuted, 10 proved, 0 wrong",
+  "caveats": "A flag of unequal is not a semantic label: timeouts and rewrites that failed to run are flagged too, so only replayed differences count as negatives. Refutations come from KumoSQL's own databases (the authors' instances are not public; TPC-H also runs on a generated scale-0.01 instance, and a difference there counts only if the unoptimized plan finishes in 30 s and agrees). Data downloaded at a pinned commit. The rules written on 2026-11-10 for the flagged-equal development pairs also prove 5 development pairs flagged only for a timeout (20 to 25 proofs); each was read by hand and is equivalent as written (a correlated average decorrelated into a grouped join, comma joins written as JOIN). The rules written on 2026-11-12 for the TPC-H, Calcite and SQLStorm development pairs prove 6 more pairs flagged only for a failed run or a timeout (25 to 31 proofs: 2 TPC-H pairs flagged for a timeout and 1 for a failed run, TPC-H Q20 and Q11 rewrites with the same rows as written, and 3 Calcite window-function rewrites whose output alias is spelled with a digit); each was read by hand and is equivalent as written. On 2026-11-11 the directed search of tools/witness_search.py added refutations (134 refuted on 2026-11-10, 204 now; a rerun of main in the same container as this run refutes 114). The database search has an 8 s budget per pair, so a refutation near that limit is not found in every run. The held-out pairs were never read one by one. Run again on 2026-11-19 on 873f667 (hardest-cases batches 8 and 9 merged with main c97feeb): the same 34 proofs by count and 204 refuted, 0 wrong; the recorded score stays main's run. 2026-11-21 (the fifteenth hardest-cases batch, Kumo_SQL_Prover PR 53): the row is now the whole run on ad089f6: 204 refuted and 36 proved, 0 wrong. The two new proofs: a development SQLStorm pair flagged only for a timeout (three counted tables joined to a parent against COUNT(DISTINCT id) over the three joined child tables, under the same ORDER BY .. LIMIT; read by hand, equivalent as written when tied rows are cut alike), and a held-out Calcite pair flagged for different rows, which was not read: it is proved by the step that lifts a LIMIT above its joins, under its stated assumptions about tied rows, and no replayed database separates it, 40 seconds of the directed search included. 22 pairs reach the 60 second cap in this run (25 on f9940a3).",
   "docs": "docs/evals/quite.md",
   "command": "python tools/quite_bench.py --write-results",
-  "date": "2026-11-18",
+  "date": "2026-11-21",
   "environment": {
     "python": "3.13.18",
     "sqlglot": "30.21.0",
     "sqlglotc": "30.21.0",
     "duckdb": "1.5.6",
-    "z3-solver": "5.4.1.0",
-    "commit": "e75c9a3+changes"
+    "z3-solver": "5.4.0.0",
+    "sqlfluff": "4.5.0",
+    "commit": "ad089f60"
   }
 }

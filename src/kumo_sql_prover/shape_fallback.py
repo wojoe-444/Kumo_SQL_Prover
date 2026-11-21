@@ -331,7 +331,7 @@ def tenth_batch_enabled() -> bool:
     )
 
 
-def stage_key() -> tuple[bool, bool, bool, bool, bool]:
+def stage_key() -> tuple[bool, bool, bool, bool, bool, bool]:
     """Which of the staged batches are on (part of any normalization cache key)."""
 
     return (
@@ -340,6 +340,7 @@ def stage_key() -> tuple[bool, bool, bool, bool, bool]:
         _ELEVENTH_STAGE.get() is not False,
         _TWELFTH_STAGE.get() is not False,
         _THIRTEENTH_STAGE.get() is not False,
+        _FIFTEENTH_STAGE.get() is True,
     )
 
 
@@ -649,6 +650,85 @@ def note_thirteenth_candidate() -> None:
     """Record that a rule of the thirteenth batch would have fired in an earlier stage."""
 
     seen = _THIRTEENTH_SEEN.get()
+    if seen is not None and not seen:
+        seen.append(True)
+
+
+# The fifteenth batch (2026-11-21: counts of joined child tables written as one counted table per child) is the last
+# step of a proof, after the six stages and after the retry without a shared ORDER BY .. LIMIT (``peeled_tails``). It
+# is driven from outside the stages (``algebraic_equivalence._prove_equivalent_algebraic``): the whole staged proof
+# runs with the batch off, collecting whether a rule of it would have fired, and only then once more with it on.
+# Unlike the earlier batches its rules fire nowhere else: not in a normalization asked for outside a proof.
+
+FIFTEENTH_BATCH = frozenset({"distinct_child_counts"})
+
+_FIFTEENTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_fifteenth_stage", default=None)
+_FIFTEENTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_fifteenth_seen", default=None)
+
+
+def fifteenth_batch_enabled() -> bool:
+    """Whether the rules of ``FIFTEENTH_BATCH`` may fire in the current attempt: only in the last step of a proof."""
+
+    return _FIFTEENTH_STAGE.get() is True and _ENABLED.get() and not _LATE.get()
+
+
+def fifteenth_staged() -> bool:
+    """Whether a proof is running that already decides when the fifteenth batch is on (a proof inside a proof)."""
+
+    return _FIFTEENTH_STAGE.get() is not None
+
+
+def last_steps_worth_trying(left_sql: str, right_sql: str) -> bool:
+    """Whether a pair every earlier step leaves unproved gets the last steps of a proof.
+
+    Each last step is another whole attempt on the pair, which about doubles the time of an unproved pair, and
+    the time grows faster than the query (see the module docstring). So the last steps have the size limit of the
+    attempt without the shape rules: a pair whose two texts together are over ``MAX_CHARS`` characters is proved as
+    it was before the steps existed.
+    """
+
+    return worth_retrying(left_sql, right_sql)
+
+
+@contextmanager
+def fifteenth_deferred(watch: bool = True):
+    """Run the block with the fifteenth batch off, collecting whether a rule of it would have fired.
+
+    With ``watch`` false nothing is collected: the batch is off for the whole proof, and for the proofs inside it.
+    """
+
+    seen: list | None = [] if watch else None
+    stage, watch = _FIFTEENTH_STAGE.set(False), _FIFTEENTH_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _FIFTEENTH_SEEN.reset(watch)
+        _FIFTEENTH_STAGE.reset(stage)
+
+
+@contextmanager
+def fifteenth_on():
+    """The last step: run the block with the fifteenth batch on."""
+
+    stage, watch = _FIFTEENTH_STAGE.set(True), _FIFTEENTH_SEEN.set(None)
+    try:
+        yield
+    finally:
+        _FIFTEENTH_SEEN.reset(watch)
+        _FIFTEENTH_STAGE.reset(stage)
+
+
+def fifteenth_watching() -> bool:
+    """Whether an earlier step should try the fifteenth batch on a copy here: while no rule of it has said yes yet."""
+
+    seen = _FIFTEENTH_SEEN.get()
+    return _FIFTEENTH_STAGE.get() is False and seen is not None and not seen and _ENABLED.get() and not _LATE.get()
+
+
+def note_fifteenth_candidate() -> None:
+    """Record that a rule of the fifteenth batch would have fired in an earlier step."""
+
+    seen = _FIFTEENTH_SEEN.get()
     if seen is not None and not seen:
         seen.append(True)
 
