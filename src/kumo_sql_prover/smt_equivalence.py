@@ -437,6 +437,18 @@ def _converted_functions():
     return _CONVERTED
 
 
+_TEXT_TRUTH = None
+
+
+def _text_truth():
+    """Uninterpreted truth of a text used as a condition where the engine converts it (``_TRUTH_IS_NUMBER``)."""
+
+    global _TEXT_TRUTH
+    if _TEXT_TRUTH is None:
+        _TEXT_TRUTH = z3.Function("text_truth", _value_sort(), z3.BoolSort())
+    return _TEXT_TRUTH
+
+
 def _value_sort():
     global _VALUE_SORT
     if _VALUE_SORT is None:
@@ -1923,8 +1935,28 @@ class _Compiler:
             raise Unsupported("predicate subqueries")
         v = self._val(e, env, agg, aliases)
         V = _value_sort()
-        # Only BOOL values are TRUE or FALSE; other types cannot reach here in
-        # a valid query, so they are modeled as neither.
+        if self.dialect in _TRUTH_IS_NUMBER:
+            # A number is a condition here: TRUE when it is not zero, FALSE when it is (``WHERE flag``, ``WHERE a - 3``,
+            # ``NOT flag``). A text is converted first, in a way that is not modeled: its truth is an unknown function
+            # of the text, so a pair is proven through it only when both sides test the same text.
+            kind = _static_kind(v.val)
+            if kind == "bool":
+                truth = V.bool(v.val)
+            elif kind == "num":
+                truth = V.num(v.val) != 0
+            else:
+                self.uses_uf = True  # a model of the unknown conversion is not a counterexample
+                truth = z3.If(V.is_Bool(v.val), V.bool(v.val), z3.If(V.is_Num(v.val), V.num(v.val) != 0, _text_truth()(v.val)))
+            return _Pred(z3.And(z3.Not(v.null), truth), z3.And(z3.Not(v.null), z3.Not(truth)))
+        # Everywhere else only a BOOL is TRUE or FALSE. A value that is known to be a number or a text is a type error
+        # there (BigQuery, PostgreSQL) or a conversion that has not been checked (Spark, Snowflake and the rest):
+        # declined, since calling it "never TRUE" proved ``WHERE a - 3`` equal to ``WHERE 1 = 0``. A value the model
+        # leaves open (a column) is read as the BOOL it has to be.
+        declared = self._class_of(e, env, agg, aliases) if self.dialect == "bigquery" else None
+        if _static_kind(v.val) in ("num", "str") or declared in (
+            smt_values.INT64, smt_values.NUMERIC, smt_values.BIGNUMERIC, smt_values.FLOAT64, smt_values.STRING
+        ):
+            raise Unsupported("a number or a text used as a condition")
         known = z3.And(z3.Not(v.null), V.is_Bool(v.val))
         return _Pred(z3.And(known, V.bool(v.val)), z3.And(known, z3.Not(V.bool(v.val))))
 
