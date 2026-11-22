@@ -142,6 +142,7 @@ from .substring_casts import drop_substring_casts
 from .cased_group_sums import unnest_cased_sums
 from .counted_outer_groups import count_outer_groups
 from .discrete_bounds import close_strict_bounds, fold_chained_dates
+from .self_lookup_counts import read_self_lookup_counts, waits_for_lookup
 from .labelled_cases import read_labelled_cases
 from .quotient_comparisons import quotient_step
 from .group_total_windows import read_group_totals
@@ -5029,6 +5030,27 @@ def _narrow_sixteenth(name: str, rule, select):
     return _narrow(name, rule, select)
 
 
+def _waits_for_seventeenth(select, schema, keys, not_null, types_map, dialect) -> bool:
+    """In the last step only: the found rows of a lookup ``self_lookup_counts`` reads keep their spelling until it has
+    read the join. Leaving a select alone is always sound."""
+
+    if not (shape_fallback.seventeenth_batch_enabled() and shape_fallback.rule_enabled("self_lookup_counts")):
+        return False
+    return waits_for_lookup(select, schema, keys, not_null, types_map, dialect)
+
+
+def _narrow_seventeenth(name: str, rule, select):
+    """A narrow-retry rule of the seventeenth hardest-cases batch: it fires only in the last step of a proof
+    (``shape_fallback.seventeenth_batch_enabled``). In the steps before, it is tried where it would fire and its
+    result thrown away (the rule copies the select it is given), which tells the prover that the step is worth running."""
+
+    if not shape_fallback.seventeenth_batch_enabled():
+        if shape_fallback.seventeenth_watching() and shape_fallback.rule_enabled(name) and rule(select) is not None:
+            shape_fallback.note_seventeenth_candidate()
+        return None
+    return _narrow(name, rule, select)
+
+
 def _eleventh_batch(tree, schema, not_null, types, dialect):
     """The pre-passes of the eleventh hardest-cases batch that run before the tenth batch (whose share rules read what
     they write). Returns the tree and the names of the rules that rewrote something. Each rule copies before it writes."""
@@ -5531,12 +5553,13 @@ def normalize(
         lambda sel: join_nested_membership(sel, schema),
         lift_computed_outputs,
         lambda sel: filter_own_groups(sel, schema, keys, not_null, dialect),
-        lambda sel: pull_up_keyed_join(sel, schema, keys, not_null),
+        lambda sel: None if _waits_for_seventeenth(sel, schema, keys, not_null, types_map, dialect) else pull_up_keyed_join(sel, schema, keys, not_null),
         lambda sel: read_one_row_source(sel, schema),
         lambda sel: inline_closed_outputs(sel, schema),
         lambda sel: fold_scalar_filter(sel, schema),
         lift_scalar_arithmetic,
         lambda sel: drop_substring_casts(sel, types_map),
+        lambda sel: _narrow_seventeenth("self_lookup_counts", lambda s: read_self_lookup_counts(s, schema, keys, not_null, types_map, dialect), sel),
         lambda sel: _narrow_sixteenth("labelled_cases", read_labelled_cases, sel),
         lambda sel: _narrow_sixteenth("quotient_comparisons", lambda s: quotient_step(s, types_map, dialect), sel),
         lambda sel: close_strict_bounds(sel, types_map, dialect),
@@ -5738,8 +5761,24 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     if not shape_fallback.last_steps_worth_trying(left_sql, right_sql):
         # Each last step is another whole attempt, and a long pair that stays unproved would pay for every one of
         # them: over the size limit the proof is the one before the steps, for this pair and the proofs inside it.
-        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False):
+        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False), shape_fallback.seventeenth_deferred(watch=False):
             return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
+    with shape_fallback.seventeenth_deferred() as seventeenth_seen:
+        result, pair, assumed = _prove_with_sixteenth_step(left_sql, right_sql, **kwargs)
+    if result.status is SmtStatus.NOT_PROVEN and seventeenth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.SEVENTEENTH_BATCH):
+        # One more step (hardest-cases batch 17): the rule of the seventeenth batch would have fired. The staged proof
+        # once more with the three last batches on, on the last pair tried before. Only a proof is taken.
+        with shape_fallback.seventeenth_on():
+            later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
+        if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
+    return result
+
+
+def _prove_with_sixteenth_step(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:
+    """The proof with the last steps of batches 15 and 16: the result, and for a pair left unproved the last pair
+    tried and what reading the pair that way assumes (as ``_prove_with_last_steps`` gives them)."""
+
     with shape_fallback.sixteenth_deferred() as sixteenth_seen:
         result, pair, assumed = _prove_with_last_steps(left_sql, right_sql, **kwargs)
     if result.status is SmtStatus.NOT_PROVEN and sixteenth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.SIXTEENTH_BATCH):
@@ -5748,8 +5787,8 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
         with shape_fallback.sixteenth_on():
             later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
         if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
-            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
-    return result
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed)))), pair, assumed
+    return result, pair, assumed
 
 
 def _prove_with_last_steps(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:

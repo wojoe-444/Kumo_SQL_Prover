@@ -685,7 +685,10 @@
   "tests/test_own_key_membership.py::test_lookups_by_key_stay_unproven_without_the_facts_or_against_another_count[other0]": 12.0,
   "tests/test_own_key_membership.py::test_lookups_by_key_stay_unproven_without_the_facts_or_against_another_count[other1]": 2.7,
   "tests/test_own_group_membership.py::test_the_spellings_stay_unproven_without_the_facts[other3]": 3.0,
-  "tests/test_own_group_membership.py::test_near_misses_stay_unproven": 2.9
+  "tests/test_own_group_membership.py::test_near_misses_stay_unproven": 2.9,
+  "tests/test_self_lookup_counts.py::test_near_misses_stay_unproved[left4-right4]": 11.1,
+  "tests/test_self_lookup_counts.py::test_near_misses_stay_unproved[left5-right5]": 6.4,
+  "tests/test_self_lookup_counts.py::test_pairs_proved_only_with_the_rule[left6-right6]": 3.8
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,
