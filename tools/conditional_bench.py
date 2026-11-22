@@ -365,6 +365,7 @@ def decide_verieql(case: dict, declared: bool = True) -> Outcome:
     schema = {n: [c.name.lower() for c in t.columns] for n, t in lower.items()}
     types = {n: {c.name.lower(): c.type for c in t.columns} for n, t in lower.items()}
     checks = veri.declared_checks(case, spec) if declared else {}
+    consecutive = veri.declared_consecutive(case, spec) if declared else {}
     constraints = {
         n: TableConstraints(
             not_null=frozenset(c.name.lower() for c in t.columns if c.not_null),
@@ -375,6 +376,7 @@ def decide_verieql(case: dict, declared: bool = True) -> Outcome:
                 if child.lower() == n
             ),
             checks=checks.get(n, ()),
+            consecutive=consecutive.get(n, ()),
         )
         for n, t in lower.items()
     }

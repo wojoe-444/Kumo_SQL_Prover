@@ -189,10 +189,29 @@ def build_spec(case: dict) -> cx.Spec:
     return spec
 
 
-_NUMBER_TYPES = ("INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL")
+_NUMBER_TYPES = ("INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL", "BOOL", "BOOLEAN")
 _WHOLE_TYPES = ("INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT")
 _TEXT_TYPES = ("VARCHAR", "CHAR", "TEXT", "ENUM")
 _CHECK_OPERATORS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "=", "neq": "<>"}
+
+
+def declared_consecutive(case: dict, spec: cx.Spec) -> dict[str, tuple]:
+    """The whole-number columns the case declares ``consec``, by lower-case table name: their values are consecutive
+    (``TableConstraints.consecutive``), which is also how the search fills them (1 to the number of rows)."""
+
+    out: dict[str, list] = {}
+    for constraint in case.get("constraint") or []:
+        body = constraint.get("consec") if isinstance(constraint, dict) and set(constraint) == {"consec"} else None
+        if not (isinstance(body, dict) and set(body) == {"value"} and isinstance(body["value"], str)):
+            continue
+        for table in spec.tables.values():
+            prefix = table.name + "__"
+            if not body["value"].startswith(prefix):
+                continue
+            for column in table.columns:
+                if column.name == body["value"][len(prefix):] and column.type.upper().split("(")[0] in _WHOLE_TYPES and column.name in table.sequential:
+                    out.setdefault(table.name.lower(), []).append(column.name.lower())
+    return {table: tuple(columns) for table, columns in out.items()}
 
 
 def declared_checks(case: dict, spec: cx.Spec) -> dict[str, tuple]:
@@ -367,11 +386,13 @@ def prove(case: dict, spec: cx.Spec, timeout_ms: int, pair: tuple[str, str] | No
     types = {n: {c.name.lower(): c.type for c in t.columns} for n, t in lower.items()}
     left, right = pair or case["pair"]
     checks = declared_checks(case, spec)
+    consecutive = declared_consecutive(case, spec)
 
     def attempt(with_foreign_keys: bool):
         constraints = {
             n: TableConstraints(
                 checks=checks.get(n, ()),
+                consecutive=consecutive.get(n, ()),
                 not_null=frozenset(c.name.lower() for c in t.columns if c.not_null),
                 keys=tuple(tuple(k.lower() for k in key) for key in ([t.primary_key] if t.primary_key else []) + list(t.unique)),
                 foreign_keys=tuple(
