@@ -20,7 +20,7 @@ Almost all of a run is DuckDB answering both queries on many tiny databases. The
 
 ## Latest scores
 
-On 2026-11-22 the whole LeetCode set was run again after six more batches of rules for families of spellings of one answer (shares and percentages, sums of tests, date windows, first-row subqueries, declared value checks, three last proof steps): 11,517 of 23,994 pairs are proved equivalent, none wrong. The run before it, on 2026-11-18, had 10,882 after nine proofs were removed (see below). The run took about five and a half hours and the gain was not split by batch. One later batch (main moved while the run was going) is not in the count: on the 400 pairs it can reach it proves 57 more.
+On 2026-11-22 the whole LeetCode set was run again after six more batches of rules for families of spellings of one answer (shares and percentages, sums of tests, date windows, first-row subqueries, declared value checks, three last proof steps): 11,517 of 23,994 pairs are proved equivalent, none wrong. The run before it, on 2026-11-18, had 10,882 after nine proofs were removed (see below). The run took about five and a half hours and the gain was not split by batch. Two later batches (main moved while the run was going) are not in the count: on the 1,800 pairs they can reach they prove 152 more.
 
 On 2026-11-18 the whole LeetCode set was rerun after rules for six more families of spellings of one answer were added (counts written as `UNION ALL` or `CASE` sums, an aggregate over the table's own group, joins that only ask for a match, `NOT IN` through a derived table, rounded divisions, repeated values): 10,891 of 23,994 pairs are proved equivalent (9,113 before), none lost and none wrong.
 
