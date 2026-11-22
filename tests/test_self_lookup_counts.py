@@ -271,6 +271,12 @@ LEFT_ALONE = [
     f"SELECT COUNT(*) / (SELECT COUNT(DISTINCT walker) FROM steps) AS mean FROM {JOINED}",
     f"SELECT SUM((SELECT COUNT(DISTINCT player) FROM logins)) AS total FROM {JOINED}",
     f"SELECT COUNT(*) AS n FROM {JOINED}",  # nothing to read
+    # a first source that is not grouped, and a total that reads no table
+    "SELECT COUNT(*) AS n FROM (SELECT player, day AS first FROM logins) AS p LEFT JOIN logins AS a ON p.player = a.player AND p.first + 1 = a.day",
+    "SELECT COUNT(*) AS n FROM (SELECT 1 AS player, 2 AS first) AS p LEFT JOIN logins AS a ON p.player = a.player AND p.first + 1 = a.day",
+    "SELECT COUNT(*) AS n FROM (SELECT player, MIN(day) AS first FROM logins) AS p JOIN logins AS a ON p.player = a.player",
+    f"SELECT COUNT(*) / (SELECT COUNT(DISTINCT 1)) AS mean FROM {JOINED}",
+    f"SELECT COUNT(*) / (SELECT 2) AS mean FROM {JOINED}",
     # the outer join read where it stands has nothing else on the select
     f"SELECT COUNT(*) AS n FROM {NEXT} WHERE a.score > 1",
     f"SELECT COUNT(*) AS n FROM {P} AS p LEFT JOIN logins AS a ON p.player = a.player",  # no test

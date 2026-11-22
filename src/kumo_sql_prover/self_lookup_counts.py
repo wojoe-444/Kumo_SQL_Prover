@@ -289,7 +289,7 @@ def _grouped(source: exp.Expression, lookup: _Lookup, carried: frozenset = froze
     if type(table) is not exp.Table or _args(table) - {"this", "alias"} or _identifier(table.this) is None:
         return False
     inner = _alias_of(table)
-    group = body.args["group"]
+    group = body.args.get("group")
     if inner is None or group is None or _args(group) - {"expressions"} or len(group.expressions) != 1:
         return False
 
@@ -553,7 +553,7 @@ def _total(node: exp.Expression, lookup: _Lookup) -> bool:
     body = node.this
     if _args(body) - {"expressions", "from_", "from"} or len(body.expressions) != 1:
         return False
-    table = body.args[FROM_KEY].this
+    table = body.args[FROM_KEY].this if body.args.get(FROM_KEY) is not None else None
     if type(table) is not exp.Table or _args(table) - {"this", "alias"} or table.name.lower() != lookup.table.name.lower():
         return False
     if table.name.lower() in visible_ctes(table):
