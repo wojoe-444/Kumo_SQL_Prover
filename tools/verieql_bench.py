@@ -46,7 +46,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from kumo_sql_prover import counterexample as cx  # noqa: E402
-from bench_sql_repairs import barewords_as_strings, expand_row_predicates, pipes_as_concat, rebind_correlation_variables, uniquify_star_columns  # noqa: E402
+from bench_sql_repairs import barewords_as_strings, expand_row_predicates, pipes_as_concat, schema_table_names, rebind_correlation_variables, uniquify_star_columns  # noqa: E402
 
 COMMIT = "493cbb81000205e33b0623cfd1c39106fa035fae"
 BASE = f"https://raw.githubusercontent.com/VeriEQL/VeriEQL/{COMMIT}"
@@ -151,7 +151,8 @@ def build_spec(case: dict) -> cx.Spec:
             if kind.startswith("ENUM"):
                 cols.append(cx.Column(column, "ENUM", values=tuple(kind.split(",")[1:])))
             else:
-                cols.append(cx.Column(column, kind))
+                # a LeetCode answer is MySQL, where BOOL is a small whole number: FREE + 1 and AVG(FREE) are arithmetic
+                cols.append(cx.Column(column, kind, as_number=case.get("suite") == "leetcode" and kind.upper() in ("BOOL", "BOOLEAN")))
         tables[name] = cx.Table(name, cols)
     spec = cx.Spec(tables)
 
@@ -370,7 +371,7 @@ def repaired_pair(case: dict, spec: cx.Spec) -> tuple[str, str, dict[str, int]]:
                     return case["pair"][0], case["pair"][1], {}
                 predicates.update(arities)
             elif suite == "leetcode":
-                sql = barewords_as_strings(sql, known)
+                sql = barewords_as_strings(schema_table_names(sql, set(spec.tables)), known)
         except Exception:  # a query the repairs cannot read is scored as written
             pass
         out.append(sql)

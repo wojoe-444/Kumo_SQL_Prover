@@ -27,7 +27,7 @@ from typing import Callable
 import sqlglot
 from sqlglot import exp
 
-from .ast_utils import EXCEPT_KEY, spell_for_duckdb
+from .ast_utils import EXCEPT_KEY, FROM_KEY, spell_for_duckdb
 from .duckdb_load import run_unoptimized, small_database
 from .result_equivalence import DataRules
 from .type_names import invalid_type_name
@@ -44,6 +44,7 @@ class Column:
     type: str  # INT, VARCHAR, DATE, NUMERIC, TIME, BOOL, or ENUM
     not_null: bool = False
     values: tuple = ()  # the allowed values of an ENUM
+    as_number: bool = False  # a BOOL column of an engine that stores it as the numbers 1 and 0 (MySQL's TINYINT(1))
 
 
 @dataclass
@@ -168,7 +169,7 @@ def _domain(column: Column, constants: Constants, wide: bool = False) -> list:
                 base.add(n // 2)
         return sorted(base)
     if kind == "BOOL" or kind == "BOOLEAN":
-        return [True, False]
+        return [1, 0] if column.as_number else [True, False]
     if kind == "DATE":
         base = {"2020-01-01", "2020-01-02", "2020-01-03", "2021-01-01"}
         for text in sorted(constants.dates)[:8]:
@@ -187,6 +188,8 @@ def _domain(column: Column, constants: Constants, wide: bool = False) -> list:
 
 def _duck_type(column: Column) -> str:
     kind = column.type.split("(")[0].upper()
+    if column.as_number and kind in ("BOOL", "BOOLEAN"):
+        return "TINYINT"  # DuckDB reads a whole number as a condition where one is asked for, as MySQL does
     return {
         "INT": "BIGINT", "INTEGER": "BIGINT", "BIGINT": "BIGINT", "SMALLINT": "BIGINT",
         "NUMERIC": "DOUBLE", "DECIMAL": "DOUBLE", "FLOAT": "DOUBLE", "DOUBLE": "DOUBLE",
@@ -366,30 +369,163 @@ def _grouping_keys(item: exp.Expression):
         yield item
 
 
-def relax_grouping(tree: exp.Expression) -> exp.Expression:
+def _alias_keys(select: exp.Select, tree: exp.Expression, columns: set[str], tables: dict[str, set[str]] | None = None) -> dict[str, exp.Expression]:
+    """The select items a ``GROUP BY`` name means in MySQL: alias (lower case) to the item's expression.
+
+    MySQL looks a ``GROUP BY`` name up among the columns of the ``FROM`` clause first. It takes the select
+    item of that name when no source has such a column, and also when more than one has (the lookup in the
+    ``FROM`` clause is then ambiguous and MySQL falls back to the select list; with exactly one, that column
+    is grouped and the alias is not). So the alias is the reading when
+
+    * the name is no column of any table of the schema and nothing else in the query defines it (another
+      select's alias, a ``WITH`` or derived-table column list): no source can have a column of that name; or
+    * the name is a column of the schema, ``tables`` (lower-case table name to its lower-case column names)
+      is given, every source of the select is a table of the schema, and none or several of them have it.
+
+    An item with an aggregate, a window or a subquery is never a grouping key.
+    """
+
+    defined: dict[str, int] = {}
+    for node in tree.find_all(exp.Alias):
+        defined[node.alias.lower()] = defined.get(node.alias.lower(), 0) + 1
+    for node in tree.find_all(exp.TableAlias):
+        for name in [node.name, *(c.name for c in node.columns)]:
+            defined[name.lower()] = defined.get(name.lower(), 0) + 2  # never the select item's own alias
+    for node in tree.find_all(exp.Table):
+        defined[node.name.lower()] = defined.get(node.name.lower(), 0) + 2
+    sources = None  # the schema tables the select reads, when it reads nothing else
+    if tables is not None:
+        from_ = select.args.get(FROM_KEY)
+        items = ([from_.this] if from_ is not None else []) + [join.this for join in select.args.get("joins") or []]
+        local = {cte.alias.lower() for cte in tree.find_all(exp.CTE)}
+        if items and all(isinstance(item, exp.Table) and item.name.lower() in tables and item.name.lower() not in local for item in items):
+            sources = [tables[item.name.lower()] for item in items]
+    out = {}
+    for item in select.expressions:
+        if not isinstance(item, exp.Alias):
+            continue
+        name = item.alias.lower()
+        if defined.get(name) != 1 or item.this.find(exp.AggFunc, exp.Window, exp.Select) is not None:
+            continue
+        if name in columns and (sources is None or sum(1 for source in sources if name in source) == 1):
+            continue
+        out[name] = item.this
+    return out
+
+
+def _plain_aggregate(select: exp.Select) -> bool:
+    """Whether the select's own list, ``HAVING`` or ``ORDER BY`` holds an aggregate that is not a window's and not a
+    nested select's."""
+
+    targets = list(select.expressions) + [select.args[k] for k in ("having", "order") if select.args.get(k) is not None]
+    for target in targets:
+        for node in target.find_all(exp.AggFunc):
+            parent = node.parent
+            while parent is not None and parent is not select and not isinstance(parent, (exp.Window, exp.Select)):
+                parent = parent.parent
+            if parent is select:
+                return True
+    return False
+
+
+def _row_having(tree: exp.Expression, columns: set[str]) -> exp.Expression:
+    """MySQL runs a ``HAVING`` without ``GROUP BY`` and without an aggregate as a filter on the select's rows:
+    ``SELECT name, bonus FROM .. HAVING bonus < 1000``. DuckDB reads any ``HAVING`` as grouping and rejects the
+    ungrouped columns, so the condition is moved into the ``WHERE``.
+
+    A name in it that can only be a select-list alias (``_alias_keys``) is replaced by that item's expression.
+    Left as written: a select with a window in its list (``HAVING`` runs after the windows, ``WHERE`` before), a
+    name that is both a column of the schema and the alias of something else in this select, and a name that is
+    neither.
+    """
+
+    for select in list(tree.find_all(exp.Select)):
+        having = select.args.get("having")
+        if having is None or select.args.get("group") is not None or select.args.get("qualify") is not None:
+            continue
+        if _plain_aggregate(select) or having.find(exp.Window) is not None or any(item.find(exp.Window) is not None for item in select.expressions):
+            continue
+        alias_only = _alias_keys(select, tree, columns)
+        renamed = set()  # aliases of this select that are not just the column of the same name
+        for item in select.expressions:
+            if isinstance(item, exp.Alias) and not (isinstance(item.this, exp.Column) and item.this.name.lower() == item.alias.lower()):
+                renamed.add(item.alias.lower())
+        swaps, readable = [], True
+        for column in having.find_all(exp.Column):
+            if column.table or column.find_ancestor(exp.Select) is not select:
+                continue
+            name = column.name.lower()
+            if name in columns:
+                readable = readable and name not in renamed
+            elif name in alias_only:
+                swaps.append((column, alias_only[name]))
+            else:
+                readable = False
+        if not readable:
+            continue
+        for column, expression in swaps:
+            column.replace(exp.paren(expression.copy()))
+        condition = select.args["having"].this
+        where = select.args.get("where")
+        select.set("having", None)
+        select.set("where", exp.Where(this=exp.and_(exp.paren(where.this), exp.paren(condition)) if where is not None else condition))
+    return tree
+
+
+def relax_grouping(tree: exp.Expression, columns: set[str] | None = None, tables: dict[str, set[str]] | None = None) -> exp.Expression:
     """MySQL lets a grouped query read columns that are not grouped (they are arbitrary within the group).
 
     DuckDB refuses. Wrapping such columns in ``ANY_VALUE`` gives the same answer when the column is
     functionally determined by the grouping; ``Searcher`` verifies the queries stay deterministic by
     re-running them on shuffled data, and drops any counterexample that depended on the arbitrary pick.
+
+    ``columns`` names every column of the schema (lower case) when the caller knows it. Four more readings
+    apply then, each for a query DuckDB would otherwise reject:
+
+    * A ``GROUP BY`` name that MySQL reads as a select-list alias (``_alias_keys``; ``tables`` lets it count
+      the sources that have a column of that name) is grouped by that item's expression:
+      ``SELECT followee AS person, COUNT(*) .. GROUP BY person`` groups by ``followee``. Without it the item
+      would be wrapped as an ungrouped column.
+    * A select with an aggregate and no ``GROUP BY`` is one group: its other columns are wrapped too
+      (``SELECT a.total / COUNT(d.id) FROM a, d``).
+    * A column of another source than the one grouped (``SELECT product.id .. GROUP BY sales.id``) is not
+      grouped just because the names match: it is wrapped.
+    * A name in the select list is a column even when an item's alias has the same name
+      (``CASE WHEN COUNT(platform) > 1 THEN 'both' ELSE platform END AS platform``): the alias is not
+      visible there, so the column is wrapped. In ``HAVING`` and ``ORDER BY`` the alias is still what is meant.
     """
 
     for select in list(tree.find_all(exp.Select)):
         group = select.args.get("group")
-        if group is None or not group.expressions or any(group.args.get(k) for k in ("grouping_sets", "cube", "rollup")):
+        if group is not None and any(group.args.get(k) for k in ("grouping_sets", "cube", "rollup")):
             continue
+        if group is None or not group.expressions:
+            if group is not None or columns is None or not _plain_aggregate(select):
+                continue
+        keys = list(group.expressions) if group is not None else []
         projections = select.expressions
         # MySQL reads an unqualified GROUP BY name as the select item of that name, DuckDB calls it ambiguous
         by_name = {}
         for item in projections:
             inner = item.this if isinstance(item, exp.Alias) else item
             if isinstance(inner, exp.Column) and inner.table:
-                by_name.setdefault((item.alias if isinstance(item, exp.Alias) else inner.name).lower(), inner)
-        for position, item in enumerate(list(group.expressions)):
+                name = (item.alias if isinstance(item, exp.Alias) else inner.name).lower()
+                if columns is not None and name != inner.name.lower():
+                    continue  # an alias: read below, and only when no FROM column can have the name
+                by_name.setdefault(name, inner)
+        for position, item in enumerate(keys):
             if isinstance(item, exp.Column) and not item.table and item.name.lower() in by_name:
                 item.replace(by_name[item.name.lower()].copy())
+        if columns is not None and group is not None:
+            alias_keys = _alias_keys(select, tree, columns, tables)
+            for item in list(group.expressions):
+                if isinstance(item, exp.Column) and not item.table and item.name.lower() in alias_keys:
+                    item.replace(alias_keys[item.name.lower()].copy())
+        keys = list(group.expressions) if group is not None else []
         grouped = set()
-        for item in (key for entry in group.expressions for key in _grouping_keys(entry)):
+        bare: set[str] = set()  # names grouped without a qualifier, or inside a key expression
+        qualified: dict[str, set[str]] = {}  # names grouped as a qualified column, with the qualifiers
+        for item in (key for entry in keys for key in _grouping_keys(entry)):
             if isinstance(item, exp.Literal) and not item.is_string:
                 position = int(item.this) - 1
                 if 0 <= position < len(projections):
@@ -397,6 +533,12 @@ def relax_grouping(tree: exp.Expression) -> exp.Expression:
                     item = item.this if isinstance(item, exp.Alias) else item
             if isinstance(item, exp.Column):
                 grouped.add(item.name.lower())
+                if item.table:
+                    qualified.setdefault(item.name.lower(), set()).add(item.table.lower())
+                else:
+                    bare.add(item.name.lower())
+            else:
+                bare.update(c.name.lower() for c in item.find_all(exp.Column))
             grouped.update(c.name.lower() for c in item.find_all(exp.Column))
             grouped.add(item.sql().lower())
         aliases = {p.alias.lower() for p in projections if isinstance(p, exp.Alias)}
@@ -411,12 +553,20 @@ def relax_grouping(tree: exp.Expression) -> exp.Expression:
                 parent = parent.parent
             return False
 
-        targets = list(projections) + [select.args[k] for k in ("having", "order", "qualify") if select.args.get(k) is not None]
-        for target in targets:
+        def other_source(column: exp.Column) -> bool:
+            """A qualified column whose name is grouped only as a column of other sources."""
+
+            name = column.name.lower()
+            return bool(columns is not None and column.table and name in qualified and name not in bare and column.table.lower() not in qualified[name])
+
+        targets = [(item, True) for item in projections] + [(select.args[k], False) for k in ("having", "order", "qualify") if select.args.get(k) is not None]
+        for target, listed in targets:
             for column in list(target.find_all(exp.Column)):
-                if inside_aggregate(column) or column.name.lower() in grouped or column.sql().lower() in grouped:
+                if inside_aggregate(column):
                     continue
-                if not column.table and column.name.lower() in aliases:
+                if not other_source(column) and (column.name.lower() in grouped or column.sql().lower() in grouped):
+                    continue
+                if not column.table and column.name.lower() in aliases and not (listed and columns is not None):
                     continue
                 wrapped = exp.Anonymous(this="ANY_VALUE", expressions=[column.copy()])
                 if column.parent is select and column in projections:
@@ -538,6 +688,28 @@ def _barewords(tree: exp.Expression, known: set[str]) -> exp.Expression:
     return tree
 
 
+_ARITHMETIC = (exp.Add, exp.Sub, exp.Mul, exp.Div, exp.IntDiv, exp.Mod, exp.Neg)
+
+
+def _conditions_as_numbers(tree: exp.Expression) -> exp.Expression:
+    """MySQL's conditions are the numbers 1 and 0 (NULL when unknown): ``AVG(a = b)``, ``(a = b) * price`` and
+    ``(x > 1) + (y > 1)`` are arithmetic there. DuckDB has no average of a BOOLEAN and no arithmetic on one, so a
+    condition that is averaged or is an operand of arithmetic is cast to a whole number, which gives DuckDB the
+    same 1, 0 or NULL. (DuckDB sums a BOOLEAN itself, counting the TRUE rows as MySQL does.)"""
+
+    def condition(node: exp.Expression) -> bool:
+        while isinstance(node, exp.Paren):
+            node = node.this
+        return isinstance(node, (exp.Predicate, exp.Connector, exp.Not, exp.Exists, exp.Boolean))
+
+    for node in list(tree.find_all(*_ARITHMETIC, exp.Avg)):
+        for key in ("this", "expression"):
+            operand = node.args.get(key)
+            if isinstance(operand, exp.Expression) and condition(operand):
+                operand.replace(exp.Cast(this=operand.copy(), to=exp.DataType.build("BIGINT")))
+    return tree
+
+
 def _dollars(sql: str) -> str:
     """Calcite names columns ``$f9``, ``EXPR$0``: DuckDB rejects ``$`` in bare names."""
 
@@ -559,13 +731,16 @@ def zoneless_timestamps(tree: exp.Expression) -> exp.Expression:
     return tree
 
 
-def to_duckdb(sql: str, dialect: str = "mysql", known: set[str] | None = None) -> str:
+def to_duckdb(sql: str, dialect: str = "mysql", known: set[str] | None = None, tables: dict[str, set[str]] | None = None) -> str:
     tree = sqlglot.parse_one(_dollars(sql), read=dialect)
     if dialect == "mysql":
-        tree = zoneless_timestamps(tree)
+        tree = _conditions_as_numbers(zoneless_timestamps(tree))
     if known is not None:
         tree = _barewords(tree, known)
-    tree = relax_grouping(_fill_empty_select_lists(_calcite_forms(_date_functions(tree))))
+    tree = _fill_empty_select_lists(_calcite_forms(_date_functions(tree)))
+    if dialect == "mysql" and known is not None:
+        tree = _row_having(tree, known)
+    tree = relax_grouping(tree, known, tables)
     if dialect == "bigquery":
         from .bigquery_on_duckdb import faithful
 
@@ -671,8 +846,9 @@ class Searcher:
         self.spec = spec
         self.constants = constants_of(left, right, dialect=dialect)
         known = {c.name.lower() for t in spec.tables.values() for c in t.columns}
-        self.left_sql = to_duckdb(left, dialect, known)
-        self.right_sql = to_duckdb(right, dialect, known)
+        tables = {t.name.lower(): {c.name.lower() for c in t.columns} for t in spec.tables.values()}
+        self.left_sql = to_duckdb(left, dialect, known, tables)
+        self.right_sql = to_duckdb(right, dialect, known, tables)
         names = set()
         for sql in (left, right):
             for table in sqlglot.parse_one(_dollars(sql), read=dialect).find_all(exp.Table):
@@ -773,7 +949,7 @@ class Searcher:
             low, high = (min(c.ints), max(c.ints)) if c.ints else (0, 0)
             values = [low, high + 1] if low == high else [low, high + 1]
         elif kind in ("BOOL", "BOOLEAN"):
-            values = [True, False]
+            values = [1, 0] if column.as_number else [True, False]
         elif kind == "DATE":
             values = (sorted(c.dates) + ["2020-01-01", "2020-01-02"])[:2]
         elif kind == "TIME":

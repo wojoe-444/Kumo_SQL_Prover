@@ -17,6 +17,7 @@ from bench_sql_repairs import (  # noqa: E402
     fold_table_names,
     pipes_as_concat,
     rebind_correlation_variables,
+    schema_table_names,
     uniquify_star_columns,
 )
 
@@ -235,6 +236,66 @@ def test_the_leetcode_harness_proves_a_pair_whose_strings_lost_their_quotes():
     assert verieql_bench.decide(case(other, "leetcode")).status == verieql_bench.DIFFERENT, "another word is another string"
     # the other suites' queries are printed by Calcite or written in a paper's notation: no quotes were lost there
     assert verieql_bench.repaired_pair(case(lost, "literature"), spec)[1] == lost
+
+
+SCHEMA_TABLES = {"MYSCORES", "SHOPS"}
+
+# (as the answer spells the table, with the schema's spelling): the rest of the text is kept as written
+TABLE_SPELLINGS = [
+    ("SELECT MAX(score) FROM MY_SCORES", "SELECT MAX(score) FROM MYSCORES"),
+    ("select  m.score from my_scores AS m JOIN My_Scores n ON m.score = n.score  where m.score DIV 2 = 1", "select  m.score from MYSCORES AS m JOIN MYSCORES n ON m.score = n.score  where m.score DIV 2 = 1"),
+    ("(SELECT score FROM MY_SCORES GROUP BY score LIMIT 1) UNION (SELECT NULL FROM SHOPS)", "(SELECT score FROM MYSCORES GROUP BY score LIMIT 1) UNION (SELECT NULL FROM SHOPS)"),
+    ("SELECT score FROM MY_SCORES WHERE score NOT IN (SELECT score FROM _MYSCORES_ GROUP BY score)", "SELECT score FROM MYSCORES WHERE score NOT IN (SELECT score FROM MYSCORES GROUP BY score)"),
+]
+
+# kept as written: nothing here is a table of the schema spelled with other underscores, or the reading is not the only one
+TABLE_SPELLINGS_KEPT = [
+    "SELECT score FROM MYSCORES JOIN SHOPS ON 1 = 1",
+    "SELECT score FROM SCORES",  # another name, not another spelling
+    "WITH MY_SCORES AS (SELECT score FROM MYSCORES) SELECT score FROM MY_SCORES",  # the query's own name
+    "SELECT MY_SCORES.score FROM MY_SCORES",  # the old spelling is also a qualifier
+    "SELECT score FROM `MY_SCORES`",  # a name written as a name
+    "SELECT score FROM other.MY_SCORES",
+]
+
+
+@pytest.mark.parametrize("held,repaired", TABLE_SPELLINGS)
+def test_a_table_spelled_with_other_underscores_gets_the_schema_spelling(held, repaired):
+    assert schema_table_names(held, SCHEMA_TABLES) == repaired
+    assert schema_table_names(repaired, SCHEMA_TABLES) == repaired
+
+
+@pytest.mark.parametrize("sql", TABLE_SPELLINGS_KEPT)
+def test_a_table_name_that_is_not_another_spelling_is_kept(sql):
+    assert schema_table_names(sql, SCHEMA_TABLES) == sql
+
+
+def test_two_schema_tables_with_one_spelling_keep_the_query():
+    assert schema_table_names("SELECT score FROM MY_SCORES", {"MYSCORES", "MYSC_ORES"}) == "SELECT score FROM MY_SCORES"
+
+
+@pytest.mark.canary  # hand-written cases through the VeriEQL harness; the family's floors stay in tests/test_verieql_benchmarks.py
+def test_the_leetcode_harness_reads_the_schema_table_and_stores_a_flag_as_a_number():
+    import verieql_bench
+
+    def case(suite: str, left: str, right: str, schema: dict) -> dict:
+        return {"index": 11, "suite": suite, "schema": schema, "constraint": [], "pair": [left, right]}
+
+    scores = {"MYSCORES": {"SCORE": "INT"}}
+    left, right = "SELECT MAX(SCORE) AS TOP FROM MYSCORES", "SELECT MAX(M.SCORE) AS TOP FROM MY_SCORES AS M"
+    spec = verieql_bench.build_spec(case("leetcode", left, right, scores))
+    assert verieql_bench.repaired_pair(case("leetcode", left, right, scores), spec)[1] == "SELECT MAX(M.SCORE) AS TOP FROM MYSCORES AS M"
+    assert verieql_bench.decide(case("leetcode", left, right, scores)).status == verieql_bench.EQUIVALENT
+    assert verieql_bench.decide(case("leetcode", left, "SELECT MIN(M.SCORE) AS TOP FROM MY_SCORES AS M", scores)).status == verieql_bench.DIFFERENT
+    assert verieql_bench.repaired_pair(case("calcite", left, right, scores), spec)[1] == right, "only the LeetCode answers are respelled"
+
+    seats = {"SEATS": {"SEAT": "INT", "FREE": "BOOL"}}
+    flag = verieql_bench.build_spec(case("leetcode", "SELECT SEAT FROM SEATS", "SELECT SEAT FROM SEATS", seats)).tables["SEATS"].column("FREE")
+    assert flag.as_number and flag.type == "BOOL", "the prover is still told BOOL; the search stores 1 and 0"
+    assert not verieql_bench.build_spec(case("calcite", "SELECT SEAT FROM SEATS", "SELECT SEAT FROM SEATS", seats)).tables["SEATS"].column("FREE").as_number
+    sums = "SELECT A.SEAT FROM SEATS AS A, SEATS AS B WHERE A.SEAT + 1 = B.SEAT AND A.FREE + B.FREE = 2"
+    both = "SELECT A.SEAT FROM SEATS AS A, SEATS AS B WHERE A.SEAT + 1 = B.SEAT AND A.FREE = 1 AND B.FREE = 1"
+    assert verieql_bench.decide(case("leetcode", sums, both, seats)).status in (verieql_bench.EQUIVALENT, verieql_bench.AGREES), "DuckDB runs the sum of two flags"
 
 
 EXISTS_SQL = "SELECT t.a FROM t WHERE EXISTS (SELECT 1 FROM u WHERE u.d <> t.a AND t.b > u.c)"
