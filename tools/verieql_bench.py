@@ -46,7 +46,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from kumo_sql_prover import counterexample as cx  # noqa: E402
-from bench_sql_repairs import expand_row_predicates, pipes_as_concat, rebind_correlation_variables, uniquify_star_columns  # noqa: E402
+from bench_sql_repairs import barewords_as_strings, expand_row_predicates, pipes_as_concat, rebind_correlation_variables, uniquify_star_columns  # noqa: E402
 
 COMMIT = "493cbb81000205e33b0623cfd1c39106fa035fae"
 BASE = f"https://raw.githubusercontent.com/VeriEQL/VeriEQL/{COMMIT}"
@@ -347,10 +347,13 @@ def repaired_pair(case: dict, spec: cx.Spec) -> tuple[str, str, dict[str, int]]:
 
     See ``tools/bench_sql_repairs.py``. Calcite-397 gets ``||`` read as concatenation, its correlation
     variables rebound and its repeated star columns named; Literature gets its whole-row predicates spelled out over the row's
-    columns. Each repair has one reading; when it cannot apply, the query is kept as written.
+    columns; a LeetCode answer whose strings lost their quotes (``THEN YES ELSE NO``) gets them back, read as the
+    counterexample search has always read them. Each repair has one reading; when it cannot apply, the query is
+    kept as written.
     """
 
     tables = {t.name.lower(): [c.name for c in t.columns] for t in spec.tables.values()}
+    known = {name.lower() for names in tables.values() for name in names}
     suite = case.get("suite")
     out, predicates = [], {}
     for sql in case["pair"]:
@@ -366,6 +369,8 @@ def repaired_pair(case: dict, spec: cx.Spec) -> tuple[str, str, dict[str, int]]:
                 if any(predicates.get(name, arity) != arity for name, arity in arities.items()):
                     return case["pair"][0], case["pair"][1], {}
                 predicates.update(arities)
+            elif suite == "leetcode":
+                sql = barewords_as_strings(sql, known)
         except Exception:  # a query the repairs cannot read is scored as written
             pass
         out.append(sql)

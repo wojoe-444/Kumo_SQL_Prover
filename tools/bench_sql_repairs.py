@@ -9,9 +9,13 @@ unknown rather than being scored under a guessed meaning.
 * ``expand_row_predicates``: VeriEQL Literature's uninterpreted predicates over whole rows, ``B1(X)``.
 * ``fold_table_names``: Cosette's case-insensitive table names (``A`` and ``a`` are one table).
 * ``pipes_as_concat``: Calcite's ``||`` (string concatenation; MySQL reads it as OR).
+* ``barewords_as_strings``: VeriEQL's LeetCode answers whose double-quoted strings lost their quotes
+  (``THEN YES ELSE NO``).
 """
 
 from __future__ import annotations
+
+import re
 
 import sqlglot
 import sqlglot.expressions as exp
@@ -241,3 +245,87 @@ def pipes_as_concat(sql: str) -> str:
     for node in reversed(list(tree.find_all(exp.BitwiseOr, bfs=False))):  # inner ones first
         node.replace(exp.Concat(expressions=[node.this.copy(), node.expression.copy()]))
     return _mysql(tree)
+
+
+_PLAIN_WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _plain_word(word: str) -> bool:
+    """Whether the word is letters, digits and underscores and no keyword to the MySQL tokenizer."""
+
+    from sqlglot.dialects.mysql import MySQL
+    from sqlglot.tokens import TokenType
+
+    if not _PLAIN_WORD.match(word):
+        return False
+    tokens = MySQL().tokenize(word)
+    return len(tokens) == 1 and tokens[0].token_type == TokenType.VAR
+
+
+def _string_place(column: exp.Column) -> bool:
+    """Whether the column stands where a value is chosen or compared (see ``barewords_as_strings``)."""
+
+    node, parent = column, column.parent
+    while isinstance(parent, exp.Paren):
+        node, parent = parent, parent.parent
+    key = node.arg_key
+    if isinstance(parent, exp.If):  # IF(c, a, b), or a WHEN .. THEN .. of a CASE; the WHEN value of CASE x WHEN ..
+        return key in ("true", "false") or (key == "this" and isinstance(parent.parent, exp.Case) and parent.parent.this is not None)
+    if isinstance(parent, exp.Case):
+        return key == "default"
+    if isinstance(parent, exp.Alias):
+        return key == "this" and isinstance(parent.parent, exp.Select) and parent.arg_key == "expressions"
+    if isinstance(parent, exp.Select):
+        return key == "expressions"
+    return isinstance(parent, (exp.EQ, exp.NEQ, exp.NullSafeEQ, exp.Like, exp.In))
+
+
+def barewords_as_strings(sql: str, columns: set[str]) -> str:
+    """A LeetCode answer whose strings lost their quotes, with the quotes put back.
+
+    The answers were written for MySQL, where ``"Yes"`` in double quotes is a string. VeriEQL's files hold
+    them without the quotes (``CASE WHEN .. THEN YES ELSE NO END``), which no engine runs: ``YES`` is no
+    column. The counterexample search has always read an unqualified name that is no column of the schema
+    and no alias or table of the query as that string (``counterexample._barewords``); this is the same
+    reading, decided by the same function, for the prover.
+
+    Only the words are touched: each is quoted where it stands and the rest of the text is kept character for
+    character (writing the parsed query out again would respell other things, ``DIV`` among them). The result
+    is parsed again and must be the tree the search reads; otherwise the query is returned as written. So is a
+    query that holds no such word.
+
+    The prover gets the reading only where a lost string is the plain one: every such word of the query must
+    stand where a value is chosen or compared (a ``THEN`` or ``ELSE`` result, an ``IF`` result, a select-list
+    item, an operand of ``=``, ``<>``, ``<=>``, ``LIKE`` or ``IN``). A word that is the argument of an aggregate
+    (``COUNT(GAME)``), a sort or grouping key, or part of a sum is more likely a column the file lost in some
+    other way, and a query with one is returned as written; so is one with a word in backticks or a word the
+    MySQL tokenizer knows as a keyword (``TABLE``). The pair then stays unproved, which is never wrong.
+    """
+
+    from kumo_sql_prover.counterexample import _barewords
+
+    tree = sqlglot.parse_one(sql, read="mysql")
+    before = [column for column in tree.find_all(exp.Column) if not column.table]
+    spans = {id(column): (column.this, column.this.meta) for column in before if isinstance(column.this, exp.Identifier)}
+    places = {id(column): _string_place(column) for column in before}  # read before the search's reader moves the nodes
+    tree = _barewords(tree, {name.lower() for name in columns})
+    alive = {id(column) for column in tree.find_all(exp.Column)}
+    words = []
+    for column in before:
+        if id(column) in alive:
+            continue
+        identifier, meta = spans.get(id(column), (None, {}))
+        if identifier is None or identifier.quoted or "start" not in meta or "end" not in meta:
+            return sql
+        if not places[id(column)] or not _plain_word(identifier.name):
+            return sql
+        start, end = meta["start"], meta["end"] + 1
+        if sql[start:end] != identifier.name:
+            return sql
+        words.append((start, end))
+    if not words:
+        return sql
+    out = sql
+    for start, end in sorted(words, reverse=True):
+        out = out[:start] + "'" + out[start:end] + "'" + out[end:]
+    return out if sqlglot.parse_one(out, read="mysql") == tree else sql

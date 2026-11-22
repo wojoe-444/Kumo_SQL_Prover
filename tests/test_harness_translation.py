@@ -12,6 +12,7 @@ duckdb = pytest.importorskip("duckdb")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 from bench_sql_repairs import (  # noqa: E402
+    barewords_as_strings,
     expand_row_predicates,
     fold_table_names,
     pipes_as_concat,
@@ -129,6 +130,111 @@ def test_calcite_pipes_concatenate():
     assert sql == "SELECT CONCAT(CONCAT(DEPTNO, 'x'), SAL) AS c FROM EMP WHERE CONCAT(DEPTNO, '') = '10' AND 'a||b' <> ''"
     assert sorted(runs(sql), key=repr) == [("10x5",), (None,)]
     assert pipes_as_concat("SELECT a || b | c FROM t") == "SELECT a || b | c FROM t", "a query that also uses | is left alone"
+
+
+SIDES = {"side_a", "side_b", "side_c", "colour"}
+
+# (as VeriEQL's files hold the answer, with the quotes back): made-up tables, the shapes the files have
+LOST_QUOTES = [
+    (
+        "SELECT *, CASE WHEN side_a + side_b > side_c THEN YES ELSE NO END AS fits FROM shapes",
+        "SELECT *, CASE WHEN side_a + side_b > side_c THEN 'YES' ELSE 'NO' END AS fits FROM shapes",
+    ),
+    # nothing but the words changes: DIV, the spacing and the letter case stay as written
+    (
+        "select  side_a DIV 2 , IF( colour = Red , Warm , COLD ) from shapes  where  side_b<>3",
+        "select  side_a DIV 2 , IF( colour = 'Red' , 'Warm' , 'COLD' ) from shapes  where  side_b<>3",
+    ),
+    (
+        "SELECT s.side_a FROM shapes AS s WHERE s.colour IN (RED, 'BLUE') AND EXISTS (SELECT X FROM shapes AS o WHERE o.side_a = s.side_b)",
+        "SELECT s.side_a FROM shapes AS s WHERE s.colour IN ('RED', 'BLUE') AND EXISTS (SELECT 'X' FROM shapes AS o WHERE o.side_a = s.side_b)",
+    ),
+    (
+        "SELECT IF(colour LIKE RED, (WARM), COLD) AS feel, CASE colour WHEN BLUE THEN 1 ELSE 0 END AS chilly FROM shapes WHERE colour <> GREY UNION ALL SELECT NEITHER AS feel, 2",
+        "SELECT IF(colour LIKE 'RED', ('WARM'), 'COLD') AS feel, CASE colour WHEN 'BLUE' THEN 1 ELSE 0 END AS chilly FROM shapes WHERE colour <> 'GREY' UNION ALL SELECT 'NEITHER' AS feel, 2",
+    ),
+    (
+        "WITH sized (kind, n) AS (SELECT CASE WHEN side_a > 9 THEN BIG ELSE SMALL END, side_a FROM shapes) SELECT kind, COUNT(n) AS total FROM sized GROUP BY kind HAVING total > 1",
+        "WITH sized (kind, n) AS (SELECT CASE WHEN side_a > 9 THEN 'BIG' ELSE 'SMALL' END, side_a FROM shapes) SELECT kind, COUNT(n) AS total FROM sized GROUP BY kind HAVING total > 1",
+    ),
+]
+
+# every name here is a column of the schema, or an alias, a table or a WITH column of the query: nothing is a lost string
+KNOWN_NAMES = [
+    "SELECT side_a, side_b AS width FROM shapes WHERE colour = 'RED' ORDER BY width",
+    "SELECT s.side_a, o.total FROM shapes AS s JOIN (SELECT side_b, COUNT(*) AS total FROM shapes GROUP BY side_b) AS o ON o.side_b = s.side_a",
+    "WITH sized (kind, n) AS (SELECT colour, side_a FROM shapes) SELECT kind, SUM(n) FROM sized GROUP BY kind",
+    "SELECT side_a, ROW_NUMBER() OVER (PARTITION BY colour ORDER BY side_b) AS place FROM shapes HAVING place = 1",
+    "SELECT side_a FROM shapes WHERE side_b > CURRENT_DATE AND side_c IS NOT NULL AND colour LIKE 'R%'",
+    "SELECT shapes.side_a, missing.thing FROM shapes",  # a qualified name is never a lost string
+]
+
+
+@pytest.mark.parametrize("held,repaired", LOST_QUOTES)
+def test_lost_quotes_are_put_back_and_the_rest_is_kept_as_written(held, repaired):
+    assert barewords_as_strings(held, SIDES) == repaired
+    assert barewords_as_strings(repaired, SIDES) == repaired
+    # the reading is the search's own: it turns both texts into the same DuckDB query
+    assert cx.to_duckdb(repaired, "mysql", SIDES) == cx.to_duckdb(held, "mysql", SIDES)
+    assert cx.to_duckdb(repaired, "mysql", SIDES) == cx.to_duckdb(repaired, "mysql", None), "no word is left for the search to read"
+
+
+@pytest.mark.parametrize("sql", KNOWN_NAMES)
+def test_a_name_the_schema_or_the_query_knows_is_never_quoted(sql):
+    assert barewords_as_strings(sql, SIDES) == sql
+
+
+# a word that is no known name, standing where a lost string is not the plain reading: the query stays as written
+NOT_PLAINLY_STRINGS = [
+    "SELECT colour, COUNT(GAME) AS games FROM shapes GROUP BY colour",  # an aggregate's argument: a lost column or alias
+    "SELECT side_a FROM shapes ORDER BY WIDTH",
+    "SELECT colour, SUM(side_a) FROM shapes GROUP BY colour, KIND",
+    "SELECT side_a + EXTRA AS more FROM shapes",
+    "SELECT side_a FROM shapes WHERE side_b > LIMIT_B",
+    "SELECT ROW_NUMBER() OVER (PARTITION BY KIND ORDER BY side_a) AS place FROM shapes",
+    "SELECT ROUND(side_a / (TABLE totals), 2) FROM shapes",  # MySQL's TABLE statement, which the parser reads as a name
+    "SELECT CASE WHEN side_a > 1 THEN YES ELSE NO END AS fits, COUNT(GAME) FROM shapes",  # one such word keeps the whole query
+]
+
+
+@pytest.mark.parametrize("sql", NOT_PLAINLY_STRINGS)
+def test_a_word_where_a_lost_string_is_not_the_plain_reading_keeps_the_query_as_written(sql):
+    assert barewords_as_strings(sql, SIDES) == sql
+    assert cx.to_duckdb(sql, "mysql", SIDES) != cx.to_duckdb(sql, "mysql", None), "the search does read a word here: the prover's reading is the narrower one"
+
+
+def test_a_word_in_backticks_or_one_the_text_does_not_hold_is_left_alone():
+    backticks = "SELECT CASE WHEN side_a > 1 THEN `YES` ELSE NO END AS fits FROM shapes"
+    assert barewords_as_strings(backticks, SIDES) == backticks, "a name written as a name: the whole query stays as written"
+    # the schema's column names decide: with colour unknown it would be a string, and the test of the function
+    # is that it asks the search's own reader
+    assert barewords_as_strings("SELECT colour FROM shapes", {"side_a"}) == "SELECT 'colour' FROM shapes"
+    assert barewords_as_strings("SELECT COLOUR FROM shapes", {"Colour"}) == "SELECT COLOUR FROM shapes", "names compare without case"
+
+
+@pytest.mark.canary  # one hand-written case through the VeriEQL harness; the family's floors stay in tests/test_verieql_benchmarks.py
+def test_the_leetcode_harness_proves_a_pair_whose_strings_lost_their_quotes():
+    import verieql_bench
+
+    schema = {"SHAPES": {"SIDE_A": "INT", "SIDE_B": "INT", "SIDE_C": "INT"}}
+    constraint = [{"primary": [{"value": "SHAPES__SIDE_A"}, {"value": "SHAPES__SIDE_B"}, {"value": "SHAPES__SIDE_C"}]}]
+    quoted = "SELECT SIDE_A, IF(SIDE_A + SIDE_B > SIDE_C, 'YES', 'NO') AS FITS FROM SHAPES"
+    lost = "SELECT SIDE_A, CASE WHEN SIDE_A + SIDE_B > SIDE_C THEN YES ELSE NO END AS FITS FROM SHAPES"
+    other = "SELECT SIDE_A, CASE WHEN SIDE_A + SIDE_B > SIDE_C THEN YES ELSE NOPE END AS FITS FROM SHAPES"
+
+    def case(right: str, suite: str) -> dict:
+        return {"index": 7, "suite": suite, "schema": schema, "constraint": constraint, "pair": [quoted, right]}
+
+    spec = verieql_bench.build_spec(case(lost, "leetcode"))
+    left, right, _ = verieql_bench.repaired_pair(case(lost, "leetcode"), spec)
+    assert left == quoted
+    assert right == "SELECT SIDE_A, CASE WHEN SIDE_A + SIDE_B > SIDE_C THEN 'YES' ELSE 'NO' END AS FITS FROM SHAPES"
+    assert verieql_bench.prove(case(lost, "leetcode"), spec, 3000, (left, right)).proven
+    assert not verieql_bench.prove(case(lost, "leetcode"), spec, 3000, (quoted, lost)).proven, "as the file holds it, the pair is not read"
+    assert verieql_bench.decide(case(lost, "leetcode")).status == verieql_bench.EQUIVALENT
+    assert verieql_bench.decide(case(other, "leetcode")).status == verieql_bench.DIFFERENT, "another word is another string"
+    # the other suites' queries are printed by Calcite or written in a paper's notation: no quotes were lost there
+    assert verieql_bench.repaired_pair(case(lost, "literature"), spec)[1] == lost
 
 
 EXISTS_SQL = "SELECT t.a FROM t WHERE EXISTS (SELECT 1 FROM u WHERE u.d <> t.a AND t.b > u.c)"
