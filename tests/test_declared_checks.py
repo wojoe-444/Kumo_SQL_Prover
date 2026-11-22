@@ -15,6 +15,9 @@ from kumo_sql_prover import value_checks  # noqa: E402
 
 veri = pytest.importorskip("verieql_bench")
 
+# hand-written cases through the harness's reader of declared checks; the family's floors stay in tests/test_verieql_benchmarks.py
+pytestmark = pytest.mark.canary
+
 SCHEMA = {
     "MOVES": {"MACHINE": "INT", "STEP": "INT", "KIND": "ENUM,START,END", "AT": "NUMERIC", "DAY": "DATE"},
     "PAY": {"EMP": "INT", "AMOUNT": "INT", "POS": "INT", "FLOOR": "INT", "CEILING": "INT", "NOTE": "VARCHAR"},
