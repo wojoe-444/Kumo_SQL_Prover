@@ -46,7 +46,8 @@ import re
 
 from sqlglot import exp
 
-from .float_regrouping import _branches, _is_star, _label, _sources, _unaliased
+from .float_regrouping import _branches, _is_star, _label, _Source, _unaliased
+from .float_regrouping import _sources as _all_sources
 
 DATE, TIME, NUMBER, TEXT = "date", "time", "number", "text"
 _TEMPORAL = (DATE, TIME)
@@ -95,6 +96,16 @@ def _interval(node: exp.Expression) -> bool:
 def _unit(node: exp.Expression) -> str:
     unit = node.args.get("unit")
     return (unit.name if isinstance(unit, exp.Expression) else str(unit or "")).upper()
+
+
+def _sources(select: exp.Select) -> list[_Source]:
+    """The sources of ``select``, with ``LATERAL (SELECT ..)`` as one this module does not follow.
+
+    MySQL's readings of a date that comes out of a lateral derived table were never checked on a server, so its
+    columns stay of unknown type here: the guard, or DuckDB's own type check, refuses arithmetic on them.
+    """
+
+    return [_Source(source.alias, "opaque", source.holder) if isinstance(source.holder, exp.Lateral) else source for source in _all_sources(select)]
 
 
 class _Reader:
