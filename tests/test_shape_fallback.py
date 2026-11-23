@@ -420,6 +420,11 @@ def test_stage_three_is_two_attempts_and_its_sub_proofs_one(monkeypatch):
     """A pair the batch reads and does not prove costs two attempts, and no retry with another rule of the batch off:
     with a retry for each rule that fired, such a pair went from seconds to minutes (the sub-proofs repeat)."""
 
+    # the step of batch 24 reads this pair too and would run the whole proof once more
+    # (tests/test_twenty_fourth_step.py holds its runs): its rule reads nothing here, so that the steps are those of stage three
+    from kumo_sql_prover import shared_scan_aggregates
+
+    monkeypatch.setattr(shared_scan_aggregates, "read_shared_scans", lambda tree, *args, **kwargs: (tree, False))
     result, steps = tenth_steps(monkeypatch, *OTHER_ROUNDING, **SHARE_OPTIONS)
     assert not result.proven and steps
     assert set(steps) == {frozenset(), frozenset({"aggregate_scalars"})}
