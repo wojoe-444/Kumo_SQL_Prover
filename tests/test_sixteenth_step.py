@@ -32,7 +32,7 @@ def prove(left: str, right: str, dialect: str = "mysql"):
 
 def test_the_batch_names_three_rules_and_has_its_own_entry_in_the_stage_key():
     assert shape_fallback.SIXTEENTH_BATCH == frozenset(READ)
-    assert len(shape_fallback.stage_key()) == 10 and shape_fallback.stage_key()[6] is False
+    assert len(shape_fallback.stage_key()) == 11 and shape_fallback.stage_key()[6] is False
     with shape_fallback.sixteenth_deferred():
         assert shape_fallback.stage_key()[6] is False
     with shape_fallback.sixteenth_on():

@@ -331,7 +331,7 @@ def tenth_batch_enabled() -> bool:
     )
 
 
-def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]:
+def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]:
     """Which of the staged batches are on (part of any normalization cache key)."""
 
     return (
@@ -345,6 +345,7 @@ def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, b
         _SEVENTEENTH_STAGE.get() is True,
         _EIGHTEENTH_STAGE.get() is True,
         _TWENTIETH_STAGE.get() is True,
+        _TWENTY_FOURTH_STAGE.get() is True,
     )
 
 
@@ -979,6 +980,68 @@ def note_twentieth_candidate() -> None:
     """Record that a rule of the twentieth batch would have fired in an earlier step."""
 
     seen = _TWENTIETH_SEEN.get()
+    if seen is not None and not seen:
+        seen.append(True)
+
+
+# The twenty-fourth batch (2026-11-23: a ``DISTINCT`` over the aggregates of a row's whole partition read as the
+# grouped aggregate) is one more step after that one, driven in the same way: every step before it runs with the
+# batch off, collecting whether one of its rules would have fired, and then the staged proof runs once more with the
+# fifteenth to the twenty-fourth batch on. So a pair an earlier step decides is decided as it was. (Batches 19 and 22
+# changed the counterexample search, batches 21 and 23 the solver's reading; they have no rule.)
+
+TWENTY_FOURTH_BATCH = frozenset({"distinct_window_groups"})
+
+_TWENTY_FOURTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_twenty_fourth_stage", default=None)
+_TWENTY_FOURTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_twenty_fourth_seen", default=None)
+
+
+def twenty_fourth_batch_enabled() -> bool:
+    """Whether the rules of ``TWENTY_FOURTH_BATCH`` may fire in the current attempt: only in the last step of a proof."""
+
+    return _TWENTY_FOURTH_STAGE.get() is True and _ENABLED.get() and not _LATE.get()
+
+
+@contextmanager
+def twenty_fourth_deferred(watch: bool = True):
+    """Run the block with the twenty-fourth batch off, collecting whether a rule of it would have fired.
+
+    With ``watch`` false nothing is collected: the batch is off for the whole proof, and for the proofs inside it.
+    """
+
+    seen: list | None = [] if watch else None
+    stage, watch = _TWENTY_FOURTH_STAGE.set(False), _TWENTY_FOURTH_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _TWENTY_FOURTH_SEEN.reset(watch)
+        _TWENTY_FOURTH_STAGE.reset(stage)
+
+
+@contextmanager
+def twenty_fourth_on():
+    """The last step of all: run the block with the fifteenth to the twentieth and the twenty-fourth batch on."""
+
+    with twentieth_on():
+        stage, watch = _TWENTY_FOURTH_STAGE.set(True), _TWENTY_FOURTH_SEEN.set(None)
+        try:
+            yield
+        finally:
+            _TWENTY_FOURTH_SEEN.reset(watch)
+            _TWENTY_FOURTH_STAGE.reset(stage)
+
+
+def twenty_fourth_watching() -> bool:
+    """Whether an earlier step should try the twenty-fourth batch on a copy here: while no rule of it has said yes yet."""
+
+    seen = _TWENTY_FOURTH_SEEN.get()
+    return _TWENTY_FOURTH_STAGE.get() is False and seen is not None and not seen and _ENABLED.get() and not _LATE.get()
+
+
+def note_twenty_fourth_candidate() -> None:
+    """Record that a rule of the twenty-fourth batch would have fired in an earlier step."""
+
+    seen = _TWENTY_FOURTH_SEEN.get()
     if seen is not None and not seen:
         seen.append(True)
 
