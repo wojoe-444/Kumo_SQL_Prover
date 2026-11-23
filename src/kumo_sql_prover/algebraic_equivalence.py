@@ -5440,6 +5440,17 @@ def normalize(
             if read:
                 shape_fallback.note_fired("child_counts")
         tree = choose_key_groups(tree, schema, keys, not_null)  # pre-pass: grouping by any NOT NULL key of a table is one grouping, so name the first
+        if shape_fallback.rule_enabled("shared_scan_aggregates") and (shape_fallback.twenty_fourth_batch_enabled() or shape_fallback.twenty_fourth_watching()):
+            from .shared_scan_aggregates import read_shared_scans
+
+            # pre-pass (twenty-fourth batch): the aggregates a one-row select asks of one table in a scalar subquery or
+            # a joined one-row table, read in the select's own pass; before the share rules, which read what it writes
+            shared, wrote = read_shared_scans(tree, schema, dialect)
+            if wrote and shape_fallback.twenty_fourth_batch_enabled():
+                tree = shared
+                shape_fallback.note_fired("shared_scan_aggregates")
+            elif wrote:
+                shape_fallback.note_twenty_fourth_candidate()  # an earlier step: the step after the last is worth running
         if shape_fallback.eleventh_batch_enabled():
             tree, eleventh_fired = _eleventh_batch(tree, schema, not_null, types, dialect)
             for name in eleventh_fired:
