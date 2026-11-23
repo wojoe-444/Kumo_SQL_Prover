@@ -146,6 +146,7 @@ from .filter_terms import exists_outer_terms, pinned_columns, shared_filter_term
 from .self_lookup_counts import read_self_lookup_counts, waits_for_lookup
 from .labelled_cases import read_labelled_cases
 from .lookup_conditions import lookup_conditions
+from .grouped_key_counts import grouped_key_counts
 from .quotient_comparisons import quotient_step
 from .group_total_windows import read_group_totals
 from .closed_scalar_outputs import inline_closed_outputs
@@ -5044,6 +5045,18 @@ def _narrow_eighteenth(name: str, rule, select):
     return _narrow(name, rule, select)
 
 
+def _narrow_twentieth(name: str, rule, select):
+    """A narrow-retry rule of the twentieth hardest-cases batch: it fires only in the last step of a proof
+    (``shape_fallback.twentieth_batch_enabled``). In the steps before, it is tried where it would fire and its result
+    thrown away (the rule copies the select it is given), which tells the prover that the last step is worth running."""
+
+    if not shape_fallback.twentieth_batch_enabled():
+        if shape_fallback.twentieth_watching() and shape_fallback.rule_enabled(name) and rule(select) is not None:
+            shape_fallback.note_twentieth_candidate()
+        return None
+    return _narrow(name, rule, select)
+
+
 def _waits_for_seventeenth(select, schema, keys, not_null, types_map, dialect) -> bool:
     """In the last step only: the found rows of a lookup ``self_lookup_counts`` reads keep their spelling until it has
     read the join. Leaving a select alone is always sound."""
@@ -5256,6 +5269,27 @@ def normalize(
                 shape_fallback.note_fired(name)
             elif wrote:
                 shape_fallback.note_eighteenth_candidate()  # an earlier step: the step after the last is worth running
+    if any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTIETH_BATCH) and (
+        shape_fallback.twentieth_batch_enabled() or shape_fallback.twentieth_watching()
+    ):
+        from .mirrored_self_joins import read_mirrored_self_joins
+        from .unmatched_row_counts import read_unmatched_row_counts
+
+        # pre-passes (twentieth batch): the condition of a self join whose two rows may change places read both ways
+        # round, and rows without a match counted with a flag over a left join written as a count over the rows the
+        # join pads
+        for name, rule in (
+            ("mirrored_self_joins", lambda node: read_mirrored_self_joins(node, schema, types)),
+            ("unmatched_row_counts", lambda node: read_unmatched_row_counts(node, schema, not_null, types, dialect)),
+        ):
+            if not shape_fallback.rule_enabled(name):
+                continue
+            read, wrote = rule(tree)
+            if wrote and shape_fallback.twentieth_batch_enabled():
+                tree = read
+                shape_fallback.note_fired(name)
+            elif wrote:
+                shape_fallback.note_twentieth_candidate()  # an earlier step: the step after the last is worth running
     if any(shape_fallback.rule_enabled(name) for name in shape_fallback.THIRTEENTH_BATCH) and (
         shape_fallback.thirteenth_batch_enabled() or shape_fallback.thirteenth_watching()
     ):
@@ -5602,6 +5636,7 @@ def normalize(
         lambda sel: _narrow_eighteenth("shared_filter_terms", shared_filter_terms, sel),
         lambda sel: _narrow_eighteenth("exists_outer_terms", exists_outer_terms, sel),
         lambda sel: _narrow_eighteenth("pinned_columns", lambda s: pinned_columns(s, types_map), sel),
+        lambda sel: _narrow_twentieth("grouped_key_counts", lambda s: grouped_key_counts(s, keys, not_null, types_map), sel),
         lambda sel: _narrow_sixteenth("labelled_cases", read_labelled_cases, sel),
         lambda sel: _narrow_sixteenth("quotient_comparisons", lambda s: quotient_step(s, types_map, dialect), sel),
         lambda sel: close_strict_bounds(sel, types_map, dialect),
@@ -5803,8 +5838,24 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     if not shape_fallback.last_steps_worth_trying(left_sql, right_sql):
         # Each last step is another whole attempt, and a long pair that stays unproved would pay for every one of
         # them: over the size limit the proof is the one before the steps, for this pair and the proofs inside it.
-        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False), shape_fallback.seventeenth_deferred(watch=False), shape_fallback.eighteenth_deferred(watch=False):
+        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False), shape_fallback.seventeenth_deferred(watch=False), shape_fallback.eighteenth_deferred(watch=False), shape_fallback.twentieth_deferred(watch=False):
             return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
+    with shape_fallback.twentieth_deferred() as twentieth_seen:
+        result, pair, assumed = _prove_with_eighteenth_step(left_sql, right_sql, **kwargs)
+    if result.status is SmtStatus.NOT_PROVEN and twentieth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTIETH_BATCH):
+        # One more step (hardest-cases batch 20): the rule of the twentieth batch would have fired. The staged proof
+        # once more with every last batch on, on the last pair tried before. Only a proof is taken.
+        with shape_fallback.twentieth_on():
+            later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
+        if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
+    return result
+
+
+def _prove_with_eighteenth_step(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:
+    """The proof up to and including the step of batch 18, the last pair it tried, and the assumptions of the steps
+    before a later one."""
+
     with shape_fallback.eighteenth_deferred() as eighteenth_seen:
         result, pair, assumed = _prove_with_seventeenth_step(left_sql, right_sql, **kwargs)
     if result.status is SmtStatus.NOT_PROVEN and eighteenth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.EIGHTEENTH_BATCH):
@@ -5813,8 +5864,8 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
         with shape_fallback.eighteenth_on():
             later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
         if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
-            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
-    return result
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed)))), pair, assumed
+    return result, pair, assumed
 
 
 def _prove_with_seventeenth_step(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:

@@ -704,7 +704,22 @@
   "tests/test_self_lookup_counts.py::test_pairs_proved_and_the_ones_proved_only_with_the_rule[6]": 5.6,
   "tests/test_self_lookup_counts.py::test_near_misses_stay_unproved[left1-right1]": 2.3,
   "tests/test_seventeenth_step.py::test_the_step_gives_proofs_only": 2.4,
-  "tests/test_seventeenth_step.py::test_a_pair_the_rule_does_not_read_and_a_pair_proved_before_get_no_run_of_the_step": 2.3
+  "tests/test_seventeenth_step.py::test_a_pair_the_rule_does_not_read_and_a_pair_proved_before_get_no_run_of_the_step": 2.3,
+  "tests/test_twentieth_step.py::test_the_proof_needs_what_the_table_declares": 22.7,
+  "tests/test_twentieth_step.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[1]": 12.4,
+  "tests/test_twentieth_step.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[0]": 10.4,
+  "tests/test_unmatched_row_count_proofs.py::test_the_proof_against_not_in_needs_the_compared_column_declared": 8.8,
+  "tests/test_twentieth_step.py::test_a_pair_over_the_size_limit_does_not_get_the_step": 5.7,
+  "tests/test_twentieth_step.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[3]": 4.9,
+  "tests/test_twentieth_step.py::test_pairs_that_differ_stay_unproved": 4.4,
+  "tests/test_twentieth_step.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[2]": 4.1,
+  "tests/test_twentieth_step.py::test_the_step_gives_proofs_only": 3.7,
+  "tests/test_unmatched_row_count_proofs.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[2]": 2.6,
+  "tests/test_unmatched_row_count_proofs.py::test_pairs_that_differ_stay_unproved": 2.3,
+  "tests/test_unmatched_row_count_proofs.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[5]": 2.3,
+  "tests/test_unmatched_row_count_proofs.py::test_a_pair_the_rule_does_not_read_gets_no_run_of_the_step": 2.2,
+  "tests/test_unmatched_row_count_proofs.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[0]": 2.1,
+  "tests/test_twentieth_step.py::test_a_pair_the_rule_does_not_read_and_a_pair_proved_before_get_no_run_of_the_step": 2.1
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,

@@ -46,6 +46,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from kumo_sql_prover import counterexample as cx  # noqa: E402
+from bench_order_only import TEMPORAL_TYPES, compared_only  # noqa: E402
 from bench_sql_repairs import barewords_as_strings, expand_row_predicates, pipes_as_concat, schema_table_names, rebind_correlation_variables, uniquify_star_columns  # noqa: E402
 
 COMMIT = "493cbb81000205e33b0623cfd1c39106fa035fae"
@@ -215,14 +216,28 @@ def declared_consecutive(case: dict, spec: cx.Spec) -> dict[str, tuple]:
     return {table: tuple(columns) for table, columns in out.items()}
 
 
-def declared_checks(case: dict, spec: cx.Spec) -> dict[str, tuple]:
+def declared_checks(case: dict, spec: cx.Spec, pair: tuple[str, str] | None = None) -> dict[str, tuple]:
     """The value checks the case declares over one row of one table, in the grammar of
     ``kumo_sql_prover.value_checks``, by lower-case table name: ``in``, ``between`` and the six comparisons, of a column against a constant of the column's own kind (a number for a
     numeric column, a text for a text column) or against another numeric column of the same table. Everything else
-    (dates, ``imply``, two tables) is left out: a check that is not passed is a fact the prover does not use."""
+    (a date against a constant, ``imply``, two tables) is left out: a check that is not passed is a fact the prover
+    does not use.
+
+    An ordering of two date or time columns of one type (``login < logout``) is passed only with ``pair``, the two
+    queries as the prover gets them, and only when they use the values of that type for nothing but their order
+    (``bench_order_only.compared_only``): the prover states an ordering as one of numbers, which a date is not, and
+    a pair that only compares the dates cannot tell."""
 
     kinds = {(t.name, c.name): c.type.upper().split("(")[0] for t in spec.tables.values() for c in t.columns}
     out: dict[str, list] = {}
+    order_only: dict[str, bool] = {}
+
+    def only_compared(kind: str) -> bool:
+        if pair is None:
+            return False
+        if kind not in order_only:
+            order_only[kind] = compared_only(pair, kinds, kind)
+        return order_only[kind]
 
     def column(node):
         if not (isinstance(node, dict) and set(node) == {"value"}):
@@ -265,6 +280,8 @@ def declared_checks(case: dict, spec: cx.Spec) -> dict[str, tuple]:
             sign = _CHECK_OPERATORS[op]
             if left and right:
                 if left[0] == right[0] and kinds[left] in _NUMBER_TYPES and kinds[right] in _NUMBER_TYPES:
+                    add(left[0], (sign, ("column", left[1].lower()), ("column", right[1].lower())))
+                elif left[0] == right[0] and kinds[left] == kinds[right] and kinds[left] in TEMPORAL_TYPES and sign not in ("=", "<>") and only_compared(kinds[left]):
                     add(left[0], (sign, ("column", left[1].lower()), ("column", right[1].lower())))
             elif left:
                 value = constant(body[1], kinds[left])
@@ -391,7 +408,7 @@ def prove(case: dict, spec: cx.Spec, timeout_ms: int, pair: tuple[str, str] | No
     schema = {n: [c.name.lower() for c in t.columns] for n, t in lower.items()}
     types = {n: {c.name.lower(): c.type for c in t.columns} for n, t in lower.items()}
     left, right = pair or case["pair"]
-    checks = declared_checks(case, spec)
+    checks = declared_checks(case, spec, (left, right))
     consecutive = declared_consecutive(case, spec)
 
     def attempt(with_foreign_keys: bool):

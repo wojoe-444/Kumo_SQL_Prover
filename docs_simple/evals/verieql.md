@@ -34,6 +34,8 @@ Some LeetCode answers in the files lost the quotes around their text values: `TH
 
 Many LeetCode answers use spellings that MySQL accepts and the test database (DuckDB) rejects: grouping by a name given in the select list, a total beside ungrouped columns, `HAVING` used as a plain filter, arithmetic on true-or-false values, and a table spelled `MY_NUMBERS` where the schema says `MYNUMBERS`. Such a pair used to stay unknown because one query could not be run. The search now gives DuckDB a query that means what MySQL means, and each reading was checked against a real MySQL server on generated tables. Where MySQL's meaning depends on something the search cannot see, the query is left alone and the pair stays unknown.
 
+Some schemas say that one date comes before another, such as a login before its logout. The prover is now told this, but only for a pair of queries that does nothing with those dates except compare them. The reason is that the prover treats the fact as one about numbers, and a query that adds a day to a date or reads it as text would see the difference between a date and a number. For a pair that only compares, there is none.
+
 The full guide documents translation, constraint handling, known non-equivalent pairs, commands, and separate proof/executed score rows. [Bounded verification](bounded-verification.md) covers KumoSQL's separate row-limited checker, inspired by the bounded approach used in VeriEQL's research.
 
 On 2026-11-18 the checker learned that in MySQL, SQLite and DuckDB a true-or-false condition is the number 1 or 0. Of the pairs that compare a condition with something, none lost a proof and 39 more are now proved, each double-checked on 1,000 further databases. The 9,022 above is not recounted yet.

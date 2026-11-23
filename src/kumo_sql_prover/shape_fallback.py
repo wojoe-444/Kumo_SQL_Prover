@@ -331,7 +331,7 @@ def tenth_batch_enabled() -> bool:
     )
 
 
-def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool]:
+def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]:
     """Which of the staged batches are on (part of any normalization cache key)."""
 
     return (
@@ -344,6 +344,7 @@ def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool]:
         _SIXTEENTH_STAGE.get() is True,
         _SEVENTEENTH_STAGE.get() is True,
         _EIGHTEENTH_STAGE.get() is True,
+        _TWENTIETH_STAGE.get() is True,
     )
 
 
@@ -916,6 +917,68 @@ def note_eighteenth_candidate() -> None:
     """Record that a rule of the eighteenth batch would have fired in an earlier step."""
 
     seen = _EIGHTEENTH_SEEN.get()
+    if seen is not None and not seen:
+        seen.append(True)
+
+
+# The twentieth batch (2026-11-22: a self join whose two rows may change places, read both ways round; rows without
+# a match counted with a flag over a left join; a distinct count of a key column its groups cannot repeat) is one more step after that one, driven in the same way: every step
+# before it runs with the batch off, collecting whether one of its rules would have fired, and then the staged proof
+# runs once more with the fifteenth to the twentieth batch on. So a pair an earlier step decides is decided as it
+# was. (Batch 19 changed the counterexample search and has no rule.)
+
+TWENTIETH_BATCH = frozenset({"grouped_key_counts", "mirrored_self_joins", "unmatched_row_counts"})
+
+_TWENTIETH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_twentieth_stage", default=None)
+_TWENTIETH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_twentieth_seen", default=None)
+
+
+def twentieth_batch_enabled() -> bool:
+    """Whether the rules of ``TWENTIETH_BATCH`` may fire in the current attempt: only in the last step of a proof."""
+
+    return _TWENTIETH_STAGE.get() is True and _ENABLED.get() and not _LATE.get()
+
+
+@contextmanager
+def twentieth_deferred(watch: bool = True):
+    """Run the block with the twentieth batch off, collecting whether a rule of it would have fired.
+
+    With ``watch`` false nothing is collected: the batch is off for the whole proof, and for the proofs inside it.
+    """
+
+    seen: list | None = [] if watch else None
+    stage, watch = _TWENTIETH_STAGE.set(False), _TWENTIETH_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _TWENTIETH_SEEN.reset(watch)
+        _TWENTIETH_STAGE.reset(stage)
+
+
+@contextmanager
+def twentieth_on():
+    """The last step of all: run the block with the fifteenth to the eighteenth and the twentieth batch on."""
+
+    with eighteenth_on():
+        stage, watch = _TWENTIETH_STAGE.set(True), _TWENTIETH_SEEN.set(None)
+        try:
+            yield
+        finally:
+            _TWENTIETH_SEEN.reset(watch)
+            _TWENTIETH_STAGE.reset(stage)
+
+
+def twentieth_watching() -> bool:
+    """Whether an earlier step should try the twentieth batch on a copy here: while no rule of it has said yes yet."""
+
+    seen = _TWENTIETH_SEEN.get()
+    return _TWENTIETH_STAGE.get() is False and seen is not None and not seen and _ENABLED.get() and not _LATE.get()
+
+
+def note_twentieth_candidate() -> None:
+    """Record that a rule of the twentieth batch would have fired in an earlier step."""
+
+    seen = _TWENTIETH_SEEN.get()
     if seen is not None and not seen:
         seen.append(True)
 

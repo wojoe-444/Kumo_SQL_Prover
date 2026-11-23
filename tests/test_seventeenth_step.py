@@ -27,11 +27,11 @@ def prove(left: str, right: str, dialect: str = "mysql"):
 
 def test_the_batch_names_one_rule_and_has_its_own_entry_in_the_stage_key():
     assert shape_fallback.SEVENTEENTH_BATCH == frozenset({NAME})
-    assert len(shape_fallback.stage_key()) == 9 and shape_fallback.stage_key()[7] is False
+    assert len(shape_fallback.stage_key()) == 10 and shape_fallback.stage_key()[7] is False
     with shape_fallback.seventeenth_deferred():
         assert shape_fallback.stage_key()[7] is False
     with shape_fallback.seventeenth_on():
-        assert shape_fallback.stage_key()[5:] == (True, True, True, False)  # the step runs with the fifteenth and the sixteenth batch on too
+        assert shape_fallback.stage_key()[5:] == (True, True, True, False, False)  # the step runs with the fifteenth and the sixteenth batch on too
     assert shape_fallback.stage_key()[7] is False
 
 

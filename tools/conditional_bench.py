@@ -364,7 +364,7 @@ def decide_verieql(case: dict, declared: bool = True) -> Outcome:
     lower = {t.name.lower(): t for t in spec.tables.values()}
     schema = {n: [c.name.lower() for c in t.columns] for n, t in lower.items()}
     types = {n: {c.name.lower(): c.type for c in t.columns} for n, t in lower.items()}
-    checks = veri.declared_checks(case, spec) if declared else {}
+    checks = veri.declared_checks(case, spec, (left, right)) if declared else {}
     consecutive = veri.declared_consecutive(case, spec) if declared else {}
     constraints = {
         n: TableConstraints(
