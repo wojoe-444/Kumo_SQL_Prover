@@ -121,10 +121,44 @@ class Constants:
     dates: set = field(default_factory=set)
     times: set = field(default_factory=set)
     counts: set = field(default_factory=set)  # n in a ``COUNT(..) > n``-style test: groups of n to n + 2 rows matter
+    scaled: set = field(default_factory=set)  # 300 for ``x / 60 < 5``: where a scaled column crosses a bound
+
+
+_SCALED_LIMIT = 8  # scaled bounds a domain takes
+_FACTOR_LIMIT = 100_000
+
+
+def _factor(node: exp.Expression | None) -> int | None:
+    """The whole number ``node`` spells when a column is scaled by it (2 or more: 1 scales nothing)."""
+
+    while isinstance(node, exp.Paren):
+        node = node.this
+    if isinstance(node, exp.Literal) and not node.is_string and node.this.isdigit() and 2 <= int(node.this) <= _FACTOR_LIMIT:
+        return int(node.this)
+    return None
+
+
+def _factors(tree: exp.Expression) -> set[int]:
+    """The constants a varying value is divided or multiplied by (``duration / 60``, ``60 * minutes``).
+
+    ``duration / 60 >= 5`` changes at ``duration = 300``, a value no literal of the query spells. A database whose
+    durations all stay below 61 puts every row in one bin and cannot tell ``BETWEEN 5 AND 10`` from
+    ``>= 5 AND < 10``."""
+
+    found: set[int] = set()
+    for node in tree.find_all(exp.Div, exp.IntDiv, exp.Mul):
+        sides = [node.expression] if isinstance(node, (exp.Div, exp.IntDiv)) else [node.this, node.expression]
+        for side in sides:
+            other = node.this if side is node.expression else node.expression
+            factor = _factor(side)
+            if factor is not None and _factor(other) is None and other.find(exp.Column) is not None:
+                found.add(factor)
+    return found
 
 
 def constants_of(*queries: str, dialect: str = "mysql") -> Constants:
     found = Constants()
+    factors: set[int] = set()
     for query in queries:
         try:
             tree = sqlglot.parse_one(_dollars(query), read=dialect)
@@ -150,6 +184,9 @@ def constants_of(*queries: str, dialect: str = "mysql") -> Constants:
                     found.ints.add(int(float(text)))
                 except ValueError:
                     pass
+        factors |= _factors(tree)
+    products = {factor * bound for factor in factors for bound in found.ints if bound >= 2}
+    found.scaled = set(sorted(products - found.ints)[:_SCALED_LIMIT])
     return found
 
 
@@ -163,6 +200,8 @@ def _domain(column: Column, constants: Constants, wide: bool = False) -> list:
             base.update({n - 1, n, n + 1})
             if wide and n > 3:
                 base.add(n // 2)  # two halves reach a ``SUM(..) >= n`` threshold exactly
+        for n in sorted(constants.scaled):
+            base.update({n - 1, n, n + 1})
         return sorted(base)
     if kind in ("NUMERIC", "DECIMAL", "FLOAT", "DOUBLE"):
         base = {0, 1, 2, 3, 0.5, 1.5, 0.333, 2.567}
@@ -170,6 +209,8 @@ def _domain(column: Column, constants: Constants, wide: bool = False) -> list:
             base.update({n - 1, n, n + 1})
             if wide and n > 3:
                 base.add(n // 2)
+        for n in sorted(constants.scaled):
+            base.update({n - 1, n, n + 1})
         return sorted(base)
     if kind == "BOOL" or kind == "BOOLEAN":
         return [1, 0] if column.as_number else [True, False]
