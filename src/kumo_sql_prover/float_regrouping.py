@@ -269,6 +269,18 @@ def _output_sums(source: _Source, name: str, reader: _Reader, depth: int) -> boo
     return answer
 
 
+def _columns(table: str, reader: _Reader) -> set[str] | None:
+    """The column names of a base table, or ``None`` when nothing says what they are. The declared order lists
+    every column; the types may name only some (a harness that declares its text and date columns and leaves the
+    numbers untyped), so they say what the table has only when no order is given for it."""
+
+    for name, columns in (reader.order or {}).items():
+        if name.lower() == table:
+            return {str(column).lower() for column in columns}
+    declared = reader.types.get(table)
+    return None if declared is None else set(declared)
+
+
 def _reads_sum(select: exp.Select, column: exp.Column, reader: _Reader, depth: int, outward: bool = True) -> bool:
     """Whether ``column``, read in ``select``, is an output of a derived table or ``WITH`` name that is such a sum.
     A name no source of ``select`` can own is looked up in the selects around it."""
@@ -286,8 +298,8 @@ def _reads_sum(select: exp.Select, column: exp.Column, reader: _Reader, depth: i
                 return True
             owned = True
         elif source.kind == "table":
-            declared = reader.types.get(source.key)
-            owned = owned or declared is None or bool(source.names) or name in declared
+            columns = _columns(source.key, reader)
+            owned = owned or columns is None or bool(source.names) or name in columns
         else:
             answer = _output_sums(source, name, reader, depth)
             if answer:
