@@ -91,8 +91,9 @@ def _values_column(source: exp.Expression, name: str) -> bool | None:
 
 class _Source(NamedTuple):
     """One source of a select. ``kind`` is ``"table"`` (a base table: ``key`` is its name), ``"query"`` (a derived
-    table or ``WITH`` name: ``query`` is what it holds), ``"values"`` or ``"opaque"`` (anything else: a lateral
-    table, a table function, a recursive ``WITH`` name). ``names`` is the column list its alias gives, if any."""
+    table, a ``LATERAL`` one or a ``WITH`` name: ``query`` is what it holds), ``"values"`` or ``"opaque"`` (anything
+    else: a lateral function call, a table function, a recursive ``WITH`` name). ``names`` is the column list its
+    alias gives, if any."""
 
     alias: str
     kind: str
@@ -125,6 +126,17 @@ def _column_list(alias: exp.Expression | None) -> tuple[str, ...]:
     return tuple(identifier.name.lower() for identifier in (alias.columns if isinstance(alias, exp.TableAlias) else []))
 
 
+def _lateral_query(holder: exp.Expression) -> exp.Expression | None:
+    """The query of ``LATERAL (SELECT ..)``; ``None`` for anything else (a lateral function call, ``LATERAL VIEW``)."""
+
+    if not isinstance(holder, exp.Lateral) or holder.args.get("view"):
+        return None
+    inner = holder.this
+    if not isinstance(inner, exp.Subquery) or inner.args.get("alias") or inner.args.get("pivots") or inner.args.get("sample"):
+        return None
+    return inner.this
+
+
 def _sources(select: exp.Select) -> list[_Source]:
     """Every source of ``select``: its ``FROM`` item and the right side of each join."""
 
@@ -138,6 +150,10 @@ def _sources(select: exp.Select) -> list[_Source]:
             found.append(_Source(alias, "values", holder, names=names))
         elif isinstance(holder, exp.Subquery) and not holder.args.get("pivots") and not holder.args.get("sample"):
             found.append(_Source(alias, "query", holder, holder.this, names))
+        elif _lateral_query(holder) is not None:
+            # ``LATERAL (SELECT ..) AS l`` outputs its select items like a derived table; a name it takes from the
+            # sources before it is no source of its own select, so it is looked up in the select around it
+            found.append(_Source(alias, "query", holder, _lateral_query(holder), names))
         elif isinstance(holder, exp.Table) and isinstance(holder.this, exp.Identifier) and not holder.args.get("pivots"):
             cte = None if holder.args.get("db") else _cte(holder.name.lower(), select)
             if cte is None:

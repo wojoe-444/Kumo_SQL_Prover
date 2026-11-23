@@ -21,6 +21,11 @@ is ``False`` without it. Reading the list by name instead called a FLOAT64 colum
 names. A star with ``EXCEPT``, ``REPLACE`` or ``RENAME``, a star beside other items, and a column list on a derived
 table or a ``WITH`` name are ``False``.
 
+``LATERAL (SELECT ..) AS l`` is read as the derived table it is. A source that cannot be read (a lateral function
+call, ``UNNEST``, ``VALUES``) makes an unqualified name ``False``, since it may own it; a name qualified with
+another source is still placed. Calcite's rewrites spell every join as ``.. AS a, LATERAL (SELECT ..) AS b``, and
+without this no column of such a query had a type.
+
 :func:`is_exact` answers the wider question the float regrouping check asks: whether a ``SUM`` adds only values
 that can be added in any grouping without rounding. That is INT64 as above, and with ``decimals`` also a fixed-point
 type (``NUMERIC``, ``DECIMAL``): adding or subtracting two of them is exact, and so is a product when the decimal
@@ -153,6 +158,28 @@ def _sole_star(select: exp.Select) -> bool:
     return len(items) == 1 and type(items[0]) is exp.Star and not any(items[0].args.values())
 
 
+def _lateral_subquery(source: exp.Expression) -> exp.Subquery | None:
+    """The subquery of ``LATERAL (SELECT ..) AS l``: it outputs its select items like a derived table. A name it takes
+    from the sources before it is not placed (its own select has no such source), so the answer is ``False`` there."""
+
+    if not isinstance(source, exp.Lateral) or source.args.get("view"):
+        return None
+    inner = source.this
+    if not isinstance(inner, exp.Subquery) or inner.args.get("alias") or inner.args.get("pivots") or inner.args.get("sample"):
+        return None
+    return inner
+
+
+def _named_apart(source: exp.Expression, qualifier: str) -> bool:
+    """Whether a source that cannot be read has a name of its own that is not ``qualifier``, and names no column
+    ``qualifier`` either (``UNNEST(..) AS v`` is read as ``v.field``)."""
+
+    alias = source.args.get("alias")
+    if not isinstance(alias, exp.TableAlias) or not alias.name:
+        return False
+    return alias.name.lower() != qualifier and all(identifier.name.lower() != qualifier for identifier in alias.columns)
+
+
 def _owners(column: exp.Column, select: exp.Select, ctx: _Context, depth: int) -> list | None:
     """What each source of ``select`` that has a column of this name says about it (a :class:`_Number`, or ``None``
     for a value that is not exact); ``None`` for the whole answer when a source cannot be read."""
@@ -164,7 +191,10 @@ def _owners(column: exp.Column, select: exp.Select, ctx: _Context, depth: int) -
     name, qualifier = column.name.lower(), column.table.lower()
     owners: list = []
     for source in sources:
-        if not isinstance(source, (exp.Table, exp.Subquery)):
+        lateral = _lateral_subquery(source)
+        if not isinstance(source, (exp.Table, exp.Subquery)) and lateral is None:
+            if qualifier and _named_apart(source, qualifier):
+                continue  # the name is qualified with another source: this one cannot own it
             return None
         if qualifier and source.alias_or_name.lower() != qualifier:
             continue
@@ -197,7 +227,7 @@ def _owners(column: exp.Column, select: exp.Select, ctx: _Context, depth: int) -
         else:
             if renamed:
                 return None
-            body = source.this
+            body = source.this if lateral is None else lateral
         outputs = _unwrap(body)
         if isinstance(outputs, exp.Select) and _sole_star(outputs):
             # ``SELECT * FROM ..`` passes every column through under its own name
