@@ -21,7 +21,7 @@ import os
 import random
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import sqlglot
@@ -125,6 +125,8 @@ class Constants:
 
 
 _SCALED_LIMIT = 8  # scaled bounds a domain takes
+_SCALED_TRIALS = 40  # the fewest trials a search gives them
+_SCALED_SEED = 7_000_003
 _FACTOR_LIMIT = 100_000
 
 
@@ -921,6 +923,8 @@ class Searcher:
 
         self.spec = spec
         self.constants = constants_of(left, right, dialect=dialect)
+        # the scaled bounds are drawn in trials of their own (``search``): every other draw is as it was
+        self.scaled, self.constants.scaled = self.constants.scaled, set()
         known = {c.name.lower() for t in spec.tables.values() for c in t.columns}
         tables = {t.name.lower(): {c.name.lower() for c in t.columns} for t in spec.tables.values()}
         kinds = None
@@ -1146,13 +1150,25 @@ class Searcher:
         """``wide`` draws bigger tables with more distinct values (see ``_Generator``)."""
 
         rng = random.Random(seed)
-        generator = _Generator(self.spec, self.constants, rng, wide=wide)
-        used = sorted(self.used)
+        found = self._trials(_Generator(self.spec, self.constants, rng, wide=wide), trials, rng, sorted(self.used))
+        if found is None and targeted and os.environ.get("KUMOSQL_TARGETED", "1") != "0":
+            found = self._search_targeted(rng)
+        if found is None and self.scaled:
+            # ``seconds / 60 >= 5`` changes at 300: a quarter as many trials again, with the values where a scaled
+            # column crosses a bound in the domains. They come last and draw from their own stream, so a pair
+            # the trials above tell apart is told apart by the same database as without them.
+            again = random.Random(seed + _SCALED_SEED)
+            constants = replace(self.constants, scaled=set(self.scaled))
+            found = self._trials(_Generator(self.spec, constants, again, wide=wide), max(_SCALED_TRIALS, trials // 4), again, [])
+        return found
+
+    def _trials(self, generator: "_Generator", trials: int, rng: random.Random, empties: list[str]) -> Counterexample | None:
+        """``trials`` generated databases; the first ones leave each table of ``empties`` empty in turn."""
+
         for trial in range(trials):
             largest = max(self.constants.ints, default=0)
             max_rows = 2 if trial < trials // 3 else 3 if trial < 2 * trials // 3 else 5 if trial < 5 * trials // 6 else max(5, min(8, largest + 1))
-            # the first trials leave each referenced table empty in turn
-            empty = used[trial] if trial < len(used) else None
+            empty = empties[trial] if trial < len(empties) else None
             data = generator.database(self.used, max_rows, empty)
             if data is None:
                 continue
@@ -1170,7 +1186,7 @@ class Searcher:
                 self._agreed.add(key)
             elif self._stable(data, a, b, rng):
                 return Counterexample({n: data[n] for n in self.used}, a, b)
-        return self._search_targeted(rng) if targeted and os.environ.get("KUMOSQL_TARGETED", "1") != "0" else None
+        return None
 
     def _search_targeted(self, rng) -> Counterexample | None:
         """Databases built around the queries' constants, joins and groups (:mod:`kumo_sql_prover.targeted_data`).

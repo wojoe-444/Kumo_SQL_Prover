@@ -102,3 +102,23 @@ def test_a_bound_left_out_is_found():
 
 def test_the_same_bins_in_seconds_still_agree():
     assert cx.Searcher(SPEC, HALF_OPEN, IN_SECONDS).search(200, seed=1) is None
+
+
+def test_the_scaled_bounds_are_drawn_in_trials_of_their_own():
+    searcher = cx.Searcher(SPEC, HALF_OPEN, CLOSED)
+    assert searcher.scaled == {300, 600, 3600} and searcher.constants.scaled == set()
+    searcher.scaled = set()
+    assert searcher.search(200, seed=1) is None  # without them every call is in the first bin
+
+
+PLAIN_LEFT = "SELECT call, seconds / 60 FROM calls WHERE seconds > 2"
+PLAIN_RIGHT = "SELECT call, seconds / 60 FROM calls WHERE seconds > 3"
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+def test_a_pair_the_other_trials_tell_apart_gets_the_same_database(seed):
+    with_scaled, without = cx.Searcher(SPEC, PLAIN_LEFT, PLAIN_RIGHT), cx.Searcher(SPEC, PLAIN_LEFT, PLAIN_RIGHT)
+    assert with_scaled.scaled
+    without.scaled = set()
+    one, other = with_scaled.search(200, seed=seed), without.search(200, seed=seed)
+    assert one is not None and one.tables == other.tables
