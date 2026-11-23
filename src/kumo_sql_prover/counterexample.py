@@ -27,6 +27,7 @@ from typing import Callable
 import sqlglot
 from sqlglot import exp
 
+from . import mysql_date_numbers
 from .ast_utils import EXCEPT_KEY, FROM_KEY, spell_for_duckdb
 from .duckdb_load import run_unoptimized, small_database
 from .result_equivalence import DataRules
@@ -108,6 +109,8 @@ def _literal(value) -> str:
 # --- domains -----------------------------------------------------------------------------
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+DATE_NUMBERS = "a date read as a number"  # a note of ``to_duckdb``
+_MONTH_END = ("2020-01-31", "2020-02-01")
 _TIME = re.compile(r"^\d{2}:\d{2}(:\d{2})?$")
 
 
@@ -658,14 +661,20 @@ def _fill_empty_select_lists(tree: exp.Expression) -> exp.Expression:
 _PLAIN_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+#: Names DuckDB reads bare and sqlglot's DuckDB reader takes for a keyword (``WITH install AS (..)``). The search parses
+#: its own text again to check arbitrary picks, and a text it could not parse was never called different.
+_KEYWORD_LIKE = frozenset({"INSTALL", "FORCE", "SUMMARIZE", "DESCRIBE", "POSITIONAL", "MAP", "LAMBDA"})
+
+
 def _quote_unusual_names(tree: exp.Expression) -> exp.Expression:
-    """Quote identifiers DuckDB's parser cannot read bare, such as Calcite's ``$f0`` and ``EXPR$0``.
+    """Quote identifiers DuckDB's parser cannot read bare, such as Calcite's ``$f0`` and ``EXPR$0``, and those
+    sqlglot cannot read back (``_KEYWORD_LIKE``).
 
     DuckDB matches quoted identifiers case-insensitively, so quoting changes nothing else.
     """
 
     for identifier in tree.find_all(exp.Identifier):
-        if not identifier.quoted and not _PLAIN_NAME.match(identifier.name):
+        if not identifier.quoted and (not _PLAIN_NAME.match(identifier.name) or identifier.name.upper() in _KEYWORD_LIKE):
             identifier.set("quoted", True)
     return tree
 
@@ -731,13 +740,25 @@ def zoneless_timestamps(tree: exp.Expression) -> exp.Expression:
     return tree
 
 
-def to_duckdb(sql: str, dialect: str = "mysql", known: set[str] | None = None, tables: dict[str, set[str]] | None = None) -> str:
+def to_duckdb(
+    sql: str,
+    dialect: str = "mysql",
+    known: set[str] | None = None,
+    tables: dict[str, set[str]] | None = None,
+    kinds: dict[str, dict[str, str | None]] | None = None,
+    notes: set[str] | None = None,
+) -> str:
+    """``sql`` as DuckDB runs it. ``kinds`` (table to column to ``mysql_date_numbers.column_kind``) turns on MySQL's
+    reading of a date in arithmetic as a number; ``notes`` then gets ``DATE_NUMBERS`` when a date was read so."""
+
     tree = sqlglot.parse_one(_dollars(sql), read=dialect)
     if dialect == "mysql":
         tree = _conditions_as_numbers(zoneless_timestamps(tree))
     if known is not None:
         tree = _barewords(tree, known)
     tree = _fill_empty_select_lists(_calcite_forms(_date_functions(tree)))
+    if dialect == "mysql" and kinds is not None and mysql_date_numbers.read(tree, kinds) and notes is not None:
+        notes.add(DATE_NUMBERS)
     if dialect == "mysql" and known is not None:
         tree = _row_having(tree, known)
     tree = relax_grouping(tree, known, tables)
@@ -847,8 +868,15 @@ class Searcher:
         self.constants = constants_of(left, right, dialect=dialect)
         known = {c.name.lower() for t in spec.tables.values() for c in t.columns}
         tables = {t.name.lower(): {c.name.lower() for c in t.columns} for t in spec.tables.values()}
-        self.left_sql = to_duckdb(left, dialect, known, tables)
-        self.right_sql = to_duckdb(right, dialect, known, tables)
+        kinds = None
+        if dialect == "mysql":
+            kinds = {t.name.lower(): {c.name.lower(): mysql_date_numbers.column_kind(c.type, c.as_number) for c in t.columns} for t in spec.tables.values()}
+        notes: set[str] = set()
+        self.left_sql = to_duckdb(left, dialect, known, tables, kinds, notes)
+        self.right_sql = to_duckdb(right, dialect, known, tables, kinds, notes)
+        if DATE_NUMBERS in notes:
+            # a date read as a number differs from the date moved by days where a month ends
+            self.constants.dates.update(_MONTH_END)
         names = set()
         for sql in (left, right):
             for table in sqlglot.parse_one(_dollars(sql), read=dialect).find_all(exp.Table):
