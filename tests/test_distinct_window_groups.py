@@ -62,9 +62,35 @@ READ = [
         "SELECT DISTINCT * FROM (SELECT town, MAX(years) OVER (PARTITION BY town) AS top, 1 AS one FROM staff ORDER BY town) AS t WHERE top + one < 9",
         "SELECT DISTINCT * FROM (SELECT town, MAX(years) AS top, 1 AS one FROM staff GROUP BY town) AS t WHERE top + one < 9",
     ),
+    # columns of the derived table nobody reads are left out: a star, and outputs that differ inside a partition
+    (
+        "SELECT DISTINCT town FROM (SELECT *, COUNT(years) OVER (PARTITION BY town) AS n FROM staff) AS t WHERE n >= 2",
+        "SELECT DISTINCT town FROM (SELECT town, COUNT(years) AS n FROM staff GROUP BY town) AS t WHERE n >= 2",
+    ),
+    (
+        "SELECT DISTINCT town AS place FROM (SELECT person, years, town, MAX(years) OVER (PARTITION BY town) AS top FROM staff) AS t WHERE top > 3 ORDER BY place",
+        "SELECT DISTINCT town AS place FROM (SELECT town, MAX(years) AS top FROM staff GROUP BY town) AS t WHERE top > 3 ORDER BY place",
+    ),
+    # a test on the row's number in its partition: some row of n passes it exactly when the count does
+    (
+        "WITH numbered AS (SELECT town, ROW_NUMBER() OVER (PARTITION BY town) AS rn FROM staff) SELECT DISTINCT town FROM numbered WHERE rn > 1",
+        "WITH numbered AS (SELECT town, COUNT(*) AS rn FROM staff GROUP BY town) SELECT DISTINCT town FROM numbered WHERE rn > 1",
+    ),
+    (
+        "SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town ORDER BY years DESC) AS rn FROM staff) AS t WHERE t.rn = 2",
+        "SELECT DISTINCT town FROM (SELECT town, COUNT(*) AS rn FROM staff GROUP BY town) AS t WHERE t.rn >= 2",
+    ),
+    (
+        "SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town ORDER BY person) AS rn, SUM(years) OVER (PARTITION BY town) AS total FROM staff) AS t WHERE 2 <= rn OR total > 9",
+        "SELECT DISTINCT town FROM (SELECT town, COUNT(*) AS rn, SUM(years) AS total FROM staff GROUP BY town) AS t WHERE rn >= 2 OR total > 9",
+    ),
+    (
+        "SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town ORDER BY person) AS rn FROM staff) AS t WHERE (rn > 0) AND town IS NOT NULL",
+        None,  # the reader tests the partition column
+    ),
     (
         "SELECT DISTINCT t.n FROM (SELECT person, town, COUNT(*) OVER (PARTITION BY town) AS n FROM staff WHERE years > 2) AS t",
-        None,  # person is shown by the derived table and is no partition expression: refused
+        "SELECT DISTINCT t.n FROM (SELECT COUNT(*) AS n FROM staff WHERE years > 2 GROUP BY town) AS t",  # the columns nobody reads are left out
     ),
 ]
 
@@ -106,6 +132,23 @@ REFUSED = [
         "the WITH query is read twice",
     ),
     ("WITH c (a, n) AS (SELECT town, COUNT(*) OVER (PARTITION BY town) FROM staff) SELECT DISTINCT a FROM c", "a column list on the WITH query"),
+    ("SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town ORDER BY person) AS rn FROM staff) AS t WHERE NOT rn > 1", "under NOT: that no row passes is not what a count says"),
+    ("SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town ORDER BY person) AS rn FROM staff) AS t WHERE rn > 1 AND rn < 3", "two tests on a row are not two tests on the count"),
+    ("SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town ORDER BY person) AS rn FROM staff) AS t WHERE rn < 3", "a test from above is not read"),
+    ("SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town ORDER BY person) AS rn FROM staff) AS t WHERE rn = 0", "no row has the number 0"),
+    ("SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town ORDER BY person) AS rn FROM staff) AS t WHERE rn + 1 > 2", "the number inside a sum is not read"),
+    ("SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town ORDER BY person) AS rn FROM staff) AS t WHERE CASE WHEN rn > 1 THEN FALSE ELSE TRUE END", "inside a CASE"),
+    ("SELECT DISTINCT town, rn FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town ORDER BY person) AS rn FROM staff) AS t WHERE rn > 1", "the number is shown"),
+    ("SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town ORDER BY person) AS rn FROM staff) AS t WHERE rn > 1 ORDER BY rn", "ordered by the number"),
+    ("SELECT DISTINCT town FROM (SELECT town, RANK() OVER (PARTITION BY town ORDER BY years) AS rn FROM staff) AS t WHERE rn > 1", "a rank has ties and gaps"),
+    ("SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (ORDER BY years) AS rn FROM staff) AS t WHERE rn > 1", "numbered over the whole table"),
+    ("SELECT DISTINCT town FROM (SELECT town, ROW_NUMBER() OVER (PARTITION BY town) AS rn, COUNT(*) OVER (PARTITION BY person) AS n FROM staff) AS t WHERE rn > 1 OR n > 1", "two different partitions are read"),
+    ("SELECT DISTINCT town, person FROM (SELECT *, COUNT(*) OVER (PARTITION BY town) AS n FROM staff) AS t WHERE n > 1", "person differs inside a partition"),
+    ("SELECT DISTINCT town FROM (SELECT *, COUNT(*) OVER (PARTITION BY town) AS n FROM staff) AS t WHERE n > 1 OR years > 3", "a row's own value in the test"),
+    ("SELECT DISTINCT * FROM (SELECT *, COUNT(*) OVER (PARTITION BY town) AS n FROM staff) AS t", "every column of every row is shown"),
+    ("SELECT DISTINCT town FROM (SELECT *, COUNT(*) OVER (PARTITION BY town) AS n FROM staff) AS t WHERE n > 1 AND town <> 'bath'", "the reader tests the partition column"),
+    ("SELECT DISTINCT person FROM (SELECT *, COUNT(*) OVER (PARTITION BY e.person) AS n FROM staff AS e JOIN projects AS p ON p.team = e.years) AS t WHERE n > 1", "the star of a join can show a name twice"),
+    ("SELECT DISTINCT town FROM (SELECT DISTINCT ON (town) town, COUNT(*) OVER (PARTITION BY town) AS n FROM staff) AS t WHERE n > 1", "DISTINCT ON inside is not read"),
 ]
 
 
@@ -163,7 +206,8 @@ def _duckdb_rows(sql: str) -> list:
     db = duckdb.connect(":memory:")
     for name, (columns, rows) in TABLES.items():
         db.execute(f"CREATE TABLE {name} ({columns})")
-        db.executemany(f"INSERT INTO {name} VALUES ({', '.join('?' for _ in rows[0])})", rows)
+        if rows:
+            db.executemany(f"INSERT INTO {name} VALUES ({', '.join('?' for _ in rows[0])})", rows)
     return _rounded(db.execute(sql).fetchall())
 
 
@@ -186,10 +230,7 @@ def test_the_engines_return_the_same_rows_for_both_spellings(written, read):
 
 
 @pytest.mark.parametrize("written, read", RUN, ids=[written[:70] for written, _ in RUN])
-def test_an_empty_table_gives_no_row_both_ways(written, read, monkeypatch):
-    monkeypatch.setitem(TABLES, "staff", (TABLES["staff"][0], [(99, None, None)]))
-    monkeypatch.setitem(TABLES, "projects", (TABLES["projects"][0], [(98, 98)]))
-    emptied = written.replace("FROM staff", "FROM staff WHERE person < 0") if "JOIN" not in written else written
-    new = rewrite(emptied)
-    assert new is not None
-    assert _duckdb_rows(emptied) == _duckdb_rows(new) == []
+def test_empty_tables_give_no_row_both_ways(written, read, monkeypatch):
+    for name in TABLES:
+        monkeypatch.setitem(TABLES, name, (TABLES[name][0], []))
+    assert _duckdb_rows(written) == _duckdb_rows(rewrite(written)) == []

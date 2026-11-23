@@ -30,9 +30,17 @@ reads ``SELECT mail, COUNT(*) AS n FROM people GROUP BY mail`` in the place of t
 * A partition with no row does not exist in either spelling, so there is no empty group to get wrong: an empty input
   gives no row both ways (a ``PARTITION BY`` is required, and each of its expressions must read a column, because
   ``GROUP BY 1`` would name an output position).
-* One level up: the rows of a partition are the same row of the derived table, repeated. The reading select may
-  test them with a condition on the window columns, which is the same for every copy, and takes ``DISTINCT`` of
-  what it shows, so one copy per partition gives the same answer.
+* One level up: the reading select shows partition columns and reads window columns, and those are the same for
+  every row of a partition. It may test them with a condition on the window columns and takes ``DISTINCT`` of what
+  it shows, so one row per partition gives the same answer. What the derived table shows besides (a ``*``, a
+  column that differs from row to row) is left out, which the reader cannot notice: it reads none of it.
+* A row's number. ``ROW_NUMBER() OVER (PARTITION BY k ..)`` numbers the n rows of a partition 1 to n, whatever its
+  ``ORDER BY``. The reader keeps a partition when some row of it passes its ``WHERE``. For one test ``rn > c``,
+  ``rn >= c`` or ``rn = c`` on the number (``c`` a whole number, at least 1, or 0 for ``>``), joined to the rest by
+  ``AND`` and ``OR`` only, some number in 1 .. n passes exactly when ``n > c``, ``n >= c``, ``n >= c``: the rest of
+  the condition is the same for every row, and "some row" passes through ``AND`` with such a term and through
+  ``OR``. So the number is read as ``COUNT(*)`` and ``rn = c`` as ``rn >= c``. Under ``NOT`` or with a second test
+  on the number that does not hold, and nothing is rewritten.
 
 **What is refused.** Nothing is rewritten unless all of this holds.
 
@@ -51,7 +59,9 @@ reads ``SELECT mail, COUNT(*) AS n FROM people GROUP BY mail`` in the place of t
   expressions only.
 * One level up: the reading select has ``DISTINCT``, that one source and no join, grouping, aggregate, window,
   subquery or ``LIMIT``; it shows a partition column only as a whole output and reads only window columns
-  elsewhere. A ``WITH`` query is rewritten only when it is read once in the whole statement and has no column list.
+  elsewhere (a row number in its one test, never as an output). A partition column may come through the derived
+  table's ``*`` only when that table has a single source. A ``WITH`` query is rewritten only when it is read once
+  in the whole statement and has no column list.
 
 A pre-pass of the last proof step (``shape_fallback.TWENTY_FOURTH_BATCH``): the rules that follow isolate a
 windowed select in a derived table and keep it whole.
@@ -70,6 +80,8 @@ _REFUSED_CLAUSES = (
     "connect", "kind", "match", "distribute", "sort", "cluster", "prewhere", "exclude", "operation_modifiers",
 )
 _NOT_A_VALUE = (exp.Query, exp.Exists, exp.Star, exp.Placeholder, exp.Parameter)
+_BOUNDS = (exp.GT, exp.GTE, exp.EQ, exp.LT, exp.LTE)
+_MIRRORED = {exp.GT: exp.LT, exp.GTE: exp.LTE, exp.EQ: exp.EQ, exp.LT: exp.GT, exp.LTE: exp.GTE}
 
 
 def _unwrapped(node: exp.Expression) -> exp.Expression:
@@ -92,6 +104,12 @@ def _plain_column(node: exp.Expression) -> bool:
     return isinstance(node, exp.Column) and not isinstance(node.this, exp.Star) and not node.args.get("db") and not node.args.get("catalog")
 
 
+def _loose(select: exp.Select) -> bool:
+    """Whether a bare and a qualified spelling of a column name mean one column in ``select`` (module doc)."""
+
+    return not any(join.args.get("using") or (join.method or "").upper() == "NATURAL" for join in select.args.get("joins") or [])
+
+
 def _is_key(node: exp.Expression, keys: list[exp.Expression], loose: bool) -> bool:
     """Whether ``node`` is one of the partition expressions ``keys`` (module doc: bare and qualified spellings)."""
 
@@ -106,33 +124,40 @@ def _is_key(node: exp.Expression, keys: list[exp.Expression], loose: bool) -> bo
     return False
 
 
-def _own_windows(select: exp.Select, under: list[exp.Expression] | None = None) -> list[exp.Window]:
-    roots = [select] if under is None else under
-    return [window for root in roots for window in root.find_all(exp.Window) if window.find_ancestor(exp.Select) is select]
+def _own_windows(select: exp.Select, under: exp.Expression | None = None) -> list[exp.Window]:
+    return [window for window in (select if under is None else under).find_all(exp.Window) if window.find_ancestor(exp.Select) is select]
 
 
-def _window_keys(window: exp.Window) -> list[exp.Expression] | None:
-    """The partition expressions of a window the rule reads, None for any other window."""
+def _steady(node: exp.Expression) -> bool:
+    """Whether ``node`` is an expression of the row alone that gives the same value each time it is computed."""
 
-    call = window.this
-    if not isinstance(call, _AGGREGATES) or isinstance(call.this, exp.Distinct):
-        return None
-    if window.args.get("order") or window.args.get("spec") or window.args.get("alias") or window.args.get("first"):
+    return node.find(exp.Window, exp.AggFunc, *_NOT_A_VALUE) is None and _same_each_time(node)
+
+
+def _window(window: exp.Window) -> tuple[str, list[exp.Expression]] | None:
+    """``("aggregate", keys)`` for an aggregate of the row's whole partition, ``("number", keys)`` for the row's
+    number within its partition, None for a window the rule does not read. ``keys`` are the partition expressions."""
+
+    if window.args.get("spec") or window.args.get("alias") or window.args.get("first"):
         return None
     if str(window.args.get("over") or "OVER").upper() != "OVER":
         return None
     keys = [_unwrapped(key) for key in window.args.get("partition_by") or []]
-    if not keys:
+    if not keys or any(key.find(exp.Column) is None or not _steady(key) for key in keys):
         return None
-    for key in keys:
-        if key.find(exp.Column) is None or key.find(exp.Window, exp.AggFunc, *_NOT_A_VALUE) is not None or not _same_each_time(key):
+    call, order = window.this, window.args.get("order")
+    if isinstance(call, exp.RowNumber):
+        # the rows of a partition of n rows are numbered 1 to n, in whatever order
+        if order is not None and not all(_steady(ordered.this) for ordered in order.expressions):
             return None
-    for part in call.walk():
-        if part is not call and isinstance(part, (exp.Window, exp.AggFunc, exp.Query, exp.Exists, exp.Placeholder, exp.Parameter)):
-            return None
+        return "number", keys
+    if order is not None or not isinstance(call, _AGGREGATES) or isinstance(call.this, exp.Distinct):
+        return None
+    if any(part is not call and isinstance(part, (exp.Window, exp.AggFunc, exp.Query, exp.Exists, exp.Placeholder, exp.Parameter)) for part in call.walk()):
+        return None
     if not _same_each_time(call):
         return None
-    return keys
+    return "aggregate", keys
 
 
 def _reads_no_row(node: exp.Expression) -> bool:
@@ -145,62 +170,75 @@ def _reads_no_row(node: exp.Expression) -> bool:
     return all(_reads_no_row(child) for child in node.iter_expressions())
 
 
-def _kinds(select: exp.Select) -> tuple[list[exp.Expression], list[str]] | None:
-    """The partition expressions of a select the rule reads and, per output, ``key``, ``window`` or ``constant``."""
+def _value(item: exp.Expression) -> exp.Expression:
+    return _unwrapped(item.this if isinstance(item, exp.Alias) else item)
 
+
+def _is_star(value: exp.Expression) -> bool:
+    return isinstance(value, exp.Star) or isinstance(value, exp.Column) and isinstance(value.this, exp.Star)
+
+
+def _shape(select: exp.Select, item: exp.Expression) -> tuple[str, list[exp.Expression] | None]:
+    """What an output of ``select`` is made of: ``star``; ``window`` (aggregates of the partition and constants) or
+    ``number`` (the row's number in its partition), each with its partition expressions; ``constant``; ``column``
+    (an expression of the row, which may be a partition expression); ``row`` (anything else)."""
+
+    value = _value(item)
+    if _is_star(value):
+        return "star", None
+    windows = _own_windows(select, value)
+    if not windows:
+        if _reads_no_row(value):
+            return ("constant", None) if _same_each_time(value) else ("row", None)
+        return ("column", None) if _steady(value) else ("row", None)
+    read = [_window(window) for window in windows]
+    if any(found is None for found in read):
+        return "row", None
+    keys = read[0][1]
+    if any({_text(key) for key in found[1]} != {_text(key) for key in keys} for found in read):
+        return "row", None
+    if isinstance(value, exp.Window) and read[0][0] == "number":
+        return "number", keys
+    if any(found[0] != "aggregate" for found in read) or not _reads_no_row(value) or not _same_each_time(value):
+        return "row", None
+    return "window", keys
+
+
+def _plain_select(select: exp.Select) -> bool:
     if any(select.args.get(clause) for clause in _REFUSED_CLAUSES) or select.args.get(FROM_KEY) is None:
-        return None
+        return False
     windows = _own_windows(select)
-    if not windows or len(_own_windows(select, list(select.expressions))) != len(windows):
-        return None
+    return bool(windows) and sum(len(_own_windows(select, item)) for item in select.expressions) == len(windows)
+
+
+def _common_keys(select: exp.Select, shapes: list[tuple[str, list[exp.Expression] | None]]) -> list[exp.Expression] | None:
+    """The partition expressions the given outputs share, each once; None when they differ or cannot be grouped by."""
+
     keys: list[exp.Expression] | None = None
-    for window in windows:
-        found = _window_keys(window)
-        if found is None:
-            return None
+    for kind, found in shapes:
+        if kind not in ("window", "number"):
+            continue
         if keys is None:
             keys = found
-        elif {_text(key) for key in keys} != {_text(key) for key in found}:
+        elif {_text(key) for key in keys} != {_text(key) for key in found or []}:
             return None
-    assert keys is not None
-    joins = select.args.get("joins") or []
-    loose = not any(join.args.get("using") or (join.method or "").upper() == "NATURAL" for join in joins)
+    if keys is None:
+        return None
     aliases = {
         item.alias.lower() for item in select.expressions
         if isinstance(item, exp.Alias) and not (isinstance(item.this, exp.Column) and item.this.name.lower() == item.alias.lower())
     }
     if any(not column.table and column.name.lower() in aliases for key in keys for column in key.find_all(exp.Column)):
         return None
-    kinds = []
-    for item in select.expressions:
-        value = _unwrapped(item.this if isinstance(item, exp.Alias) else item)
-        if isinstance(value, exp.Star) or isinstance(value, exp.Column) and isinstance(value.this, exp.Star):
-            return None
-        if _is_key(value, keys, loose):
-            kinds.append("key")
-        elif _reads_no_row(value) and _same_each_time(value):
-            kinds.append("window" if value.find(exp.Window) is not None else "constant")
-        else:
-            return None
     unique: list[exp.Expression] = []
     for key in keys:
         if _text(key) not in {_text(other) for other in unique}:
             unique.append(key)
-    return unique, kinds
+    return unique
 
 
-def _grouped(select: exp.Select, keys: list[exp.Expression], kinds: list[str]) -> exp.Select:
-    """A copy of ``select`` with each window read as the aggregate of its group."""
-
-    loose = not any(join.args.get("using") or (join.method or "").upper() == "NATURAL" for join in select.args.get("joins") or [])
-    shown = [_unwrapped(item.this if isinstance(item, exp.Alias) else item) for item, kind in zip(select.expressions, kinds) if kind == "key"]
-    new = select.copy()
-    for window in _own_windows(new):
-        window.replace(window.this.copy())
-    new.set("group", exp.Group(expressions=[key.copy() for key in keys]))
-    if all(_is_key(key, shown, loose) for key in keys):
-        new.set("distinct", None)  # one row per group, and the groups differ in what they show
-    return new
+def _ungrouped_window(window: exp.Window) -> exp.Expression:
+    return exp.Count(this=exp.Star()) if isinstance(window.this, exp.RowNumber) else window.this.copy()
 
 
 def _ordered_by_outputs(select: exp.Select, keys: list[exp.Expression]) -> bool:
@@ -208,7 +246,7 @@ def _ordered_by_outputs(select: exp.Select, keys: list[exp.Expression]) -> bool:
     if order is None:
         return True
     names = {item.alias_or_name.lower() for item in select.expressions if item.alias_or_name}
-    loose = not any(join.args.get("using") or (join.method or "").upper() == "NATURAL" for join in select.args.get("joins") or [])
+    loose = _loose(select)
     for ordered in order.expressions:
         value = _unwrapped(ordered.this)
         if isinstance(value, exp.Literal) and not value.is_string:
@@ -225,15 +263,32 @@ def distinct_window_groups(select: exp.Select) -> exp.Select | None:
     """The direct form (module doc): ``select`` as a grouped select, or None."""
 
     distinct = select.args.get("distinct")
-    if distinct is None or distinct.args.get("on") is not None:
+    if distinct is None or distinct.args.get("on") is not None or not _plain_select(select):
         return None
-    read = _kinds(select)
-    if read is None:
+    shapes = [_shape(select, item) for item in select.expressions]
+    if any(kind not in ("window", "constant", "column") for kind, _ in shapes):
         return None
-    keys, kinds = read
-    if not _ordered_by_outputs(select, keys):
+    keys = _common_keys(select, shapes)
+    if keys is None:
         return None
-    return _grouped(select, keys, kinds)
+    loose = _loose(select)
+    shown = [_value(item) for item, (kind, _) in zip(select.expressions, shapes) if kind == "column"]
+    if not all(_is_key(value, keys, loose) for value in shown) or not _ordered_by_outputs(select, keys):
+        return None
+    new = select.copy()
+    for window in _own_windows(new):
+        window.replace(_ungrouped_window(window))
+    new.set("group", exp.Group(expressions=[key.copy() for key in keys]))
+    if all(_is_key(key, shown, loose) for key in keys):
+        new.set("distinct", None)  # one row per group, and the groups differ in what they show
+    return new
+
+
+def _ancestors(node: exp.Expression):
+    node = node.parent
+    while node is not None:
+        yield node
+        node = node.parent
 
 
 def _definition(reader: exp.Select, root: exp.Expression) -> tuple[exp.Select, str] | None:
@@ -271,15 +326,35 @@ def _definition(reader: exp.Select, root: exp.Expression) -> tuple[exp.Select, s
     return None
 
 
-def _ancestors(node: exp.Expression):
-    node = node.parent
-    while node is not None:
-        yield node
-        node = node.parent
+def _whole_number(node: exp.Expression) -> int | None:
+    node = _unwrapped(node)
+    return int(node.this) if isinstance(node, exp.Literal) and not node.is_string and node.this.isdigit() else None
+
+
+def _count_test(test: exp.Expression, column: exp.Column) -> exp.Expression | None:
+    """``test`` on a row number of the partition, as the test on the partition's row count that says some row of
+    the partition passes it: ``n > c``, ``n >= c`` and ``n = c`` for a whole number ``c`` of at least 1 (and at
+    least 0 for ``>``) hold for some ``n`` in 1 .. count exactly when ``count > c``, ``count >= c``, ``count >= c``."""
+
+    if type(test) not in _BOUNDS:
+        return None
+    left, right = _unwrapped(test.this), _unwrapped(test.expression)
+    kind = type(test)
+    if right is column:
+        left, right, kind = right, left, _MIRRORED[kind]
+    if left is not column:
+        return None
+    bound = _whole_number(right)
+    if bound is None or kind in (exp.LT, exp.LTE) or (bound < 1 and kind is not exp.GT):
+        return None
+    return (exp.GT if kind is exp.GT else exp.GTE)(this=column.copy(), expression=exp.Literal.number(bound))
 
 
 def windowed_source_groups(reader: exp.Select, root: exp.Expression) -> tuple[exp.Select, exp.Select] | None:
-    """One level up (module doc): the select behind ``reader``'s source and what to put in its place, or None."""
+    """One level up (module doc): the select behind ``reader``'s source and what to put in its place, or None.
+
+    A test of the reader on a row number is rewritten in place (in ``reader``, which must be the caller's own copy)
+    when something is returned, and only then."""
 
     distinct = reader.args.get("distinct")
     if distinct is None or distinct.args.get("on") is not None:
@@ -290,45 +365,123 @@ def windowed_source_groups(reader: exp.Select, root: exp.Expression) -> tuple[ex
     if found is None:
         return None
     inner, known_as = found
-    if any(inner.args.get(clause) for clause in ("with_", "with")):
+    if any(inner.args.get(clause) for clause in ("with_", "with")) or not _plain_select(inner):
         return None
-    read = _kinds(inner)
-    if read is None:
+    if inner.args.get("distinct") is not None and inner.args["distinct"].args.get("on") is not None:
         return None
-    keys, kinds = read
-    outputs: dict[str, str] = {}
-    for item, kind in zip(inner.expressions, kinds):
-        name = item.alias_or_name.lower() if (isinstance(item, exp.Alias) or isinstance(item, exp.Column)) else ""
-        if not name or name in outputs:
-            return None
-        outputs[name] = kind
-    whole = set()
-    for item in reader.expressions:
-        value = _unwrapped(item.this if isinstance(item, exp.Alias) else item)
-        if isinstance(value, exp.Star):
-            if value.args.get("except_") or value.args.get("except") or value.args.get("replace") or value.args.get("rename"):
+    shapes = [_shape(inner, item) for item in inner.expressions]
+    outputs: dict[str, int] = {}
+    for position, (item, (kind, _)) in enumerate(zip(inner.expressions, shapes)):
+        if kind == "star":
+            if not isinstance(_value(item), exp.Star) or item.args.get("except_") or item.args.get("except") or item.args.get("replace") or item.args.get("rename"):
                 return None
             continue
+        name = item.alias_or_name.lower() if isinstance(item, (exp.Alias, exp.Column)) else ""
+        if name in outputs:
+            return None
+        if name:
+            outputs[name] = position
+    starred = any(kind == "star" for kind, _ in shapes)
+    # what the reader reads, and where
+    mine = {item.alias.lower() for item in reader.expressions if isinstance(item, exp.Alias)}
+    whole, everything = set(), False
+    for item in reader.expressions:
+        value = _value(item)
+        if _is_star(value):
+            if not isinstance(value, exp.Star) or value.args.get("except_") or value.args.get("except") or value.args.get("replace") or value.args.get("rename"):
+                return None
+            everything = True
+            continue
         whole.add(id(value))
-    order = reader.args.get("order")
-    for ordered in (order.expressions if order is not None else []):
-        whole.add(id(_unwrapped(ordered.this)))
-    parts = list(reader.expressions) + [clause for clause in (reader.args.get("where"), order) if clause is not None]
-    for part in parts:
+    where, order = reader.args.get("where"), reader.args.get("order")
+    reads: list[tuple[exp.Column, str]] = []
+    for part, place in [(item, "item") for item in reader.expressions] + [(where, "where")] + [(ordered, "order") for ordered in (order.expressions if order is not None else [])]:
+        if part is None:
+            continue
         if not _same_each_time(part):
             return None
         for node in part.walk():
             if isinstance(node, (exp.Window, exp.AggFunc, exp.Query, exp.Exists, exp.Placeholder, exp.Parameter)):
                 return None
-            if not isinstance(node, exp.Column):
+            if not isinstance(node, exp.Column) or isinstance(node.this, exp.Star):
                 continue
-            if isinstance(node.this, exp.Star) or node.args.get("db") or (node.table and node.table.lower() != known_as):
+            if node.args.get("db") or (node.table and node.table.lower() != known_as):
                 return None
-            kind = outputs.get(node.name.lower())
-            if kind is None or (kind == "key" and id(node) not in whole):
+            if place == "order":
+                if node is not _unwrapped(part.this):
+                    return None
+                if not node.table and node.name.lower() in mine:
+                    continue  # the reader's own output
+            reads.append((node, place))
+    read_positions = {outputs[node.name.lower()] for node, _ in reads if node.name.lower() in outputs}
+    if everything:
+        if starred:
+            return None
+        read_positions = set(range(len(shapes)))
+    if any(shapes[position][0] == "row" for position in read_positions):
+        return None
+    keys = _common_keys(inner, [shapes[position] for position in sorted(read_positions)])
+    if keys is None:
+        return None
+    loose = _loose(inner)
+    if any(shapes[position][0] == "column" and not _is_key(_value(inner.expressions[position]), keys, loose) for position in read_positions):
+        return None
+    numbers = {position for position in read_positions if shapes[position][0] == "number"}
+    through_star: list[exp.Expression] = []
+    number_reads = []
+    for node, place in reads:
+        name = node.name.lower()
+        if name not in outputs:
+            # a column the star shows: read only when it is a partition column, and as a whole output
+            key = next((key for key in keys if _plain_column(key) and key.name.lower() == name), None)
+            # (of the one source: two joined sources could both have a column of that name)
+            if not starred or key is None or inner.args.get("joins") or (place == "item" and id(node) not in whole) or place == "where":
                 return None
-    new = _grouped(inner, keys, kinds)
+            if _text(key) not in {_text(other) for other in through_star}:
+                through_star.append(key)
+            continue
+        kind = shapes[outputs[name]][0]
+        if kind == "column" and place == "item" and id(node) not in whole:
+            return None
+        if kind == "column" and place == "where":
+            return None
+        if kind == "number":
+            number_reads.append((node, place))
+    test, counted = None, None
+    if numbers:
+        if everything or len(number_reads) != 1 or number_reads[0][1] != "where":
+            return None
+        column = number_reads[0][0]
+        test = column.parent
+        while isinstance(test, exp.Paren):
+            test = test.parent
+        above = test.parent
+        while above is not None and not isinstance(above, exp.Where):
+            if not isinstance(above, (exp.And, exp.Or, exp.Paren)):
+                return None  # under a NOT or a CASE "some row passes" is not what is asked
+            above = above.parent
+        counted = _count_test(test, column)
+        if counted is None:
+            return None
+    new = inner.copy()
+    items = []
+    for position, (item, (kind, _)) in enumerate(zip(new.expressions, shapes)):
+        if kind == "star":
+            items.extend(exp.column(key.name, quoted=bool(key.this.args.get("quoted"))) if not key.table else key.copy() for key in through_star)
+        elif position in read_positions:
+            for window in _own_windows(new, item):
+                if window is item:
+                    return None  # a window without a name cannot be read
+                window.replace(_ungrouped_window(window))
+            items.append(item)
+    if not items:
+        return None
+    new.set("expressions", items)
+    new.set("distinct", None)  # one row for each partition: the reader takes DISTINCT of what it shows
     new.set("order", None)  # the order of a derived table's rows is not part of its value
+    new.set("group", exp.Group(expressions=[key.copy() for key in keys]))
+    if test is not None:
+        test.replace(counted)  # in the reader, which the caller owns
     return inner, new
 
 
@@ -344,17 +497,18 @@ def read_distinct_window_groups(tree: exp.Expression) -> tuple[exp.Expression, b
         for select in new.find_all(exp.Select):
             read = distinct_window_groups(select)
             if read is not None:
-                target = select
+                swaps = [(select, read)]
             else:
                 above = windowed_source_groups(select, new)
                 if above is None:
                     continue
-                target, read = above
+                swaps = [above]
             wrote = True
-            if target is new:
-                new = read
-            else:
-                target.replace(read)
+            for old, fresh in swaps:
+                if old is new:
+                    new = fresh
+                else:
+                    old.replace(fresh)
             break
         else:
             break
