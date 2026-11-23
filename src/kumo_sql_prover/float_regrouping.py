@@ -251,7 +251,8 @@ def _output_sums(source: _Source, name: str, reader: _Reader, depth: int) -> boo
             positions = [index for index, item in enumerate(first.expressions) if index >= hidden and not _label(item) and not _is_star(item)]
     stars = [item for branch in branches for item in branch.expressions if _is_star(item)]
     if stars and (len(branches) > 1 or source.names):
-        return True  # positions are not known past a star
+        # positions are not known past a star: the column is such a sum unless no output of any branch is one
+        return any(_any_output_sums(branch, reader, depth) for branch in branches)
     answer = None
     for position in positions:
         for branch in branches:
@@ -267,6 +268,41 @@ def _output_sums(source: _Source, name: str, reader: _Reader, depth: int) -> boo
             return True
         answer = False  # a star may pass the column through
     return answer
+
+
+def _any_output_sums(select: exp.Select, reader: _Reader, depth: int) -> bool:
+    """Whether some output of ``select`` is, holds or reads a SUM or AVG that may add FLOAT64 values: asked where a
+    position cannot be matched to one item (``SELECT * FROM t UNION ALL SELECT * FROM t`` gives no such sum at any
+    position, whatever the columns of ``t`` are). A star is followed into the sources it expands: a base table has
+    no sums, a derived table or ``WITH`` name is asked the same question, and anything else counts as a sum."""
+
+    if depth <= 0:
+        return True
+    for item in select.expressions:
+        if not _is_star(item):
+            if _item_sums(select, _unaliased(item), reader, depth):
+                return True
+            continue
+        inner = item.this if isinstance(item, exp.Column) else item
+        if any(inner.args.values()):
+            return True  # EXCEPT, REPLACE or RENAME
+        qualifier = item.table.lower() if isinstance(item, exp.Column) else ""
+        sources = [source for source in _sources(select) if not qualifier or source.alias == qualifier]
+        if not sources:
+            return True  # a star over nothing the check can see
+        for source in sources:
+            if source.kind == "table":
+                continue
+            if source.kind == "values":
+                if source.holder.find(exp.Sum, exp.Avg) is not None:
+                    return True
+                continue
+            if source.kind == "opaque":
+                return True
+            branches = _branches(source.query)
+            if branches is None or any(_any_output_sums(branch, reader, depth - 1) for branch in branches):
+                return True
+    return False
 
 
 def _columns(table: str, reader: _Reader) -> set[str] | None:
