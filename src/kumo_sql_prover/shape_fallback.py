@@ -331,7 +331,7 @@ def tenth_batch_enabled() -> bool:
     )
 
 
-def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool]:
+def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool]:
     """Which of the staged batches are on (part of any normalization cache key)."""
 
     return (
@@ -343,6 +343,7 @@ def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool]:
         _FIFTEENTH_STAGE.get() is True,
         _SIXTEENTH_STAGE.get() is True,
         _SEVENTEENTH_STAGE.get() is True,
+        _EIGHTEENTH_STAGE.get() is True,
     )
 
 
@@ -854,6 +855,67 @@ def note_seventeenth_candidate() -> None:
     """Record that a rule of the seventeenth batch would have fired in an earlier step."""
 
     seen = _SEVENTEENTH_SEEN.get()
+    if seen is not None and not seen:
+        seen.append(True)
+
+
+# The eighteenth batch (2026-11-22: a neighbouring row read with LAG or LEAD over a consecutive column, and windows
+# whose partitions hold one row) is one more step after that one, driven in the same way: every step before it runs
+# with the batch off, collecting whether one of its rules would have fired, and then the staged proof runs once more
+# with the fifteenth to the eighteenth batch on. So a pair an earlier step decides is decided as it was.
+
+EIGHTEENTH_BATCH = frozenset({"neighbour_rows", "single_row_partitions", "shared_filter_terms", "exists_outer_terms", "pinned_columns", "lookup_joins", "lookup_conditions"})
+
+_EIGHTEENTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_eighteenth_stage", default=None)
+_EIGHTEENTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_eighteenth_seen", default=None)
+
+
+def eighteenth_batch_enabled() -> bool:
+    """Whether the rules of ``EIGHTEENTH_BATCH`` may fire in the current attempt: only in the last step of a proof."""
+
+    return _EIGHTEENTH_STAGE.get() is True and _ENABLED.get() and not _LATE.get()
+
+
+@contextmanager
+def eighteenth_deferred(watch: bool = True):
+    """Run the block with the eighteenth batch off, collecting whether a rule of it would have fired.
+
+    With ``watch`` false nothing is collected: the batch is off for the whole proof, and for the proofs inside it.
+    """
+
+    seen: list | None = [] if watch else None
+    stage, watch = _EIGHTEENTH_STAGE.set(False), _EIGHTEENTH_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _EIGHTEENTH_SEEN.reset(watch)
+        _EIGHTEENTH_STAGE.reset(stage)
+
+
+@contextmanager
+def eighteenth_on():
+    """The last step of all: run the block with the fifteenth, sixteenth, seventeenth and eighteenth batch on."""
+
+    with seventeenth_on():
+        stage, watch = _EIGHTEENTH_STAGE.set(True), _EIGHTEENTH_SEEN.set(None)
+        try:
+            yield
+        finally:
+            _EIGHTEENTH_SEEN.reset(watch)
+            _EIGHTEENTH_STAGE.reset(stage)
+
+
+def eighteenth_watching() -> bool:
+    """Whether an earlier step should try the eighteenth batch on a copy here: while no rule of it has said yes yet."""
+
+    seen = _EIGHTEENTH_SEEN.get()
+    return _EIGHTEENTH_STAGE.get() is False and seen is not None and not seen and _ENABLED.get() and not _LATE.get()
+
+
+def note_eighteenth_candidate() -> None:
+    """Record that a rule of the eighteenth batch would have fired in an earlier step."""
+
+    seen = _EIGHTEENTH_SEEN.get()
     if seen is not None and not seen:
         seen.append(True)
 

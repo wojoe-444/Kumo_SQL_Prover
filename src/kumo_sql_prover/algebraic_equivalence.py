@@ -142,8 +142,10 @@ from .substring_casts import drop_substring_casts
 from .cased_group_sums import unnest_cased_sums
 from .counted_outer_groups import count_outer_groups
 from .discrete_bounds import close_strict_bounds, fold_chained_dates
+from .filter_terms import exists_outer_terms, pinned_columns, shared_filter_terms
 from .self_lookup_counts import read_self_lookup_counts, waits_for_lookup
 from .labelled_cases import read_labelled_cases
+from .lookup_conditions import lookup_conditions
 from .quotient_comparisons import quotient_step
 from .group_total_windows import read_group_totals
 from .closed_scalar_outputs import inline_closed_outputs
@@ -5030,6 +5032,18 @@ def _narrow_sixteenth(name: str, rule, select):
     return _narrow(name, rule, select)
 
 
+def _narrow_eighteenth(name: str, rule, select):
+    """A narrow-retry rule of the eighteenth hardest-cases batch: it fires only in the last step of a proof
+    (``shape_fallback.eighteenth_batch_enabled``). In the steps before, it is tried where it would fire and its result
+    thrown away (the rule copies the select it is given), which tells the prover that the last step is worth running."""
+
+    if not shape_fallback.eighteenth_batch_enabled():
+        if shape_fallback.eighteenth_watching() and shape_fallback.rule_enabled(name) and rule(select) is not None:
+            shape_fallback.note_eighteenth_candidate()
+        return None
+    return _narrow(name, rule, select)
+
+
 def _waits_for_seventeenth(select, schema, keys, not_null, types_map, dialect) -> bool:
     """In the last step only: the found rows of a lookup ``self_lookup_counts`` reads keep their spelling until it has
     read the join. Leaving a select alone is always sound."""
@@ -5152,6 +5166,7 @@ def normalize(
     group_by_constants: bool = False,
     keyed_distinct: int = 0,
     foreign_keys: dict[str, list[tuple]] | None = None,
+    consecutive: dict[str, frozenset[str]] | None = None,
     _assumptions: set[str] | None = None,
 ) -> str:
     """Rewrite ``sql`` with the bag-semantics identities above (``dialect`` in and out).
@@ -5218,6 +5233,29 @@ def normalize(
             shape_fallback.note_fired("constant_bins")
         elif wrote:
             shape_fallback.note_sixteenth_candidate()  # an earlier step: the step after the last is worth running
+    if any(shape_fallback.rule_enabled(name) for name in shape_fallback.EIGHTEENTH_BATCH) and (
+        shape_fallback.eighteenth_batch_enabled() or shape_fallback.eighteenth_watching()
+    ):
+        from .lookup_joins import read_lookup_joins
+        from .neighbour_rows import read_neighbour_rows
+        from .single_row_partitions import read_single_row_partitions
+
+        # pre-passes (eighteenth batch): a window whose partitions hold one row as its value on that row, a
+        # neighbour read with LAG or LEAD over a consecutive column as a keyed lookup, and a left join that looks
+        # up one row by its key for the filter alone as scalar lookups
+        for name, rule in (
+            ("single_row_partitions", lambda node: read_single_row_partitions(node, schema, keys, not_null)),
+            ("neighbour_rows", lambda node: read_neighbour_rows(node, schema, consecutive)),
+            ("lookup_joins", lambda node: read_lookup_joins(node, keys, not_null, types)),
+        ):
+            if not shape_fallback.rule_enabled(name):
+                continue
+            read, wrote = rule(tree)
+            if wrote and shape_fallback.eighteenth_batch_enabled():
+                tree = read
+                shape_fallback.note_fired(name)
+            elif wrote:
+                shape_fallback.note_eighteenth_candidate()  # an earlier step: the step after the last is worth running
     if any(shape_fallback.rule_enabled(name) for name in shape_fallback.THIRTEENTH_BATCH) and (
         shape_fallback.thirteenth_batch_enabled() or shape_fallback.thirteenth_watching()
     ):
@@ -5560,6 +5598,10 @@ def normalize(
         lift_scalar_arithmetic,
         lambda sel: drop_substring_casts(sel, types_map),
         lambda sel: _narrow_seventeenth("self_lookup_counts", lambda s: read_self_lookup_counts(s, schema, keys, not_null, types_map, dialect), sel),
+        lambda sel: _narrow_eighteenth("lookup_conditions", lambda s: lookup_conditions(s, keys, not_null, dialect), sel),
+        lambda sel: _narrow_eighteenth("shared_filter_terms", shared_filter_terms, sel),
+        lambda sel: _narrow_eighteenth("exists_outer_terms", exists_outer_terms, sel),
+        lambda sel: _narrow_eighteenth("pinned_columns", lambda s: pinned_columns(s, types_map), sel),
         lambda sel: _narrow_sixteenth("labelled_cases", read_labelled_cases, sel),
         lambda sel: _narrow_sixteenth("quotient_comparisons", lambda s: quotient_step(s, types_map, dialect), sel),
         lambda sel: close_strict_bounds(sel, types_map, dialect),
@@ -5761,8 +5803,24 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     if not shape_fallback.last_steps_worth_trying(left_sql, right_sql):
         # Each last step is another whole attempt, and a long pair that stays unproved would pay for every one of
         # them: over the size limit the proof is the one before the steps, for this pair and the proofs inside it.
-        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False), shape_fallback.seventeenth_deferred(watch=False):
+        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False), shape_fallback.seventeenth_deferred(watch=False), shape_fallback.eighteenth_deferred(watch=False):
             return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
+    with shape_fallback.eighteenth_deferred() as eighteenth_seen:
+        result, pair, assumed = _prove_with_seventeenth_step(left_sql, right_sql, **kwargs)
+    if result.status is SmtStatus.NOT_PROVEN and eighteenth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.EIGHTEENTH_BATCH):
+        # One more step (hardest-cases batch 18): a rule of the eighteenth batch would have fired. The staged proof
+        # once more with the four last batches on, on the last pair tried before. Only a proof is taken.
+        with shape_fallback.eighteenth_on():
+            later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
+        if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
+    return result
+
+
+def _prove_with_seventeenth_step(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:
+    """The proof with the last steps of batches 15 to 17: the result, and for a pair left unproved the last pair
+    tried and what reading the pair that way assumes (as ``_prove_with_last_steps`` gives them)."""
+
     with shape_fallback.seventeenth_deferred() as seventeenth_seen:
         result, pair, assumed = _prove_with_sixteenth_step(left_sql, right_sql, **kwargs)
     if result.status is SmtStatus.NOT_PROVEN and seventeenth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.SEVENTEENTH_BATCH):
@@ -5771,8 +5829,8 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
         with shape_fallback.seventeenth_on():
             later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
         if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
-            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
-    return result
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed)))), pair, assumed
+    return result, pair, assumed
 
 
 def _prove_with_sixteenth_step(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:
@@ -6093,6 +6151,7 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
         not_null = {t: c.not_null for t, c in (kwargs.get("constraints") or {}).items()}
         keys = {t.lower(): [tuple(k) for k in c.keys] for t, c in (kwargs.get("constraints") or {}).items()}
         fks = {t.lower(): list(c.foreign_keys) for t, c in (kwargs.get("constraints") or {}).items() if c.foreign_keys}
+        consecutive = {t.lower(): frozenset(c.consecutive) for t, c in (kwargs.get("constraints") or {}).items() if c.consecutive}
         # This cache belongs to one pair and one immutable proof context. Never share
         # it with recursive or conditional proofs, whose constraints may differ.
         cache = {} if _normalization_cache is None else _normalization_cache
@@ -6106,7 +6165,7 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
                 text = normalize(sql, schema=kwargs.get("schema"), dialect=dialect,
                                  not_null=not_null, keys=keys, types=types,
                                  group_by_constants=constants, keyed_distinct=level,
-                                 foreign_keys=fks, _assumptions=assumptions)
+                                 foreign_keys=fks, consecutive=consecutive, _assumptions=assumptions)
                 cache[key] = (text, frozenset(assumptions))
             text, assumptions = cache[key]
             normalization_assumptions.update(assumptions)

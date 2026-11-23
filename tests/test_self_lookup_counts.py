@@ -7,7 +7,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from kumo_sql_prover import shape_fallback
+from kumo_sql_prover import algebraic_equivalence, shape_fallback
 from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
 from kumo_sql_prover.self_lookup_counts import NAME, read_self_lookup_counts, waits_for_lookup
 from kumo_sql_prover.smt_equivalence import TableConstraints
@@ -387,11 +387,18 @@ PAIRS = [
 ]
 
 
-@pytest.mark.parametrize("left, right", PAIRS)
-def test_pairs_proved_only_with_the_rule(left, right):
+PROVED_BEFORE = (2, 3, 4)  # the steps before prove these three as well: the rule is one way to them, not the only one
+
+
+@pytest.mark.parametrize("position", range(len(PAIRS)))
+def test_pairs_proved_and_the_ones_proved_only_with_the_rule(monkeypatch, position):
+    left, right = PAIRS[position]
     assert prove(left, right).proven
-    with shape_fallback.without(NAME):
+    with shape_fallback.without(NAME):  # the rule off, and with it the staging of the steps before
         assert not prove(left, right).proven
+    # only the rule taken out, every step as it is
+    monkeypatch.setattr(algebraic_equivalence, "read_self_lookup_counts", lambda *args: None)
+    assert prove(left, right).proven is (position in PROVED_BEFORE)
 
 
 @pytest.mark.parametrize(

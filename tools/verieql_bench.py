@@ -46,7 +46,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from kumo_sql_prover import counterexample as cx  # noqa: E402
-from bench_sql_repairs import expand_row_predicates, pipes_as_concat, rebind_correlation_variables, uniquify_star_columns  # noqa: E402
+from bench_sql_repairs import barewords_as_strings, expand_row_predicates, pipes_as_concat, rebind_correlation_variables, uniquify_star_columns  # noqa: E402
 
 COMMIT = "493cbb81000205e33b0623cfd1c39106fa035fae"
 BASE = f"https://raw.githubusercontent.com/VeriEQL/VeriEQL/{COMMIT}"
@@ -189,10 +189,29 @@ def build_spec(case: dict) -> cx.Spec:
     return spec
 
 
-_NUMBER_TYPES = ("INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL")
+_NUMBER_TYPES = ("INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL", "BOOL", "BOOLEAN")
 _WHOLE_TYPES = ("INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT")
 _TEXT_TYPES = ("VARCHAR", "CHAR", "TEXT", "ENUM")
 _CHECK_OPERATORS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "=", "neq": "<>"}
+
+
+def declared_consecutive(case: dict, spec: cx.Spec) -> dict[str, tuple]:
+    """The whole-number columns the case declares ``consec``, by lower-case table name: their values are consecutive
+    (``TableConstraints.consecutive``), which is also how the search fills them (1 to the number of rows)."""
+
+    out: dict[str, list] = {}
+    for constraint in case.get("constraint") or []:
+        body = constraint.get("consec") if isinstance(constraint, dict) and set(constraint) == {"consec"} else None
+        if not (isinstance(body, dict) and set(body) == {"value"} and isinstance(body["value"], str)):
+            continue
+        for table in spec.tables.values():
+            prefix = table.name + "__"
+            if not body["value"].startswith(prefix):
+                continue
+            for column in table.columns:
+                if column.name == body["value"][len(prefix):] and column.type.upper().split("(")[0] in _WHOLE_TYPES and column.name in table.sequential:
+                    out.setdefault(table.name.lower(), []).append(column.name.lower())
+    return {table: tuple(columns) for table, columns in out.items()}
 
 
 def declared_checks(case: dict, spec: cx.Spec) -> dict[str, tuple]:
@@ -328,10 +347,13 @@ def repaired_pair(case: dict, spec: cx.Spec) -> tuple[str, str, dict[str, int]]:
 
     See ``tools/bench_sql_repairs.py``. Calcite-397 gets ``||`` read as concatenation, its correlation
     variables rebound and its repeated star columns named; Literature gets its whole-row predicates spelled out over the row's
-    columns. Each repair has one reading; when it cannot apply, the query is kept as written.
+    columns; a LeetCode answer whose strings lost their quotes (``THEN YES ELSE NO``) gets them back, read as the
+    counterexample search has always read them. Each repair has one reading; when it cannot apply, the query is
+    kept as written.
     """
 
     tables = {t.name.lower(): [c.name for c in t.columns] for t in spec.tables.values()}
+    known = {name.lower() for names in tables.values() for name in names}
     suite = case.get("suite")
     out, predicates = [], {}
     for sql in case["pair"]:
@@ -347,6 +369,8 @@ def repaired_pair(case: dict, spec: cx.Spec) -> tuple[str, str, dict[str, int]]:
                 if any(predicates.get(name, arity) != arity for name, arity in arities.items()):
                     return case["pair"][0], case["pair"][1], {}
                 predicates.update(arities)
+            elif suite == "leetcode":
+                sql = barewords_as_strings(sql, known)
         except Exception:  # a query the repairs cannot read is scored as written
             pass
         out.append(sql)
@@ -367,11 +391,13 @@ def prove(case: dict, spec: cx.Spec, timeout_ms: int, pair: tuple[str, str] | No
     types = {n: {c.name.lower(): c.type for c in t.columns} for n, t in lower.items()}
     left, right = pair or case["pair"]
     checks = declared_checks(case, spec)
+    consecutive = declared_consecutive(case, spec)
 
     def attempt(with_foreign_keys: bool):
         constraints = {
             n: TableConstraints(
                 checks=checks.get(n, ()),
+                consecutive=consecutive.get(n, ()),
                 not_null=frozenset(c.name.lower() for c in t.columns if c.not_null),
                 keys=tuple(tuple(k.lower() for k in key) for key in ([t.primary_key] if t.primary_key else []) + list(t.unique)),
                 foreign_keys=tuple(

@@ -30,6 +30,8 @@ On 2026-11-12 the whole LeetCode set (23,994 pairs) was rerun: 9,022 pairs are p
 
 The input can declare keys, non-NULL columns, and other restrictions. When a table declares two primary keys, each one is kept as a key of its own. A database violating those restrictions is not a valid counterexample to a conditional claim. Read which constraints the prover models and which the execution generator enforces.
 
+Some LeetCode answers in the files lost the quotes around their text values: `THEN YES ELSE NO` where the answer said `"Yes"` and `"No"`. The database search always read such a word as text when it is no column or name in the query. The prover now reads it the same way where the word plainly stands for a value (after `THEN` or `ELSE`, in a comparison, in the select list), so these pairs can be proved and not only searched. Nothing else in the query is touched, and a word in any other place leaves the pair unproved.
+
 The full guide documents translation, constraint handling, known non-equivalent pairs, commands, and separate proof/executed score rows. [Bounded verification](bounded-verification.md) covers KumoSQL's separate row-limited checker, inspired by the bounded approach used in VeriEQL's research.
 
 On 2026-11-18 the checker learned that in MySQL, SQLite and DuckDB a true-or-false condition is the number 1 or 0. Of the pairs that compare a condition with something, none lost a proof and 39 more are now proved, each double-checked on 1,000 further databases. The 9,022 above is not recounted yet.

@@ -152,6 +152,10 @@ class TableConstraints:
     # Declared value checks over one row, in the grammar of ``value_checks`` (``("in", ("column", c), ("values", ..))``,
     # ``(">", ("column", c), ("value", 0))``): the condition is TRUE or NULL on every row.
     checks: tuple = ()
+    # Columns of consecutive whole numbers: never NULL, no two rows the same, and every value but the smallest has
+    # the value one below it in the table (``m, m + 1, .., m + r - 1`` for the ``r`` rows). Only the algebraic
+    # normalizer reads it (``neighbour_rows``); it adds no key, so declare the column NOT NULL and a key as well.
+    consecutive: tuple = ()
 
 
 BASE_ASSUMPTIONS = (
