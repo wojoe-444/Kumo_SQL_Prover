@@ -15,10 +15,10 @@ engine, and reading them as if they did proves pairs that an engine tells apart:
   :func:`mysql_cast_may_be_null` says when the operand is not known to be a date.
 
 ``output_properties`` uses the same facts for the columns it reports as never NULL, and there also for the
-functions with a limited domain (``SQRT(-1)``, ``LN(0)``, ``LOG``, ``POWER`` and ``MOD`` are NULL in MySQL and
-SQLite).
+functions with a limited domain (``SQRT(-1)``, ``LN(0)``, ``LOG(0)`` and ``MOD(5, 0)`` are NULL in MySQL and
+SQLite, ``POWER(-8, 0.5)`` in SQLite).
 
-Checked on MySQL 8.0, SQLite 3 and DuckDB 1.5; ``tests/test_engine_null_results.py`` holds the pairs.
+Issue 64. Checked on MySQL 8.0.46, SQLite 3 and DuckDB 1.5.6; ``tests/test_engine_null_results.py`` holds the pairs.
 """
 
 from __future__ import annotations

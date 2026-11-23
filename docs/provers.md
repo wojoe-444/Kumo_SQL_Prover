@@ -495,7 +495,7 @@ Tests: `tests/test_declared_scale.py` (the issue's three pairs and sixteen more 
 
 ### A zero divisor and a failed date cast: NULL in some engines
 
-The SMT model reads arithmetic as NULL exactly when an operand is NULL. Three operations do not follow that in every engine, and reading them as if they did proved pairs an engine tells apart (2026-11-23, `src/kumo_sql_prover/engine_null_results.py`, `tests/test_engine_null_results.py`):
+The SMT model reads arithmetic as NULL exactly when an operand is NULL. Three operations do not follow that in every engine, and reading them as if they did proved pairs an engine tells apart (issue #64, 2026-11-23, `src/kumo_sql_prover/engine_null_results.py`, `tests/test_engine_null_results.py`; checked on MySQL 8.0.46, SQLite and DuckDB 1.5.6):
 
 | Operation | BigQuery, PostgreSQL | MySQL | SQLite | DuckDB |
 | --- | --- | --- | --- | --- |
@@ -508,7 +508,7 @@ The SMT model reads arithmetic as NULL exactly when an operand is NULL. Three op
 - **A MySQL cast to a date.** `CAST(x AS DATE)` (and `DATETIME`, `TIMESTAMP`, `TIME`) of a value that is not a date is NULL in MySQL, so over a NOT NULL `VARCHAR` column `WHERE CAST(word AS DATE) IS NULL` is not an empty filter. In the MySQL dialect such a cast may now be NULL unless its operand is known to be a date: a column declared `DATE`, `DATETIME` or `TIMESTAMP`, a cast to one, a string written as a day or as a day and a time, the current date, or a `MIN`, `MAX`, `COALESCE`, `IF` or `CASE` over those.
 - **What MySQL does say.** In MySQL a zero divisor is the only way a quotient or a remainder of values that are not NULL is NULL. For a divisor whose type is a number (a declared column, a count, a literal, arithmetic over those) the model now says so: `score / place IS NULL` is `place = 0`, `score / 2` is never NULL, and with a divisor declared positive (a VeriEQL `place >= 1` check) `COUNT(score / place)` is `COUNT(*)` and `AVG(score / place)` is `SUM(score / place) / COUNT(*)`. A divisor that is a string or a date stays unknown (MySQL reads `'soon'` as 0 and a date as its digits). SQLite's `%` casts its operands to integers first (`5 % 0.5` is NULL), so SQLite and DuckDB keep the unknown.
 
-`output_properties` reported the same columns as never NULL in every dialect. Outside BigQuery and PostgreSQL a quotient, a remainder and `SQRT`, `LN`, `LOG`, `POWER` and `MOD` (NULL outside their domain in MySQL and SQLite) are no longer reported so, nor is a MySQL cast to a date or time type.
+`output_properties` reported the same columns as never NULL in every dialect. Outside BigQuery and PostgreSQL a quotient, a remainder and `SQRT`, `LN`, `LOG`, `POWER` and `MOD` (NULL outside their domain in MySQL or SQLite; `POWER(-8, 0.5)` is NULL in SQLite and an error in MySQL) are no longer reported so, nor is a MySQL cast to a date or time type.
 
 ## Algebraic prover and SQLSolver (no admin rights)
 
