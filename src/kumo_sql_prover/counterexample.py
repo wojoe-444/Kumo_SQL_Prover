@@ -139,11 +139,14 @@ def _factor(node: exp.Expression | None) -> int | None:
 
 
 def _factors(tree: exp.Expression) -> set[int]:
-    """The constants a varying value is divided or multiplied by (``duration / 60``, ``60 * minutes``).
+    """The constants a column's value is divided or multiplied by (``duration / 60``, ``60 * (ends - starts)``).
 
     ``duration / 60 >= 5`` changes at ``duration = 300``, a value no literal of the query spells. A database whose
     durations all stay below 61 puts every row in one bin and cannot tell ``BETWEEN 5 AND 10`` from
-    ``>= 5 AND < 10``."""
+    ``>= 5 AND < 10``.
+
+    Only a value of the row is read: columns under arithmetic. ``SUM(flag) * 100 / COUNT(*)`` and
+    ``IF(rating < 3, 1, 0) * 100`` scale a count or a flag, which no stored value near 200 moves."""
 
     found: set[int] = set()
     for node in tree.find_all(exp.Div, exp.IntDiv, exp.Mul):
@@ -151,9 +154,20 @@ def _factors(tree: exp.Expression) -> set[int]:
         for side in sides:
             other = node.this if side is node.expression else node.expression
             factor = _factor(side)
-            if factor is not None and _factor(other) is None and other.find(exp.Column) is not None:
+            if factor is not None and _factor(other) is None and _row_value(other):
                 found.add(factor)
     return found
+
+
+_ROW_VALUE = (exp.Column, exp.Identifier, exp.Paren, exp.Add, exp.Sub, exp.Mul, exp.Div, exp.IntDiv, exp.Neg)
+
+
+def _row_value(node: exp.Expression) -> bool:
+    """Whether ``node`` is columns under arithmetic (whole-number literals allowed), with at least one column."""
+
+    if node.find(exp.Column) is None:
+        return False
+    return all(isinstance(part, _ROW_VALUE) or (isinstance(part, exp.Literal) and not part.is_string) for part in node.walk())
 
 
 def constants_of(*queries: str, dialect: str = "mysql") -> Constants:

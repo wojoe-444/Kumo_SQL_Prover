@@ -29,7 +29,13 @@ FACTORS = [
     ("SELECT (seconds) / (60) FROM calls", {60}),
     ("SELECT seconds DIV 60 FROM calls", {60}),
     ("SELECT 60 * seconds, seconds * 24 FROM calls", {24, 60}),
-    ("SELECT SUM(seconds) / 3600 FROM calls", {3600}),
+    ("SELECT (seconds - call) / 60, -seconds * 7 FROM calls", {7, 60}),
+    ("SELECT SUM(seconds / 3600) FROM calls", {3600}),
+    # a count, a total or a flag is scaled, not a value of the row
+    ("SELECT SUM(seconds) / 3600 FROM calls", set()),
+    ("SELECT SUM(seconds > 3) * 100 / COUNT(*) FROM calls", set()),
+    ("SELECT AVG(IF(seconds < 3, 1, 0) * 100) FROM calls", set()),
+    ("SELECT ROUND(seconds) / 60, COALESCE(seconds, 0) * 60 FROM calls", set()),
     # nothing varies, nothing is scaled, or the constant is the dividend
     ("SELECT 60 * 5 FROM calls", set()),
     ("SELECT seconds / 1, seconds * 1 FROM calls", set()),
