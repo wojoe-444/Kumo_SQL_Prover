@@ -5215,6 +5215,17 @@ def normalize(
             else:
                 shape_fallback.note_thirteenth_candidate()  # said here: inlining may decline the query as it is written
     tree = _inline_ctes(tree)
+    if shape_fallback.rule_enabled("apart_table_names") and (shape_fallback.twenty_fourth_batch_enabled() or shape_fallback.twenty_fourth_watching()):
+        from .apart_table_names import name_tables_apart
+
+        # pre-pass (twenty-fourth batch): a table read under its own name at two levels gets a name per read, before
+        # any rule that merges a derived table into the select around it
+        apart, wrote = name_tables_apart(tree)
+        if wrote and shape_fallback.twenty_fourth_batch_enabled():
+            tree = apart
+            shape_fallback.note_fired("apart_table_names")
+        elif wrote:
+            shape_fallback.note_twenty_fourth_candidate()  # an earlier step: the step after the last is worth running
     if shape_fallback.rule_enabled("shared_group_names") and (shape_fallback.eleventh_batch_enabled() or shape_fallback.eleventh_watching()):
         from .shared_group_names import qualify_shared_group_names
 

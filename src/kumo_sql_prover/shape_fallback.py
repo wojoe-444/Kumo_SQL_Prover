@@ -990,7 +990,7 @@ def note_twentieth_candidate() -> None:
 # fifteenth to the twenty-fourth batch on. So a pair an earlier step decides is decided as it was. (Batches 19 and 22
 # changed the counterexample search, batches 21 and 23 the solver's reading; they have no rule.)
 
-TWENTY_FOURTH_BATCH = frozenset({"distinct_window_groups", "shared_scan_aggregates"})
+TWENTY_FOURTH_BATCH = frozenset({"apart_table_names", "distinct_window_groups", "shared_scan_aggregates"})
 
 _TWENTY_FOURTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_twenty_fourth_stage", default=None)
 _TWENTY_FOURTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_twenty_fourth_seen", default=None)

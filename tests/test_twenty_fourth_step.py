@@ -4,16 +4,19 @@ import re
 
 import pytest
 
-from kumo_sql_prover import algebraic_equivalence, distinct_window_groups, shape_fallback, shared_scan_aggregates
+from kumo_sql_prover import algebraic_equivalence, apart_table_names, distinct_window_groups, shape_fallback, shared_scan_aggregates
 from kumo_sql_prover.algebraic_equivalence import normalize, prove_equivalent_algebraic
+from kumo_sql_prover.smt_equivalence import TableConstraints
 
-SCHEMA = {"projects": ["team", "person"], "staff": ["person", "years"], "people": ["id", "mail"], "visits": ["visit", "guest", "booked", "came"]}
+SCHEMA = {"projects": ["team", "person"], "staff": ["person", "years"], "people": ["id", "mail"], "visits": ["visit", "guest", "booked", "came"], "crew": ["id", "name", "boss", "age"]}
 TYPES = {
     "projects": {"team": "INT", "person": "INT"},
     "staff": {"person": "INT", "years": "INT"},
     "people": {"id": "INT", "mail": "VARCHAR"},
     "visits": {"visit": "INT", "guest": "INT", "booked": "INT", "came": "INT"},
+    "crew": {"id": "INT", "name": "VARCHAR", "boss": "INT", "age": "INT"},
 }
+CONSTRAINTS = {"crew": TableConstraints(not_null=frozenset({"id"}), keys=(("id",),))}
 OPTIONS = {"schema": SCHEMA, "keys": {}, "not_null": {}, "types": TYPES, "dialect": "mysql"}
 
 JOINED = "FROM projects AS p JOIN staff AS e ON p.person = e.person"
@@ -32,6 +35,10 @@ SHARE_COPY = "SELECT ROUND(COUNT(*) / (SELECT COUNT(*) FROM visits) * 100, 2) AS
 COUNTED = "SELECT CASE WHEN COUNT(*) > 0 THEN COUNT(*) END AS n, COUNT(*) AS found FROM visits"
 COUNTED_JOINED = "SELECT x.n AS n, COUNT(*) AS found FROM visits AS v, (SELECT COUNT(*) AS n FROM visits) AS x"
 COUNTED_WITH = "WITH x AS (SELECT COUNT(*) AS n FROM visits) SELECT x.n AS n, COUNT(*) AS found FROM visits, x"
+# apart_table_names: the table joined to a derived table over itself, both under the table's own name
+LED = "SELECT a.id, a.name, ROUND(AVG(b.age), 0) AS mean FROM crew AS a JOIN crew AS b ON a.id = b.boss GROUP BY a.id"
+LED_APART = "SELECT t.boss AS id, e.name, t.mean FROM (SELECT boss, ROUND(AVG(age), 0) AS mean FROM crew GROUP BY boss) AS t JOIN crew AS e ON t.boss = e.id"
+LED_NAMED_ONCE = "SELECT t.boss AS id, crew.name, t.mean FROM (SELECT boss, ROUND(AVG(age), 0) AS mean FROM crew GROUP BY boss) AS t JOIN crew ON t.boss = crew.id"
 
 PAIRS = [
     (GROUPED, WINDOWED),
@@ -43,11 +50,14 @@ PAIRS = [
     (SHARE, SHARE_COPY),
     (COUNTED, COUNTED_JOINED),
     (COUNTED, COUNTED_WITH),
+    (LED, LED_NAMED_ONCE),
 ]
 
 
 def prove(left: str, right: str, **more):
-    return prove_equivalent_algebraic(left, right, schema=SCHEMA, types=TYPES, compare_names=False, dialect="mysql", exact_arithmetic=True, timeout_ms=5000, **more)
+    return prove_equivalent_algebraic(
+        left, right, schema=SCHEMA, types=TYPES, constraints=CONSTRAINTS, compare_names=False, dialect="mysql", exact_arithmetic=True, timeout_ms=5000, **more
+    )
 
 
 def switch_off(monkeypatch) -> None:
@@ -56,10 +66,11 @@ def switch_off(monkeypatch) -> None:
 
     monkeypatch.setattr(distinct_window_groups, "read_distinct_window_groups", lambda tree: (tree, False))
     monkeypatch.setattr(shared_scan_aggregates, "read_shared_scans", lambda tree, schema, dialect=None: (tree, False))
+    monkeypatch.setattr(apart_table_names, "name_tables_apart", lambda tree: (tree, False))
 
 
 def test_the_batch_names_its_rules_and_has_its_own_entry_in_the_stage_key():
-    assert shape_fallback.TWENTY_FOURTH_BATCH == frozenset({"distinct_window_groups", "shared_scan_aggregates"})
+    assert shape_fallback.TWENTY_FOURTH_BATCH == frozenset({"apart_table_names", "distinct_window_groups", "shared_scan_aggregates"})
     assert len(shape_fallback.stage_key()) == 11 and shape_fallback.stage_key()[10] is False
     with shape_fallback.twenty_fourth_deferred():
         assert shape_fallback.stage_key()[10] is False
@@ -146,6 +157,8 @@ def test_pairs_that_differ_stay_unproved():
     assert not prove(TOTALS, TOTALS_WINDOWED.replace(" WHERE e.years > 0", "")).proven
     # a total per team shown without the team: two teams with one total are one row
     assert not prove(f"SELECT SUM(e.years) AS total {JOINED} GROUP BY p.team", f"SELECT DISTINCT SUM(e.years) OVER (PARTITION BY p.team) AS total {JOINED}").proven
+    # the mean of the people who report to someone else
+    assert not prove(LED, LED_NAMED_ONCE.replace("t.boss = crew.id", "t.boss = crew.boss")).proven
     # a share of the visits of some guests only
     assert not prove(SHARE, SHARE_SUBQUERY.replace("FROM visits)", "FROM visits WHERE guest > 1)")).proven
     # another test in the copy
@@ -163,6 +176,9 @@ def test_a_pair_the_rule_does_not_read_and_a_pair_proved_before_get_no_run_of_th
     assert runs and not any(last for _, last in runs)
     runs.clear()
     assert prove(WINDOWED, WINDOWED.replace("AS e", "AS s").replace("e.", "s.")).proven  # proved without the rule
+    assert runs and not any(last for _, last in runs)
+    runs.clear()
+    assert prove(LED, LED_APART).proven  # with the two reads named apart by hand, no step of this batch is needed
     assert runs and not any(last for _, last in runs)
     runs.clear()
     assert not prove(GROUPED, WINDOWED.replace("AVG(e.years)", "MAX(e.years)")).proven  # read, and still different
