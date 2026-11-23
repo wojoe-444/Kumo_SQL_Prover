@@ -34,6 +34,7 @@ Supply real schema and constraints for facts that depend on source tables.
 
 - `SUM(amount)` can be NULL when every value in a group is NULL.
 - A LEFT JOIN can introduce NULLs even when the original right-hand column is declared NOT NULL.
+- A division or remainder can be NULL in MySQL, SQLite and DuckDB (a zero divisor gives NULL there, where BigQuery and PostgreSQL stop with an error), so it is reported as never NULL only for BigQuery and PostgreSQL.
 - Joining to several matching rows can destroy a source table's uniqueness.
 - A global `COUNT(*)` without GROUP BY returns one row even when its input is empty.
 

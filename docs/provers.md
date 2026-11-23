@@ -493,6 +493,23 @@ Checks, 2026-11-19, on main 831627f against the change (shape scans, not whole r
 
 Tests: `tests/test_declared_scale.py` (the issue's three pairs and sixteen more shapes unproven by each prover, other dialects not declined, pairs that return one scale still prove, the 47 measured scales, floating point, untyped columns, derived tables and `SELECT *`, which pairs are compared, what is returned).
 
+### A zero divisor and a failed date cast: NULL in some engines
+
+The SMT model reads arithmetic as NULL exactly when an operand is NULL. Three operations do not follow that in every engine, and reading them as if they did proved pairs an engine tells apart (2026-11-23, `src/kumo_sql_prover/engine_null_results.py`, `tests/test_engine_null_results.py`):
+
+| Operation | BigQuery, PostgreSQL | MySQL | SQLite | DuckDB |
+| --- | --- | --- | --- | --- |
+| `x % 0`, `MOD(x, 0)` | error | NULL | NULL | NULL |
+| `x / 0` | error | NULL | NULL | infinity (NaN for `0 / 0`) |
+| `CAST('soon' AS DATE)` | error | NULL, with a warning | the text | error |
+
+- **A remainder was never NULL.** Over NOT NULL columns `WHERE score % place IS NULL` was proven equal to `WHERE 1 = 0`, `COUNT(score % place)` to `COUNT(*)` and `COALESCE(score % place, 7)` to `score % place`, in the MySQL, SQLite and DuckDB dialects; each of those engines returns the row with `place = 0` on one side only. A remainder now may be NULL there (an unknown condition over its operands, as a quotient already was). In BigQuery and PostgreSQL a zero modulus is an error, a pair is compared where both queries run, and the remainder stays never NULL. A divisor written as a whole number other than zero (`id % 2`, `total / 100`) gives NULL in no engine, for a remainder and now for a quotient too.
+- **DuckDB's guarded quotient.** `x / NULLIF(y, 0)` was read as `x / y` in every dialect. That holds where a zero divisor gives NULL or an error; DuckDB 1.5 returns infinity for `x / 0` and NULL for the guarded form, so in the DuckDB dialect the guarded quotient is now also NULL where the divisor is zero. `AVG(x)` is still `SUM(x) / NULLIF(COUNT(x), 0)` there (a count of zero is a sum that is NULL).
+- **A MySQL cast to a date.** `CAST(x AS DATE)` (and `DATETIME`, `TIMESTAMP`, `TIME`) of a value that is not a date is NULL in MySQL, so over a NOT NULL `VARCHAR` column `WHERE CAST(word AS DATE) IS NULL` is not an empty filter. In the MySQL dialect such a cast may now be NULL unless its operand is known to be a date: a column declared `DATE`, `DATETIME` or `TIMESTAMP`, a cast to one, a string written as a day or as a day and a time, the current date, or a `MIN`, `MAX`, `COALESCE`, `IF` or `CASE` over those.
+- **What MySQL does say.** In MySQL a zero divisor is the only way a quotient or a remainder of values that are not NULL is NULL. For a divisor whose type is a number (a declared column, a count, a literal, arithmetic over those) the model now says so: `score / place IS NULL` is `place = 0`, `score / 2` is never NULL, and with a divisor declared positive (a VeriEQL `place >= 1` check) `COUNT(score / place)` is `COUNT(*)` and `AVG(score / place)` is `SUM(score / place) / COUNT(*)`. A divisor that is a string or a date stays unknown (MySQL reads `'soon'` as 0 and a date as its digits). SQLite's `%` casts its operands to integers first (`5 % 0.5` is NULL), so SQLite and DuckDB keep the unknown.
+
+`output_properties` reported the same columns as never NULL in every dialect. Outside BigQuery and PostgreSQL a quotient, a remainder and `SQRT`, `LN`, `LOG`, `POWER` and `MOD` (NULL outside their domain in MySQL and SQLite) are no longer reported so, nor is a MySQL cast to a date or time type.
+
 ## Algebraic prover and SQLSolver (no admin rights)
 
 What makes [SQLSolver](https://github.com/SJTU-IPADS/SQLSolver) (SIGMOD 2024) strong is that it treats queries as arithmetic over tuple multiplicities: under bag semantics `UNION ALL` is addition, a join is multiplication, and aggregates over a sum split into partial aggregates combined arithmetically. `kumo_sql_prover.algebraic_equivalence` brings that into KumoSQL in pure Python on top of the existing Z3 prover, so it installs per user with `pip install --user -e ".[smt]"`:

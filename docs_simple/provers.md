@@ -257,6 +257,21 @@ In MySQL a ratio is shown with a fixed number of decimals, and that number grows
 
 Now, for MySQL, the provers work out how many decimals each side's answer is shown with, and when a ratio or average is returned (unrounded, or rounded to five or more places) with a different count on the two sides, the answer is "not proven". Rounding to between 0 and 4 places is unaffected (every spelling gives the same digits there), as is any pair where both sides spell the numbers the same way. A count the prover cannot work out (a ratio turned into text, say) also gives "not proven". Only the returned columns are compared; a ratio inside a `WHERE` is left alone. Full details: [the reference](../docs/provers.md#the-decimals-mysql-declares-for-a-quotient).
 
+## Dividing by zero is not the same everywhere
+
+Engines disagree about what a division by zero gives. BigQuery and PostgreSQL stop with an error. MySQL and SQLite return NULL. DuckDB returns NULL for a remainder (`5 % 0`) and infinity for a quotient (`5 / 0`). The provers treated a remainder as a value that is never NULL when its inputs are not, so for MySQL, SQLite and DuckDB they said these two count the same rows, when the row with `place = 0` is counted only by the second:
+
+```sql
+SELECT COUNT(score % place) FROM lookups
+SELECT COUNT(*) FROM lookups
+```
+
+Now a remainder may be NULL in those three engines, and such pairs are answered "not proven". Two related readings changed with it. In DuckDB, `x / NULLIF(y, 0)` is no longer read as plain `x / y` (one is NULL and the other infinity when `y` is zero). In MySQL, `CAST(word AS DATE)` of text that is not a date is NULL rather than an error, so it is no longer treated as never NULL unless the value is known to be a date already.
+
+One thing got more precise instead. In MySQL a quotient is NULL only when an input is NULL or the divisor is zero, so when a schema says the divisor is always positive, the provers now know the quotient is never NULL: `AVG(score / place)` is then the same as `SUM(score / place) / COUNT(*)`.
+
+The limits: the precise MySQL reading applies only to a divisor that is known to be a number, and in BigQuery and PostgreSQL the provers still assume both queries run without an error. Full details: [the reference](../docs/provers.md#a-zero-divisor-and-a-failed-date-cast-null-in-some-engines).
+
 ## The parser is checked too
 
 The provers also refuse to trust the parser blindly. Before a proof counts, the text is read a second time by a small separate reader that knows each engine's operator order, and if the two readings group the operators differently (for example `a | b & c` in BigQuery, or `a = b < c` in MySQL) the answer is "not proven" with the reason "parser disagreement". The limit is that this can only take proofs away, and a construct the second reader does not know is left to sqlglot's reading. See [parser checks](parser-checks.md).
