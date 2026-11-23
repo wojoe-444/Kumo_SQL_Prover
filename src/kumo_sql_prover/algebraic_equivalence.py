@@ -6227,6 +6227,7 @@ def _prove_algebraic(left_sql: str, right_sql: str, keyed_distinct: int, *, _nor
             [sqlglot.parse_one(sql, read=dialect) for sql in (left_sql, right_sql)],
             [sqlglot.parse_one(sql, read=dialect) for sql in (left, right)],
             types,
+            {table: list(columns) for table, columns in (kwargs.get("schema") or {}).items()},
         )
         if regrouping == "declined":
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, float_regrouping.DECLINED, assumptions=tuple(sorted(normalization_assumptions)))
