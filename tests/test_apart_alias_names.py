@@ -1,4 +1,4 @@
-"""``apart_alias_names``: a source name used by a select and again inside a derived table of it gets a name at each place.
+"""``apart_alias_names``: a source name used by a select and again inside the derived table it starts from gets a name at each place.
 
 Each reading below is run as written and as rewritten on DuckDB and on SQLite over made-up tables (a boss who is
 nobody's row, a NULL boss, a NULL age); the rows must be the same. The spellings left alone are ones with nothing
@@ -29,8 +29,8 @@ READ = [
     ),
     # an alias that is the own name of a table read inside the derived table
     (
-        "SELECT staff.name, t.n FROM team AS staff JOIN (SELECT boss, COUNT(*) AS n FROM staff GROUP BY boss) AS t ON t.boss = staff.id",
-        "SELECT staff_1.name, t.n FROM team AS staff_1 JOIN (SELECT boss, COUNT(*) AS n FROM staff AS staff_2 GROUP BY boss) AS t ON t.boss = staff_1.id",
+        "SELECT staff.name, t.n FROM (SELECT boss, COUNT(*) AS n FROM staff GROUP BY boss) AS t JOIN team AS staff ON t.boss = staff.id",
+        "SELECT staff_1.name, t.n FROM (SELECT boss, COUNT(*) AS n FROM staff AS staff_2 GROUP BY boss) AS t JOIN team AS staff_1 ON t.boss = staff_1.id",
     ),
     # a derived table called like the source inside it
     (
@@ -39,38 +39,30 @@ READ = [
     ),
     # a star, GROUP BY, HAVING and ORDER BY follow their own source
     (
-        "SELECT v.*, c.n FROM team AS v JOIN (SELECT v.boss, COUNT(v.id) AS n FROM staff AS v GROUP BY v.boss HAVING COUNT(v.id) > 0) AS c ON c.boss = v.id ORDER BY v.id",
-        "SELECT v_1.*, c.n FROM team AS v_1 JOIN (SELECT v_2.boss, COUNT(v_2.id) AS n FROM staff AS v_2 GROUP BY v_2.boss HAVING COUNT(v_2.id) > 0) AS c "
+        "SELECT v.*, c.n FROM (SELECT v.boss, COUNT(v.id) AS n FROM staff AS v GROUP BY v.boss HAVING COUNT(v.id) > 0) AS c JOIN team AS v ON c.boss = v.id ORDER BY v.id",
+        "SELECT v_1.*, c.n FROM (SELECT v_2.boss, COUNT(v_2.id) AS n FROM staff AS v_2 GROUP BY v_2.boss HAVING COUNT(v_2.id) > 0) AS c JOIN team AS v_1 "
         "ON c.boss = v_1.id ORDER BY v_1.id",
     ),
-    # a derived table of a derived table
+    # the derived table a derived table starts from
     (
-        "SELECT a.id, b.low FROM staff AS a JOIN (SELECT x.boss, x.low FROM (SELECT a.boss, MIN(a.age) AS low FROM staff AS a GROUP BY a.boss) AS x WHERE x.low > 20) AS b ON b.boss = a.id",
-        "SELECT a_1.id, b.low FROM staff AS a_1 JOIN (SELECT x.boss, x.low FROM (SELECT a_2.boss, MIN(a_2.age) AS low FROM staff AS a_2 GROUP BY a_2.boss) AS x "
-        "WHERE x.low > 20) AS b ON b.boss = a_1.id",
-    ),
-    # the branches of a UNION inside the derived table
-    (
-        "SELECT s.id, u.id FROM staff AS s JOIN (SELECT s.id FROM team AS s UNION ALL SELECT s.boss FROM staff AS s WHERE s.boss IS NOT NULL) AS u ON u.id = s.id",
-        "SELECT s_1.id, u.id FROM staff AS s_1 JOIN (SELECT s_2.id FROM team AS s_2 UNION ALL SELECT s_3.boss FROM staff AS s_3 WHERE NOT s_3.boss IS NULL) AS u "
-        "ON u.id = s_1.id",
-    ),
-    # a source of a subquery inside the derived table is one of the names to tell apart
-    (
-        "SELECT s.id, t.n FROM staff AS s, (SELECT b.boss, COUNT(*) AS n FROM staff AS b WHERE EXISTS (SELECT 1 FROM team AS s WHERE s.id = b.boss) GROUP BY b.boss) AS t "
-        "WHERE t.boss = s.id",
-        "SELECT s_1.id, t.n FROM staff AS s_1, (SELECT b.boss, COUNT(*) AS n FROM staff AS b WHERE EXISTS(SELECT 1 FROM team AS s_2 WHERE s_2.id = b.boss) "
-        "GROUP BY b.boss) AS t WHERE t.boss = s_1.id",
+        "SELECT a.id, b.low FROM (SELECT x.boss, x.low FROM (SELECT a.boss, MIN(a.age) AS low FROM staff AS a GROUP BY a.boss) AS x WHERE x.low > 20) AS b JOIN staff AS a ON b.boss = a.id",
+        "SELECT a_1.id, b.low FROM (SELECT x.boss, x.low FROM (SELECT a_2.boss, MIN(a_2.age) AS low FROM staff AS a_2 GROUP BY a_2.boss) AS x "
+        "WHERE x.low > 20) AS b JOIN staff AS a_1 ON b.boss = a_1.id",
     ),
     # a column without a source name is left as it is; a qualified one follows its own source
     (
-        "SELECT id, name FROM staff AS s JOIN (SELECT boss FROM staff AS s WHERE s.age > 25 GROUP BY boss) AS b ON b.boss = id WHERE s.age < 60",
-        "SELECT id, name FROM staff AS s_1 JOIN (SELECT boss FROM staff AS s_2 WHERE s_2.age > 25 GROUP BY boss) AS b ON b.boss = id WHERE s_1.age < 60",
+        "SELECT id, name FROM (SELECT boss FROM staff AS s WHERE s.age > 25 GROUP BY boss) AS b JOIN staff AS s ON b.boss = id WHERE s.age < 60",
+        "SELECT id, name FROM (SELECT boss FROM staff AS s_2 WHERE s_2.age > 25 GROUP BY boss) AS b JOIN staff AS s_1 ON b.boss = id WHERE s_1.age < 60",
     ),
     # a new name that is already taken is skipped
     (
-        "SELECT s_1.id FROM staff AS s, (SELECT s.id FROM team AS s) AS s_1 WHERE s.id = s_1.id",
-        "SELECT s_1.id FROM staff AS s_2, (SELECT s_3.id FROM team AS s_3) AS s_1 WHERE s_2.id = s_1.id",
+        "SELECT s_1.id FROM (SELECT s.id FROM team AS s) AS s_1, staff AS s WHERE s.id = s_1.id",
+        "SELECT s_1.id FROM (SELECT s_3.id FROM team AS s_3) AS s_1, staff AS s_2 WHERE s_2.id = s_1.id",
+    ),
+    # a subquery of the outer select that uses the name too keeps it: its columns are its own
+    (
+        "SELECT v.id FROM (SELECT v.boss FROM staff AS v) AS t JOIN team AS v ON t.boss = v.id WHERE v.id IN (SELECT v.id FROM staff AS v WHERE v.age > 25)",
+        "SELECT v_1.id FROM (SELECT v_2.boss FROM staff AS v_2) AS t JOIN team AS v_1 ON t.boss = v_1.id WHERE v_1.id IN (SELECT v.id FROM staff AS v WHERE v.age > 25)",
     ),
 ]
 
@@ -80,19 +72,27 @@ COLUMN_LIST = (
     "SELECT t_1.a FROM (SELECT t_2.id, t_2.age FROM staff AS t_2) AS t_1(a, b) WHERE t_1.b > 25",
 )
 
+INSIDE = "(SELECT v.boss FROM staff AS v) AS t"
+
 LEFT_ALONE = [
     ("SELECT s.id FROM staff AS s WHERE s.age > 30", "one source"),
-    ("SELECT a.id, t.n FROM staff AS a JOIN (SELECT b.boss, COUNT(*) AS n FROM staff AS b GROUP BY b.boss) AS t ON a.id = t.boss", "the names are apart already"),
+    ("SELECT a.id, t.n FROM (SELECT b.boss, COUNT(*) AS n FROM staff AS b GROUP BY b.boss) AS t JOIN staff AS a ON a.id = t.boss", "the names are apart already"),
+    ("SELECT v.id, c.n FROM team AS v JOIN (SELECT v.boss, COUNT(v.id) AS n FROM staff AS v GROUP BY v.boss) AS c ON c.boss = v.id", "a derived table that is joined in"),
+    ("SELECT s.id, u.id FROM (SELECT s.id FROM team AS s UNION ALL SELECT s.boss FROM staff AS s) AS u JOIN staff AS s ON u.id = s.id", "the branches of a UNION inside the derived table"),
+    (
+        "SELECT s.id, t.n FROM (SELECT b.boss, COUNT(*) AS n FROM staff AS b WHERE EXISTS (SELECT 1 FROM team AS s WHERE s.id = b.boss) GROUP BY b.boss) AS t, staff AS s WHERE t.boss = s.id",
+        "the name inside a subquery of the derived table",
+    ),
     ("SELECT s.id, s.name FROM staff AS s WHERE s.id IN (SELECT s.boss FROM staff AS s WHERE s.age > 25)", "the same alias in an IN subquery: no derived table between the two"),
     ("SELECT s.id, (SELECT COUNT(*) FROM staff AS s WHERE s.boss = 1) AS n FROM staff AS s", "the same alias in a scalar subquery"),
     ("SELECT s.id FROM staff AS s UNION SELECT s.boss FROM staff AS s", "two branches of a UNION: neither is inside the other"),
     ("SELECT x.id FROM (SELECT s.id FROM staff AS s) AS x JOIN (SELECT s.boss FROM staff AS s) AS y ON x.id = y.boss", "two derived tables side by side"),
-    ("SELECT v.id FROM team AS v JOIN (SELECT v.boss FROM staff AS v WHERE other.id = 1) AS t ON t.boss = v.id", "a name no select around the column reads"),
-    ("SELECT v.id FROM team AS v JOIN (SELECT v.boss FROM staff AS v WHERE main.v.id = 1) AS t ON t.boss = v.id", "a column named with a database"),
-    ("SELECT v.id FROM team AS v, staff AS v, (SELECT v.boss FROM staff AS v) AS t WHERE v.id = t.boss", "two sources of one name in a select"),
-    ("SELECT v.id FROM (team AS v JOIN staff AS w ON v.id = w.id) JOIN (SELECT v.boss FROM staff AS v) AS t ON t.boss = v.id", "a parenthesized join"),
-    ("SELECT v FROM team AS v JOIN (SELECT v.boss FROM staff AS v) AS t ON t.boss = v.id", "a bare name that may be the source's whole row"),
-    ("SELECT COUNT(v) FROM team AS v JOIN (SELECT v.boss FROM staff AS v) AS t ON t.boss = v.id", "a bare name inside a call"),
+    (f"SELECT v.id FROM {INSIDE.replace(') AS t', ' WHERE other.id = 1) AS t')} JOIN team AS v ON t.boss = v.id", "a name no select around the column reads"),
+    (f"SELECT v.id FROM {INSIDE.replace(') AS t', ' WHERE main.v.id = 1) AS t')} JOIN team AS v ON t.boss = v.id", "a column named with a database"),
+    (f"SELECT v.id FROM {INSIDE}, team AS v, staff AS v WHERE v.id = t.boss", "two sources of one name in a select"),
+    (f"SELECT v.id FROM {INSIDE} JOIN (team AS v JOIN staff AS w ON v.id = w.id) ON t.boss = v.id", "a parenthesized join"),
+    (f"SELECT v FROM {INSIDE} JOIN team AS v ON t.boss = v.id", "a bare name that may be the source's whole row"),
+    (f"SELECT COUNT(v) FROM {INSIDE} JOIN team AS v ON t.boss = v.id", "a bare name inside a call"),
 ]
 
 

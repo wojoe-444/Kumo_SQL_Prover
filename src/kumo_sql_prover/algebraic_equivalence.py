@@ -5229,14 +5229,9 @@ def normalize(
     if shape_fallback.rule_enabled("apart_alias_names") and (shape_fallback.twenty_fifth_batch_enabled() or shape_fallback.twenty_fifth_watching()):
         from .apart_alias_names import name_aliases_apart
 
-        # pre-pass (twenty-fifth batch): a source name used again inside a derived table gets a name at each place,
-        # before any rule that merges a derived table into the select around it
-        basis = tree
-        if not shape_fallback.twenty_fourth_batch_enabled() and shape_fallback.rule_enabled("apart_table_names"):
-            from .apart_table_names import name_tables_apart
-
-            basis = name_tables_apart(tree)[0]  # an earlier step: what that rule names apart is not this rule's to count
-        apart, wrote = name_aliases_apart(basis)
+        # pre-pass (twenty-fifth batch): a source name used again inside the derived table a select starts from gets a
+        # name at each place, before any rule that merges a derived table into the select around it
+        apart, wrote = name_aliases_apart(tree)
         if wrote and shape_fallback.twenty_fifth_batch_enabled():
             tree = apart
             shape_fallback.note_fired("apart_alias_names")

@@ -13,6 +13,10 @@ unknown rather than being scored under a guessed meaning.
   (``THEN YES ELSE NO``).
 * ``schema_table_names``: a LeetCode answer that spells the schema's table with underscores (``MY_NUMBERS``
   for ``MYNUMBERS``).
+* ``html_ampersands``: a LeetCode answer whose ``&&`` reached the file as ``&AMP;&AMP;``.
+* ``joined_strings``: a LeetCode answer whose strings were joined across ``THEN`` or ``ELSE``
+  (``'S THEN SMALL ELSE LARGE'``).
+* ``update_as_select``: a LeetCode answer that is an ``UPDATE``, read as the table it leaves.
 """
 
 from __future__ import annotations
@@ -376,3 +380,258 @@ def schema_table_names(sql: str, tables: set[str]) -> str:
         out = out[:start] + name + out[end:]
         table.set("this", exp.to_identifier(name))
     return out if sqlglot.parse_one(out, read="mysql") == tree else sql
+
+
+# --- LeetCode answers the file holds in a form no parser reads --------------------------------
+
+_STRING = re.compile(r"'[^']*'")
+_ENTITY = re.compile(r"&amp;", re.IGNORECASE)
+_SWALLOWED = re.compile(r" (THEN|ELSE) ", re.IGNORECASE)
+_NUMBER = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)$")
+
+
+def _parses(sql: str) -> bool:
+    try:
+        return sqlglot.parse_one(sql, read="mysql") is not None
+    except Exception:
+        return False
+
+
+def _plain_quotes(sql: str) -> bool:
+    """Whether every string of the text is a plain ``'..'``: no double quote, backslash or doubled quote."""
+
+    return '"' not in sql and "\\" not in sql and "''" not in sql and sql.count("'") % 2 == 0
+
+
+def html_ampersands(sql: str) -> str:
+    """A LeetCode answer whose ``&`` reached the file as the HTML entity ``&AMP;``, with the ``&`` put back.
+
+    ``WHERE A = 1 &AMP;&AMP; B = 2`` was ``WHERE A = 1 && B = 2`` on the page the answers were collected from.
+    As the file holds it the text is ``A = 1 & AMP`` followed by a ``;``, which no answer means: outside a string
+    the entity has one reading. Only the entities outside strings are rewritten, the rest of the text is kept
+    character for character, and the result must parse; otherwise the answer is returned as written. So is an
+    answer with a double quote, a backslash or a doubled quote, whose strings this function does not find.
+    """
+
+    if not _ENTITY.search(sql) or not _plain_quotes(sql):
+        return sql
+    parts, last = [], 0
+    for match in _STRING.finditer(sql):
+        parts += [_ENTITY.sub("&", sql[last : match.start()]), match.group(0)]
+        last = match.end()
+    parts.append(_ENTITY.sub("&", sql[last:]))
+    out = "".join(parts)
+    return out if out != sql and _parses(out) else sql
+
+
+class _OtherReading(Exception):
+    pass
+
+
+def joined_strings(sql: str, columns: set[str]) -> str:
+    """A LeetCode answer whose neighbouring strings were joined across ``THEN`` or ``ELSE``, taken apart again.
+
+    VeriEQL's files hold ``CASE WHEN SIZE = 'S' THEN 'SMALL' ELSE 'LARGE' END`` as
+    ``CASE WHEN SIZE = 'S THEN SMALL ELSE LARGE' END``: where a string ended right before one of the two words and
+    the next began right after it, the two quotes between them are gone. No parser reads the result (the ``CASE``
+    has lost its ``THEN``). The repair applies only to an answer that does not parse as written: each string that
+    holds `` THEN `` or `` ELSE `` is split there into strings, the rest of the text is kept character for
+    character, and the result must parse. The answer is returned as written when a piece between two of the words
+    is spelled like a number or like a column of the schema (it may not have been a string), when a piece is empty
+    or begins or ends with a space, and when the text has a double quote, a backslash or a doubled quote.
+    """
+
+    if not _SWALLOWED.search(sql) or not _plain_quotes(sql) or _parses(sql):
+        return sql
+    known = {name.lower() for name in columns}
+
+    def apart(match: re.Match) -> str:
+        pieces = _SWALLOWED.split(match.group(0)[1:-1])
+        if len(pieces) == 1:
+            return match.group(0)
+        values, words = pieces[0::2], pieces[1::2]
+        if any(not value or value != value.strip() for value in values):
+            raise _OtherReading
+        if any(_NUMBER.match(value) or value.lower() in known for value in values[1:-1]):
+            raise _OtherReading
+        return f"'{values[0]}'" + "".join(f" {word} '{value}'" for word, value in zip(words, values[1:]))
+
+    try:
+        out = _STRING.sub(apart, sql)
+    except _OtherReading:
+        return sql
+    return out if out != sql and _parses(out) else sql
+
+
+_WHOLE_NUMBER_TYPES = ("INT", "INTEGER", "BIGINT", "SMALLINT")
+
+
+def _kind(column) -> str:
+    return column.type.split("(")[0].upper()
+
+
+def _whole_number(node: exp.Expression) -> bool:
+    if isinstance(node, exp.Neg):
+        node = node.this
+    return isinstance(node, exp.Literal) and not node.is_string and node.name.isdigit() and len(node.name) <= 9
+
+
+def _fits(node: exp.Expression, column, by_name: dict) -> bool:
+    """Whether ``node`` is a literal of the column's kind (for an ``ENUM``, one of its values), or a column of that kind."""
+
+    kind = _kind(column)
+    if isinstance(node, exp.Column):
+        other = by_name[node.name.lower()]
+        return other is column or (kind in _WHOLE_NUMBER_TYPES and _kind(other) in _WHOLE_NUMBER_TYPES)
+    if kind == "ENUM":
+        return isinstance(node, exp.Literal) and node.is_string and node.name in column.values
+    return kind in _WHOLE_NUMBER_TYPES and _whole_number(node)
+
+
+def _compares(node: exp.Expression, other: exp.Expression, by_name: dict, *, ordered: bool) -> bool:
+    """Whether ``node`` and ``other`` are a column and a literal of its kind: a comparison the engine makes without
+    converting either side. Texts are only compared for equality (an ``ENUM`` orders by position, not by spelling)."""
+
+    if isinstance(other, exp.Column) and not isinstance(node, exp.Column):
+        node, other = other, node
+    if not isinstance(node, exp.Column):
+        return False
+    column = by_name[node.name.lower()]
+    kind = _kind(column)
+    if kind in _WHOLE_NUMBER_TYPES:
+        return _whole_number(other) or (isinstance(other, exp.Column) and _kind(by_name[other.name.lower()]) in _WHOLE_NUMBER_TYPES)
+    if ordered or kind not in ("ENUM", "VARCHAR", "CHAR", "TEXT"):
+        return False
+    return isinstance(other, exp.Literal) and other.is_string or other is not node and isinstance(other, exp.Column) and by_name[other.name.lower()] is column
+
+
+def _plain_condition(node: exp.Expression, by_name: dict) -> bool:
+    """Whether ``node`` is a test an ``UPDATE`` and a ``SELECT`` evaluate alike (see ``update_as_select``)."""
+
+    if isinstance(node, exp.Paren):
+        return _plain_condition(node.this, by_name)
+    if isinstance(node, (exp.And, exp.Or)):
+        return _plain_condition(node.this, by_name) and _plain_condition(node.expression, by_name)
+    if isinstance(node, exp.Not):
+        return _plain_condition(node.this, by_name)
+    if isinstance(node, exp.Boolean):
+        return True
+    if isinstance(node, (exp.EQ, exp.NEQ, exp.NullSafeEQ)):
+        return _compares(node.this, node.expression, by_name, ordered=False)
+    if isinstance(node, (exp.GT, exp.GTE, exp.LT, exp.LTE)):
+        return _compares(node.this, node.expression, by_name, ordered=True)
+    if isinstance(node, exp.In):
+        values = node.expressions
+        return bool(values) and set(node.args) <= {"this", "expressions"} and all(_compares(node.this, value, by_name, ordered=False) for value in values) and not any(isinstance(value, exp.Column) for value in values)
+    if isinstance(node, exp.Like):
+        return not node.args.get("escape") and isinstance(node.expression, exp.Literal) and _compares(node.this, node.expression, by_name, ordered=False)
+    if isinstance(node, exp.Is):
+        return isinstance(node.this, exp.Column) and isinstance(node.expression, exp.Null)
+    return False
+
+
+def _assigned_value(node: exp.Expression, column, by_name: dict, tests: list) -> bool:
+    """Whether every value ``node`` can give is one the column stores as it is; the tests it makes go to ``tests``."""
+
+    if isinstance(node, exp.Paren):
+        return _assigned_value(node.this, column, by_name, tests)
+    if isinstance(node, exp.Null):
+        return not column.not_null
+    if isinstance(node, exp.Case):
+        operand = node.this
+        for branch in node.args.get("ifs") or []:
+            tests.append(branch.this if operand is None else exp.EQ(this=operand.copy(), expression=branch.this.copy()))
+            if not _assigned_value(branch.args["true"], column, by_name, tests):
+                return False
+        default = node.args.get("default")
+        return not column.not_null if default is None else _assigned_value(default, column, by_name, tests)
+    if isinstance(node, exp.If):
+        tests.append(node.this)
+        other = node.args.get("false")
+        return _assigned_value(node.args["true"], column, by_name, tests) and (not column.not_null if other is None else _assigned_value(other, column, by_name, tests))
+    return _fits(node, column, by_name)
+
+
+def update_as_select(sql: str, tables: dict, constrained: frozenset = frozenset()) -> str:
+    """A LeetCode answer that is an ``UPDATE``, read as the table it leaves.
+
+    One problem of VeriEQL's files asks for a statement, not a query ("swap two values of a column in place"). Two
+    such statements are the same answer exactly when they leave the same table, and the table an ``UPDATE`` leaves
+    is a query over the table it found: every column as it was, and the assigned column as
+
+        CASE WHEN <the statement's WHERE> THEN <the assigned value> ELSE <the column> END
+
+    (the value alone when there is no ``WHERE``; a row whose ``WHERE`` is NULL is not updated, which is the
+    ``ELSE``). The harness then searches and proves the two queries like any other pair.
+
+    The reading is taken only where storing the value cannot change or refuse it, and where the statement's tests
+    are ones an ``UPDATE`` and a ``SELECT`` evaluate alike (MySQL's strict mode turns a conversion warning of a
+    test into an error in an ``UPDATE`` only). So the statement must be: one table of the schema, with or
+    without an alias; one assignment; no join, ``ORDER BY``, ``LIMIT`` or subquery; the assigned column an
+    ``ENUM`` or a whole number, and not one of ``constrained`` (the harness names there, as lower-case
+    ``(table, column)``, every column of a key, a foreign key or a declared check a new value could break); the
+    value built from ``CASE``, ``IF`` and parentheses over values the column
+    stores unchanged (one of the ``ENUM``'s declared values spelled exactly, a whole-number literal of at most
+    nine digits for a whole-number column, a column of the same kind, and NULL only for a column that may be
+    NULL); every test a comparison of a column with a literal of its own kind (``=``, ``<>``, ``<=>``, ``IN``,
+    ``LIKE``, ``IS NULL``; an order comparison only between whole numbers) joined by ``AND``, ``OR`` and ``NOT``.
+    Any other statement is returned as written and its pair stays unread, which is never wrong. ``tables`` maps a
+    table's name to its columns (objects with ``name``, ``type``, ``values`` and ``not_null``).
+    """
+
+    try:
+        tree = sqlglot.parse_one(sql, read="mysql")
+    except Exception:
+        return sql
+    if not isinstance(tree, exp.Update) or any(value for key, value in tree.args.items() if key not in ("this", "expressions", "where")):
+        return sql
+    target = tree.this
+    if not isinstance(target, exp.Table) or not isinstance(target.this, exp.Identifier) or any(value for key, value in target.args.items() if key not in ("this", "alias")):
+        return sql
+    alias = target.args.get("alias")
+    if alias is not None and (not isinstance(alias, exp.TableAlias) or alias.args.get("columns") or alias.this is None):
+        return sql
+    columns = {name.lower(): found for name, found in tables.items()}.get(target.name.lower())
+    if columns is None or len(tree.expressions) != 1:
+        return sql
+    by_name = {column.name.lower(): column for column in columns}
+    if len(by_name) != len(columns):
+        return sql
+    qualifier = (target.alias or target.name).lower()
+    for column in tree.find_all(exp.Column):
+        if column.args.get("db") or column.args.get("catalog") or column.name.lower() not in by_name or not isinstance(column.this, exp.Identifier):
+            return sql
+        if column.table and column.table.lower() != qualifier:
+            return sql
+    assignment = tree.expressions[0]
+    if not isinstance(assignment, exp.EQ) or not isinstance(assignment.this, exp.Column):
+        return sql
+    assigned = by_name[assignment.this.name.lower()]
+    if _kind(assigned) != "ENUM" and _kind(assigned) not in _WHOLE_NUMBER_TYPES:
+        return sql
+    if (target.name.lower(), assigned.name.lower()) in constrained:
+        return sql
+    tests: list[exp.Expression] = []
+    if not _assigned_value(assignment.expression, assigned, by_name, tests):
+        return sql
+    where = tree.args.get("where")
+    if where is not None:
+        tests.append(where.this)
+    if not all(_plain_condition(test, by_name) for test in tests):
+        return sql
+    items = []
+    for column in columns:
+        own = exp.column(column.name, table=target.alias or None)
+        if column is not assigned:
+            items.append(own)
+            continue
+        value = assignment.expression.copy()
+        if where is not None:
+            value = exp.Case(ifs=[exp.If(this=where.this.copy(), true=value)], default=own)
+        items.append(exp.alias_(value, column.name))
+    select = exp.Select(expressions=items).from_(target.copy())
+    out = select.sql(dialect="mysql")
+    try:
+        return out if sqlglot.parse_one(out, read="mysql") == select else sql
+    except Exception:
+        return sql

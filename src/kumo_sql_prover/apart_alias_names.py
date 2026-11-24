@@ -16,8 +16,11 @@ sources. Written with a name for each,
     LEFT JOIN vals AS v_1 ON c.r = v_1.name
 
 it is the query those rules already read when its author chose two names. ``apart_table_names`` does this for a
-table read twice under its own name; this module does it for every other clash of two source names: two aliases,
-an alias and a table's own name, the alias of a derived table and a source inside it.
+table read twice under its own name; this module does it for the other clashes of two source names (two aliases,
+an alias and a table's own name, the alias of a derived table and a source inside it) between a select and the
+derived table it starts from: its ``FROM`` item, the ``FROM`` item of that, and so on. That is where the merge
+is the next step of a proof; a clash with a derived table that is joined in is left alone (measured on the
+development pairs: no proof gained there, and every unproved pair the rule fires on pays a second proof run).
 
 **Why it holds.** An alias changes no row: it only changes the name the columns of that source are asked by. A
 column written ``v.c`` belongs to the nearest select around it, going outwards, that reads a source called ``v``;
@@ -26,9 +29,9 @@ renamed with the source it belongs to, a column written without a source name is
 depend on what the sources are called), and the new names are names nothing in the query uses. Output names are
 column names and do not change.
 
-**Left alone.** Two sources of one name of which neither is inside a derived table of the other's select (the
-branches of a ``UNION``, or a read inside an ``IN`` or ``EXISTS`` subquery or a scalar subquery: the prover reads
-those under one name already, and the rule would only cost a second run); a table read with a database name, a
+**Left alone.** Two sources of one name of which neither select starts from the other's (a derived table that
+is joined in, the branches of a ``UNION``, a read inside an ``IN`` or ``EXISTS`` subquery or a scalar subquery:
+the prover reads the last three under one name already); a table read with a database name, a
 table function, a sample or a hint and no alias; a query with a qualified column that names no source around it, or
 with a database-qualified column; a query in which a column without a source name is spelled like one of the names
 to change (BigQuery and PostgreSQL read a source's name alone as its whole row); a select that reads two sources of
@@ -41,13 +44,17 @@ from __future__ import annotations
 
 from sqlglot import exp
 
-from .apart_table_names import _derived, _lower, _plain, _sources
+from .apart_table_names import _lower, _plain, _sources
 
 NAME = "apart_alias_names"
 
 
 def _name(source: exp.Expression) -> str:
     return _lower(source.alias_or_name)
+
+
+def _own_name(source: exp.Expression) -> bool:
+    return isinstance(source, exp.Table) and _plain(source)
 
 
 def _renamable(source: exp.Expression) -> bool:
@@ -58,9 +65,28 @@ def _renamable(source: exp.Expression) -> bool:
     return isinstance(source, exp.Subquery) and bool(source.alias)
 
 
+def _starts_from(one: exp.Select, other: exp.Select) -> bool:
+    """Whether one of two selects is the derived table the other starts from: its ``FROM`` item, or the ``FROM``
+    item of that, and so on."""
+
+    return one is not other and (_from_chain(one, other) or _from_chain(other, one))
+
+
+def _from_chain(inner: exp.Select, outer: exp.Select) -> bool:
+    node: exp.Expression = inner
+    while node is not outer:
+        holder = node.parent
+        if not isinstance(holder, exp.Subquery) or not isinstance(holder.parent, exp.From):
+            return False
+        node = holder.parent.parent
+        if not isinstance(node, exp.Select):
+            return False
+    return True
+
+
 def name_aliases_apart(tree: exp.Expression) -> tuple[exp.Expression, bool]:
-    """``tree`` with a new name for every source whose name is also the name of a source inside a derived table of
-    its select, or of a source of a select that has its own select inside a derived table; whether it changed."""
+    """``tree`` with a new name for every source whose name is also the name of a source of the derived table its
+    select starts from (or of a select that starts from its own select); whether it changed."""
 
     names: dict[str, int] = {}
     for source in tree.find_all(exp.Table, exp.Subquery):
@@ -90,7 +116,13 @@ def _rename(tree: exp.Expression) -> bool:
         source
         for source in named
         if _renamable(source)
-        and any(other is not source and _name(other) == _name(source) and _derived(owner[id(source)], owner[id(other)]) for other in named)
+        and any(
+            other is not source
+            and _name(other) == _name(source)
+            and not (_own_name(source) and _own_name(other))  # ``apart_table_names`` reads those
+            and _starts_from(owner[id(source)], owner[id(other)])
+            for other in named
+        )
     ]
     if not targets:
         return False
