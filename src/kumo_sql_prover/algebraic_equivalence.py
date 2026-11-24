@@ -118,6 +118,7 @@ from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
 from . import float_regrouping
 from . import shape_fallback, worker_rules
+from . import kept_union_names
 from . import union_source_names
 from .union_rollup import roll_up_grouped_union
 from .one_row_joins import cross_join_one_row
@@ -144,6 +145,7 @@ from .counted_outer_groups import count_outer_groups
 from .discrete_bounds import close_strict_bounds, fold_chained_dates
 from .filter_terms import exists_outer_terms, pinned_columns, shared_filter_terms
 from .self_lookup_counts import read_self_lookup_counts, waits_for_lookup
+from .key_fixed_groupings import read_key_fixed_grouping
 from .rejoined_parents import drop_rejoined_parent
 from .unread_join_chains import drop_unread_chained_join
 from .labelled_cases import read_labelled_cases
@@ -2488,10 +2490,14 @@ def _canonicalize_union_source(node: exp.Subquery) -> exp.Expression | None:
         elif column.name.lower() in renames:
             return None  # ambiguous unqualified use: leave it alone
     clashing = union_source_names.select_aliases(outer) if shape_fallback.enabled() else set()
+    renamed = []
     for column in targets:
         old_name = column.name
+        renamed.append((column, column.this.copy()))
         column.set("this", exp.to_identifier(renames[old_name.lower()]))
         union_source_names.qualify(column, old_name, node.alias, clashing)  # a new name that is also a select alias
+    if shape_fallback.rule_enabled("kept_union_names"):
+        kept_union_names.keep(outer, renamed)  # a select item by itself keeps the output name an outer query reads
     canonical.sort(key=lambda b: b.sql(dialect="bigquery"))
     union: exp.Expression = canonical[0]
     for branch in canonical[1:]:
@@ -5796,6 +5802,7 @@ def normalize(
         lambda sel: _narrow_twentieth("grouped_key_counts", lambda s: grouped_key_counts(s, keys, not_null, types_map), sel),
         lambda sel: _narrow_twenty_seventh("unread_join_chains", lambda s: drop_unread_chained_join(s, schema), sel),
         lambda sel: _narrow_twenty_seventh("rejoined_parents", lambda s: drop_rejoined_parent(s, schema, keys, not_null, types_map), sel),
+        lambda sel: _narrow_twenty_seventh("key_fixed_groupings", lambda s: read_key_fixed_grouping(s, schema, keys, not_null, types_map, dialect), sel),
         lambda sel: _narrow_sixteenth("labelled_cases", read_labelled_cases, sel),
         lambda sel: _narrow_sixteenth("quotient_comparisons", lambda s: quotient_step(s, types_map, dialect), sel),
         lambda sel: close_strict_bounds(sel, types_map, dialect),

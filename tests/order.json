@@ -745,7 +745,16 @@
   "tests/test_if_as_case.py::test_a_pair_is_proved_and_only_with_the_rule[left1-right1]": 2.8,
   "tests/test_nested_membership_joins.py::test_pairs_that_differ_stay_unproved": 7.2,
   "tests/test_nested_membership_joins.py::test_a_pair_is_proved_and_only_with_the_rule[IN]": 2.1,
-  "tests/test_nested_membership_joins.py::test_a_pair_is_proved_and_only_with_the_rule[NOT IN]": 2.2
+  "tests/test_nested_membership_joins.py::test_a_pair_is_proved_and_only_with_the_rule[NOT IN]": 2.2,
+  "tests/test_key_fixed_groupings.py::test_pairs_that_differ_stay_unproved": 17.0,
+  "tests/test_key_fixed_groupings.py::test_a_pair_is_proved_and_only_with_the_rule[1]": 6.5,
+  "tests/test_key_fixed_groupings.py::test_a_pair_is_proved_and_only_with_the_rule[s.shop_id]": 6.5,
+  "tests/test_key_fixed_groupings.py::test_a_pair_is_proved_and_only_with_the_rule[v.shop_id]": 6.5,
+  "tests/test_kept_union_names.py::test_pairs_that_differ_stay_unproved[left0-right0]": 2.2,
+  "tests/test_kept_union_names.py::test_pairs_that_differ_stay_unproved[left1-right1]": 2.5,
+  "tests/test_kept_union_names.py::test_pairs_that_differ_stay_unproved[left2-right2]": 2.3,
+  "tests/test_kept_union_names.py::test_pairs_that_differ_stay_unproved[left3-right3]": 2.9,
+  "tests/test_kept_union_names.py::test_a_pair_is_proved_and_was_declined_without_the_repair": 2.6
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,

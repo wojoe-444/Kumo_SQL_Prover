@@ -247,7 +247,7 @@ NINTH_BATCH = frozenset(
 # off, and with one of them off the stages run as they did before that reading was made early. ``aggregate_date_windows``
 # is the part of ``date_windows`` that reads MIN and MAX of a DATE column (batch 26): off, the rule reads what it read.
 # ``same_text_pairs`` (batch 28) is asked after every stage, of a pair they left unproved.
-_BESIDE_NINTH = frozenset({"verieql_worker_rules", "early_using", "early_group_names", "aggregate_date_windows", "same_text_pairs"})
+_BESIDE_NINTH = frozenset({"verieql_worker_rules", "early_using", "early_group_names", "aggregate_date_windows", "same_text_pairs", "kept_union_names"})
 
 _NINTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_ninth_stage", default=None)
 _NINTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_ninth_seen", default=None)
@@ -1119,7 +1119,7 @@ def note_twenty_fifth_candidate() -> None:
 # whether one of its rules would have fired, and then the staged proof runs once more with the fifteenth to the
 # twenty-seventh batch on. So a pair an earlier step decides is decided as it was.
 
-TWENTY_SEVENTH_BATCH = frozenset({"group_alias_names", "if_as_case", "keyed_join_windows", "lookup_pivots", "nested_membership_joins", "one_source_names", "regrouped_windows", "rejoined_parents", "single_row_aggregates", "unread_join_chains"})
+TWENTY_SEVENTH_BATCH = frozenset({"group_alias_names", "if_as_case", "key_fixed_groupings", "keyed_join_windows", "lookup_pivots", "nested_membership_joins", "one_source_names", "regrouped_windows", "rejoined_parents", "single_row_aggregates", "unread_join_chains"})
 
 _TWENTY_SEVENTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_twenty_seventh_stage", default=None)
 _TWENTY_SEVENTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_twenty_seventh_seen", default=None)
