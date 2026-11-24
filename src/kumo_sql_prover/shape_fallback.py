@@ -1119,7 +1119,13 @@ def note_twenty_fifth_candidate() -> None:
 # whether one of its rules would have fired, and then the staged proof runs once more with the fifteenth to the
 # twenty-seventh batch on. So a pair an earlier step decides is decided as it was.
 
-TWENTY_SEVENTH_BATCH = frozenset({"group_alias_names", "half_open_days", "if_as_case", "key_fixed_groupings", "keyed_join_windows", "lookup_pivots", "nested_membership_joins", "one_source_names", "regrouped_windows", "rejoined_parents", "single_row_aggregates", "unread_join_chains"})
+TWENTY_SEVENTH_BATCH = frozenset({"group_alias_names", "half_open_days", "if_as_case", "key_fixed_groupings", "keyed_join_windows", "late_cte_lists", "lookup_pivots", "nested_membership_joins", "one_source_names", "regrouped_windows", "rejoined_parents", "single_row_aggregates", "unread_join_chains"})
+
+# A rule of this batch fires only in that last step, where no attempt has a reading from before the batch to keep. With
+# one of them switched off (a narrow attempt of the step, or a test that asks what the prover does without the rule) the
+# staged batches stay on, as they do for the switches of ``_BESIDE_NINTH``: otherwise "without the rule" would also be
+# without the ninth to the thirteenth batch, and a pair would look as if it needed the rule when it needed those.
+_BESIDE_NINTH = _BESIDE_NINTH | TWENTY_SEVENTH_BATCH
 
 _TWENTY_SEVENTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_twenty_seventh_stage", default=None)
 _TWENTY_SEVENTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_twenty_seventh_seen", default=None)

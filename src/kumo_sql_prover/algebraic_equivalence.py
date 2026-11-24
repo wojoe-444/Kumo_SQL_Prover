@@ -5229,7 +5229,10 @@ def normalize(
     tree = _resolve_ordinals(tree, group_by=not group_by_constants)
     tree = _unwrap_output_columns(_lowercase_columns(tree))
     listed: list[str] = []
-    if shape_fallback.rule_enabled("listed_cte_names") and (shape_fallback.thirteenth_batch_enabled() or shape_fallback.thirteenth_watching()):
+    # batch 30: the last step of batch 27 reads the list in each of its attempts. The thirteenth batch's stage makes one
+    # attempt, so a pair that needs the list read and a rule of a later attempt was not reached.
+    late_lists = shape_fallback.rule_enabled("late_cte_lists") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching())
+    if shape_fallback.rule_enabled("listed_cte_names") and (shape_fallback.thirteenth_batch_enabled() or shape_fallback.thirteenth_watching() or late_lists):
         from .listed_cte_names import name_listed_cte_outputs
 
         # pre-pass (thirteenth batch), before the WITH queries are inlined: a column list on a WITH name as aliases
@@ -5238,8 +5241,14 @@ def normalize(
             listed.append("listed_cte_names")
             if shape_fallback.thirteenth_batch_enabled():
                 tree = named_ctes
+            elif late_lists and shape_fallback.twenty_seventh_batch_enabled():
+                tree = named_ctes
+                shape_fallback.note_fired("late_cte_lists")
             else:
-                shape_fallback.note_thirteenth_candidate()  # said here: inlining may decline the query as it is written
+                if shape_fallback.thirteenth_watching():
+                    shape_fallback.note_thirteenth_candidate()  # said here: inlining may decline the query as it is written
+                if late_lists:
+                    shape_fallback.note_twenty_seventh_candidate()
     tree = _inline_ctes(tree)
     if shape_fallback.rule_enabled("early_using") and schema:
         tree = _using_to_on(tree, schema)  # USING read as ON before the pre-passes, which leave a USING join alone

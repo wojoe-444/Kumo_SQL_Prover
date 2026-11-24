@@ -103,11 +103,17 @@ PAIRS = [
 ]
 
 
-@pytest.mark.parametrize("left, right", PAIRS)
-def test_a_pair_is_proved_and_only_with_the_rule(left, right):
+def test_a_pair_is_proved_and_only_with_the_rule():
+    # IF on the flat side: the reading of counts over a joined child table looks for the CASE spelling
+    left, right = PAIRS[0]
     assert _proved(left, right)
     with shape_fallback.without("if_as_case"):
         assert not _proved(left, right)
+
+
+def test_the_pair_with_the_spellings_swapped_is_proved():
+    # IF inside the counted table: an earlier batch reads it there, with the rule or without
+    assert _proved(*PAIRS[1])
 
 
 def test_pairs_that_differ_stay_unproved():
