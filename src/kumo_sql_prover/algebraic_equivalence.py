@@ -5244,16 +5244,22 @@ def normalize(
             shape_fallback.note_fired("apart_alias_names")
         elif wrote:
             shape_fallback.note_twenty_fifth_candidate()  # an earlier step: the step after the last is worth running
-    if shape_fallback.rule_enabled("shared_group_names") and (shape_fallback.eleventh_batch_enabled() or shape_fallback.eleventh_watching()):
+    if shape_fallback.rule_enabled("shared_group_names"):
         from .shared_group_names import qualify_shared_group_names
 
-        # pre-pass (eleventh batch): a bare GROUP BY name two joined tables share is the select-list column (MySQL)
+        # pre-pass (eleventh batch): a bare GROUP BY name two joined tables share is the select-list column (MySQL).
+        # It is a reading of the name and not a choice between two shapes: without it such a query is not read at
+        # all. So every stage reads the name (``early_group_names``, batch 26), and stage four still runs for the
+        # pair as it did when only that stage read it.
         named, renamed = qualify_shared_group_names(tree, dialect)
         if renamed and shape_fallback.eleventh_batch_enabled():
             tree = named
             shape_fallback.note_fired("shared_group_names")
         elif renamed:
-            shape_fallback.note_eleventh_candidate()  # an earlier stage: stage four is worth running
+            if shape_fallback.rule_enabled("early_group_names"):
+                tree = named
+            if shape_fallback.eleventh_watching():
+                shape_fallback.note_eleventh_candidate()  # an earlier stage: stage four is worth running
     if shape_fallback.rule_enabled("date_windows") and (shape_fallback.twelfth_batch_enabled() or shape_fallback.twelfth_watching()):
         from .date_windows import write_date_windows
 
