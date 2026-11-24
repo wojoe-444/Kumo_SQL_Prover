@@ -144,6 +144,7 @@ from .counted_outer_groups import count_outer_groups
 from .discrete_bounds import close_strict_bounds, fold_chained_dates
 from .filter_terms import exists_outer_terms, pinned_columns, shared_filter_terms
 from .self_lookup_counts import read_self_lookup_counts, waits_for_lookup
+from .rejoined_parents import drop_rejoined_parent
 from .unread_join_chains import drop_unread_chained_join
 from .labelled_cases import read_labelled_cases
 from .lookup_conditions import lookup_conditions
@@ -5278,6 +5279,14 @@ def normalize(
             if single and shape_fallback.twenty_seventh_batch_enabled():
                 shape_fallback.note_fired("single_row_aggregates")
             wrote = wrote or single
+        if shape_fallback.rule_enabled("keyed_join_windows"):
+            from .keyed_join_windows import read_keyed_join_windows
+
+            # batch 28: AGG(c) OVER (PARTITION BY fk) beside a join to the keyed row is a join with the grouped table
+            turned, keyed = read_keyed_join_windows(turned, schema, keys, not_null, types)
+            if keyed and shape_fallback.twenty_seventh_batch_enabled():
+                shape_fallback.note_fired("keyed_join_windows")
+            wrote = wrote or keyed
         if wrote and shape_fallback.twenty_seventh_batch_enabled():
             tree = turned
         elif wrote:
@@ -5738,6 +5747,7 @@ def normalize(
         lambda sel: _narrow_eighteenth("pinned_columns", lambda s: pinned_columns(s, types_map), sel),
         lambda sel: _narrow_twentieth("grouped_key_counts", lambda s: grouped_key_counts(s, keys, not_null, types_map), sel),
         lambda sel: _narrow_twenty_seventh("unread_join_chains", lambda s: drop_unread_chained_join(s, schema), sel),
+        lambda sel: _narrow_twenty_seventh("rejoined_parents", lambda s: drop_rejoined_parent(s, schema, keys, not_null, types_map), sel),
         lambda sel: _narrow_sixteenth("labelled_cases", read_labelled_cases, sel),
         lambda sel: _narrow_sixteenth("quotient_comparisons", lambda s: quotient_step(s, types_map, dialect), sel),
         lambda sel: close_strict_bounds(sel, types_map, dialect),
