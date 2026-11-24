@@ -722,7 +722,10 @@
   "tests/test_twentieth_step.py::test_a_pair_the_rule_does_not_read_and_a_pair_proved_before_get_no_run_of_the_step": 2.1,
   "tests/test_twenty_fourth_step.py::test_pairs_that_differ_stay_unproved": 6.0,
   "tests/test_twenty_fourth_step.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[5]": 2.4,
-  "tests/test_twenty_fourth_step.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[4]": 2.0
+  "tests/test_twenty_fourth_step.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[4]": 2.0,
+  "tests/test_twenty_fifth_step.py::test_pairs_that_differ_stay_unproved": 3.7,
+  "tests/test_twenty_fifth_step.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[2]": 2.4,
+  "tests/test_harness_translation.py::test_the_leetcode_harness_reads_two_updates_as_the_tables_they_leave": 2.8
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,
