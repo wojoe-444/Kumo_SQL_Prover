@@ -5287,6 +5287,14 @@ def normalize(
             if keyed and shape_fallback.twenty_seventh_batch_enabled():
                 shape_fallback.note_fired("keyed_join_windows")
             wrote = wrote or keyed
+        if shape_fallback.rule_enabled("regrouped_windows"):
+            from .regrouped_windows import read_regrouped_windows
+
+            # batch 28: AGG(SUM(x)) OVER (PARTITION BY k) in a grouped derived table is a join with the table grouped again
+            turned, regrouped = read_regrouped_windows(turned)
+            if regrouped and shape_fallback.twenty_seventh_batch_enabled():
+                shape_fallback.note_fired("regrouped_windows")
+            wrote = wrote or regrouped
         if wrote and shape_fallback.twenty_seventh_batch_enabled():
             tree = turned
         elif wrote:
