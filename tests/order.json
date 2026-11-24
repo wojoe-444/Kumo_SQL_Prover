@@ -735,7 +735,6 @@
   "tests/test_rejoined_parents.py::test_pairs_that_differ_stay_unproved": 4.9,
   "tests/test_keyed_join_windows.py::test_pairs_that_differ_stay_unproved": 4.6,
   "tests/test_unread_join_chains.py::test_a_pair_is_proved_and_only_with_the_rule[left1-right1]": 4.0,
-  "tests/test_same_text_pairs.py::test_a_query_the_provers_cannot_read_is_equal_to_itself": 3.2,
   "tests/test_keyed_join_windows.py::test_a_pair_is_proved_and_only_with_the_rule[left1-right1]": 2.9,
   "tests/test_rejoined_parents.py::test_a_pair_is_proved_and_only_with_the_rule": 2.8,
   "tests/test_regrouped_windows.py::test_pairs_that_differ_stay_unproved": 3.3,

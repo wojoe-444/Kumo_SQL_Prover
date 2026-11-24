@@ -258,8 +258,10 @@ def test_the_stage_switches():
                 with shape_fallback.without("own_key_membership"):
                     assert not shape_fallback.ninth_batch_enabled()
     assert not shape_fallback.ninth_staged()
-    # the worker group, and the switches of the batch 26 readings, which only tests turn off
-    assert shape_fallback._BESIDE_NINTH == {worker_rules.NAME, "early_using", "early_group_names", "aggregate_date_windows"}
+    # the worker group, and switches only tests turn off: the batch 26 readings, the kept output name of batch 30, and
+    # the rules of the last step of batch 27 (off, the staged batches stay on)
+    beside = {worker_rules.NAME, "early_using", "early_group_names", "aggregate_date_windows", "kept_union_names"}
+    assert shape_fallback._BESIDE_NINTH == beside | shape_fallback.TWENTY_SEVENTH_BATCH
 
 
 def test_a_pair_proved_before_the_batch_never_sees_it(monkeypatch):
@@ -423,9 +425,11 @@ def test_stage_three_is_two_attempts_and_its_sub_proofs_one(monkeypatch):
 
     # the step of batch 24 reads this pair too and would run the whole proof once more
     # (tests/test_twenty_fourth_step.py holds its runs): its rule reads nothing here, so that the steps are those of stage three
-    from kumo_sql_prover import shared_scan_aggregates
+    from kumo_sql_prover import if_as_case, shared_scan_aggregates
 
     monkeypatch.setattr(shared_scan_aggregates, "read_shared_scans", lambda tree, *args, **kwargs: (tree, False))
+    # so does the last step of batch 27, for the IF (tests/test_twenty_seventh_step.py holds its runs)
+    monkeypatch.setattr(if_as_case, "read_if_as_case", lambda tree, *args, **kwargs: (tree, False))
     result, steps = tenth_steps(monkeypatch, *OTHER_ROUNDING, **SHARE_OPTIONS)
     assert not result.proven and steps
     assert set(steps) == {frozenset(), frozenset({"aggregate_scalars"})}
