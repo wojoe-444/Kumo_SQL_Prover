@@ -95,6 +95,7 @@ from .keyed_set_join import lift_keyed_set_join
 from .aggregate_rules import rewrite_aggregates
 from .null_facts import null_contradiction
 from .keyed_semijoin import distinct_key_join_to_exists
+from .named_nested_correlation import flatten_named_correlation
 from .nested_correlation import flatten_nested_correlation
 from .null_rejecting_joins import left_join_to_inner
 from .presence_given_absence import drop_implied_presence_filters
@@ -5791,6 +5792,7 @@ def normalize(
         lambda sel: _narrow("keyed_semijoin", lambda s: distinct_key_join_to_exists(s, keys, not_null, types_map, schema), sel),
         lambda sel: _narrow_shape("distinct_match_joins", lambda s: ask_unlisted_joins(s, types_map, schema), sel),
         lambda sel: _narrow("nested_correlation", lambda s: flatten_nested_correlation(s, types_map), sel),
+        lambda sel: _narrow_twenty_seventh("named_nested_correlation", lambda s: flatten_named_correlation(s, types_map, schema), sel),
         lambda sel: _narrow("presence_given_absence", lambda s: drop_implied_presence_filters(s, not_null, schema), sel),
         merge_preserved_join_source,
         lambda sel: prune_windowed_outputs(sel, schema),
