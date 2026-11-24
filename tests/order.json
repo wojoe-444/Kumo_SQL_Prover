@@ -770,7 +770,11 @@
   "tests/test_named_nested_correlation.py::test_a_pair_is_proved_and_only_with_the_rule": 10.0,
   "tests/test_named_nested_correlation.py::test_pairs_that_differ_stay_unproved[NOT IN-06]": 7.0,
   "tests/test_named_nested_correlation.py::test_pairs_that_differ_stay_unproved[NOT IN-08]": 7.0,
-  "tests/test_named_nested_correlation.py::test_pairs_that_differ_stay_unproved[IN-07]": 7.0
+  "tests/test_named_nested_correlation.py::test_pairs_that_differ_stay_unproved[IN-07]": 7.0,
+  "tests/test_merged_absence_tests.py::test_a_pair_is_proved_and_only_with_the_rule": 15.0,
+  "tests/test_merged_absence_tests.py::test_pairs_that_differ_stay_unproved[< '2024-01-01'-> '2024-01-08']": 10.0,
+  "tests/test_merged_absence_tests.py::test_pairs_that_differ_stay_unproved[<= '2024-01-01'-> '2024-01-07']": 10.0,
+  "tests/test_merged_absence_tests.py::test_pairs_that_differ_stay_unproved[< '2024-01-01'-< '2024-01-01']": 10.0
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,
