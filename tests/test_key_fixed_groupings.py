@@ -10,6 +10,7 @@ import sqlite3
 
 import pytest
 import sqlglot
+from sqlglot import exp
 
 from kumo_sql_prover import shape_fallback
 from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
@@ -54,6 +55,8 @@ READ = [
         "SELECT k.shop_id, k.item, k.qty FROM stock AS k JOIN visits AS v ON v.shop_id = k.shop_id GROUP BY k.shop_id, k.item",
         "SELECT DISTINCT k.shop_id, k.item, k.qty FROM stock AS k JOIN visits AS v ON v.shop_id = k.shop_id",
     ),
+    # an output's alias in a derived table: no enclosing query gives it another meaning
+    ("SELECT d.r FROM (SELECT v.shop_id AS r, v.day AS d FROM visits AS v GROUP BY r, d) AS d", "SELECT d.r FROM (SELECT DISTINCT v.shop_id AS r, v.day AS d FROM visits AS v) AS d"),
     # a bare name that is an output, and one that is a column and an output the rows equate with it
     (f"SELECT s.shop_id AS id, s.city AS town {JOINED} GROUP BY id", f"SELECT DISTINCT s.shop_id AS id, s.city AS town {JOINED}"),
     (f"SELECT v.shop_id AS visit_id, s.city {JOINED} AND v.visit_id = v.shop_id GROUP BY visit_id", f"SELECT DISTINCT v.shop_id AS visit_id, s.city {JOINED} AND v.visit_id = v.shop_id"),
@@ -94,6 +97,9 @@ LEFT_ALONE = [
     "SELECT s.region AS shop_id, s.city FROM shops AS s GROUP BY shop_id",
     "SELECT s.shop_id, s.city FROM shops AS s JOIN visits AS v ON s.shop_id >= v.shop_id GROUP BY shop_id",
     f"SELECT s.shop_id AS shop_id, s.city AS town {JOINED} GROUP BY shop_id",
+    # a name that is only an output's alias, where an enclosing query could give it another meaning
+    "SELECT s.city FROM shops AS s WHERE s.shop_id IN (SELECT v.shop_id AS region FROM visits AS v GROUP BY region)",
+    "SELECT s.city, (SELECT v.shop_id AS region FROM visits AS v WHERE v.visit_id = 10 GROUP BY region) AS r FROM shops AS s",
     # a derived table's column is not known to be a whole number: its key is not read off the table's
     "SELECT p.shop_id, s.region FROM (SELECT shop_id, day FROM visits WHERE day > 1) AS p JOIN shops AS s ON s.shop_id = p.shop_id GROUP BY s.shop_id, p.shop_id",
     # sources the declared columns do not place
@@ -117,7 +123,17 @@ def _database(dialect: str):
 
 
 def _read(sql: str, dialect: str = "mysql"):
-    return read_key_fixed_grouping(sqlglot.parse_one(sql, read="mysql"), SCHEMA, KEYS, NOT_NULL, TYPES, dialect)
+    """The statement with its first select the rule reads written as read, None when it reads none."""
+
+    tree = sqlglot.parse_one(sql, read="mysql")
+    for select in list(tree.find_all(exp.Select)):
+        read = read_key_fixed_grouping(select, SCHEMA, KEYS, NOT_NULL, TYPES, dialect)
+        if read is not None:
+            if select is tree:
+                return read
+            select.replace(read)
+            return tree
+    return None
 
 
 @pytest.mark.parametrize("index", range(len(READ)))

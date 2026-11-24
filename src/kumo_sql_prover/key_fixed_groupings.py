@@ -36,7 +36,9 @@ which accept a select item outside the ``GROUP BY`` (PostgreSQL only one its key
 
 **Left alone.** An outer join (its ``ON`` does not hold on the padded rows), ``USING`` and ``NATURAL``, a computed
 output or key, a key that is nullable or not a whole number, a bare ``GROUP BY`` name that two sources have, or
-that is a column and the alias of another output the rows do not equate with it, a name the sources do not place.
+that is a column and the alias of another output the rows do not equate with it, a name that is only an output's
+alias in a select an enclosing query could give names to (a subquery of a ``WHERE``, a ``LATERAL``), a name the sources
+do not place.
 
 It runs in the last step of batch 27 only, so a pair an earlier step decides is decided as it was.
 """
@@ -46,6 +48,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from .ast_utils import FROM_KEY, _output_names, conjuncts, extended_grouping
+from .group_alias_names import _closed
 from .single_row_aggregates import Keyed, column_kind
 
 NAME = "key_fixed_groupings"
@@ -177,6 +180,8 @@ def read_key_fixed_grouping(select: exp.Select, schema, keys, not_null, types, d
             owners = [(source, name) for source, columns in sources.columns.items() if name in columns]
             if len(owners) > 1:
                 return None
+            if not owners and not _closed(select):
+                return None  # only an output's alias here: an enclosing query could give the name another meaning
             meant = owners + aliases.get(name, [])
         if not meant or None in meant or len({find(column) for column in meant}) != 1:
             return None

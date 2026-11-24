@@ -147,8 +147,12 @@ STAGED = "SELECT viewer AS id FROM (SELECT viewer FROM views GROUP BY viewer, da
 
 def test_a_pair_is_proved_and_only_with_the_rule():
     assert _proved(FLAT, STAGED.format(1))
-    with shape_fallback.without("group_alias_names"):
+    # key_fixed_groupings (batch 30) reads the staged spelling too, as SELECT DISTINCT of its output
+    with shape_fallback.without_all(frozenset({"group_alias_names", "key_fixed_groupings"})):
         assert not _proved(FLAT, STAGED.format(1))
+    for name in ("group_alias_names", "key_fixed_groupings"):
+        with shape_fallback.without(name):
+            assert _proved(FLAT, STAGED.format(1)), name
 
 
 def test_pairs_that_differ_stay_unproved():
