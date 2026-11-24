@@ -52,13 +52,13 @@ def switch_off(monkeypatch) -> None:
 
 def test_the_batch_names_its_rule_and_has_its_own_entry_in_the_stage_key():
     assert shape_fallback.TWENTY_FIFTH_BATCH == frozenset({"apart_alias_names"})
-    assert len(shape_fallback.stage_key()) == 12 and shape_fallback.stage_key()[11] is False
+    assert len(shape_fallback.stage_key()) == 13 and shape_fallback.stage_key()[11] is False
     with shape_fallback.twenty_fifth_deferred():
         assert shape_fallback.stage_key()[11] is False
     with shape_fallback.twenty_fourth_on():
-        assert shape_fallback.stage_key()[5:] == (True, True, True, True, True, True, False)  # the step before leaves this one off
+        assert shape_fallback.stage_key()[5:12] == (True, True, True, True, True, True, False)  # the step before leaves this one off
     with shape_fallback.twenty_fifth_on():
-        assert shape_fallback.stage_key()[5:] == (True, True, True, True, True, True, True)  # the step runs with the batches before it on too
+        assert shape_fallback.stage_key()[5:12] == (True, True, True, True, True, True, True)  # the step runs with the batches before it on too
     assert shape_fallback.stage_key()[11] is False
 
 

@@ -5244,6 +5244,30 @@ def normalize(
             shape_fallback.note_fired("apart_alias_names")
         elif wrote:
             shape_fallback.note_twenty_fifth_candidate()  # an earlier step: the step after the last is worth running
+    if any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH) and schema and keys and (
+        shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()
+    ):
+        # pre-pass (twenty-seventh batch): a table turned on its side. A lookup per column (a LEFT JOIN or a scalar
+        # subquery that a key answers with at most one row) is the grouped select with one MAX per lookup, and MIN
+        # or SUM of a value only one row of a group can have is that MAX.
+        turned, wrote = tree, False
+        if shape_fallback.rule_enabled("lookup_pivots"):
+            from .lookup_pivots import read_lookup_pivots
+
+            turned, wrote = read_lookup_pivots(turned, schema, keys, not_null, types)
+            if wrote and shape_fallback.twenty_seventh_batch_enabled():
+                shape_fallback.note_fired("lookup_pivots")
+        if shape_fallback.rule_enabled("single_row_aggregates"):
+            from .single_row_aggregates import read_single_row_aggregates
+
+            turned, single = read_single_row_aggregates(turned, schema, keys, not_null, types, dialect)
+            if single and shape_fallback.twenty_seventh_batch_enabled():
+                shape_fallback.note_fired("single_row_aggregates")
+            wrote = wrote or single
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = turned
+        elif wrote:
+            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
     if shape_fallback.rule_enabled("shared_group_names"):
         from .shared_group_names import qualify_shared_group_names
 
@@ -5900,8 +5924,24 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     if not shape_fallback.last_steps_worth_trying(left_sql, right_sql):
         # Each last step is another whole attempt, and a long pair that stays unproved would pay for every one of
         # them: over the size limit the proof is the one before the steps, for this pair and the proofs inside it.
-        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False), shape_fallback.seventeenth_deferred(watch=False), shape_fallback.eighteenth_deferred(watch=False), shape_fallback.twentieth_deferred(watch=False), shape_fallback.twenty_fourth_deferred(watch=False), shape_fallback.twenty_fifth_deferred(watch=False):
+        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False), shape_fallback.seventeenth_deferred(watch=False), shape_fallback.eighteenth_deferred(watch=False), shape_fallback.twentieth_deferred(watch=False), shape_fallback.twenty_fourth_deferred(watch=False), shape_fallback.twenty_fifth_deferred(watch=False), shape_fallback.twenty_seventh_deferred(watch=False):
             return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
+    with shape_fallback.twenty_seventh_deferred() as twenty_seventh_seen:
+        result, pair, assumed = _prove_with_twenty_fifth_step(left_sql, right_sql, **kwargs)
+    if result.status is SmtStatus.NOT_PROVEN and twenty_seventh_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH):
+        # One more step (hardest-cases batch 27): a rule of the twenty-seventh batch would have fired. The staged proof
+        # once more with every last batch on, on the last pair tried before. Only a proof is taken.
+        with shape_fallback.twenty_seventh_on():
+            later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
+        if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
+    return result
+
+
+def _prove_with_twenty_fifth_step(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:
+    """The proof up to and including the step of batch 25, the last pair it tried, and the assumptions of the steps
+    before a later one."""
+
     with shape_fallback.twenty_fifth_deferred() as twenty_fifth_seen:
         result, pair, assumed = _prove_with_twenty_fourth_step(left_sql, right_sql, **kwargs)
     if result.status is SmtStatus.NOT_PROVEN and twenty_fifth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_FIFTH_BATCH):
@@ -5910,8 +5950,8 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
         with shape_fallback.twenty_fifth_on():
             later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
         if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
-            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
-    return result
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed)))), pair, assumed
+    return result, pair, assumed
 
 
 def _prove_with_twenty_fourth_step(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:
