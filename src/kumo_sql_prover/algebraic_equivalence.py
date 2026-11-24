@@ -5269,6 +5269,16 @@ def normalize(
             shape_fallback.note_fired("if_as_case")
         elif wrote:
             shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
+    if shape_fallback.rule_enabled("group_alias_names") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+        from .group_alias_names import read_group_alias_names
+
+        # pre-pass (batch 29, in the twenty-seventh step): a GROUP BY name only the select list defines, as its expression
+        named, wrote = read_group_alias_names(tree, schema, dialect)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = named
+            shape_fallback.note_fired("group_alias_names")
+        elif wrote:
+            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
     if any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH) and schema and keys and (
         shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()
     ):
