@@ -5279,6 +5279,16 @@ def normalize(
             shape_fallback.note_fired("group_alias_names")
         elif wrote:
             shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
+    if shape_fallback.rule_enabled("one_source_names") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+        from .one_source_names import read_one_source_names
+
+        # pre-pass (batch 29, in the twenty-seventh step): a column a one-source select names as x and as c.x, written bare
+        spelled, wrote = read_one_source_names(tree)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = spelled
+            shape_fallback.note_fired("one_source_names")
+        elif wrote:
+            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
     if any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH) and schema and keys and (
         shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()
     ):
