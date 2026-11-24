@@ -29,7 +29,19 @@ the sum of whole numbers is used like a whole number afterwards (``SUM_KEEPS_KIN
 BIGINT is a NUMERIC, so ``SUM(x) / 2`` keeps the half that ``MAX(x) / 2`` drops. MySQL's sum is a DECIMAL with no
 decimals, which divides as its INT does; SQLite and BigQuery keep the whole number; DuckDB's ``/`` never truncates.
 
-**Left alone.** A select over a join or a derived table, ``ROLLUP`` and the like, an aggregate with ``DISTINCT`` on
+**Through a list of the table's columns.** The select may read the table through a derived table or a ``WITH``
+name that only lists values of its rows, with or without ``DISTINCT`` and ``WHERE``:
+
+    WITH wide AS (SELECT DISTINCT item, CASE WHEN shop = 'north' THEN cost END AS north, .. FROM prices)
+    SELECT item, SUM(north) AS north, .. FROM wide GROUP BY item
+
+The rows of ``wide`` with one item come from the rows of ``prices`` with that item, ``north`` is not NULL on at most
+the one of them the ``CASE`` passes, and ``DISTINCT`` and ``WHERE`` only remove rows. So ``SUM(north)`` adds at
+most one value. The names of the list are read as the values they show: a grouped name has to show a plain column
+of the table, and the aggregate's argument is a ``CASE`` over names of the list or a name that shows one.
+
+**Left alone.** A select over a join, a derived table that joins, groups, limits or holds a window, ``ROLLUP`` and
+the like, an aggregate with ``DISTINCT`` on
 more than one value, a window, a ``FILTER``; a ``CASE`` with two ``WHEN`` or an ``ELSE`` that is not NULL; a
 ``GROUP BY`` name that is also the alias of another select item (the engines do not agree on which of the two is
 meant).
@@ -45,7 +57,7 @@ import re
 from sqlglot import exp
 
 from . import smt_values
-from .ast_utils import FROM_KEY, visible_ctes
+from .ast_utils import FROM_KEY, binding_cte, visible_ctes
 from .unmatched_outer_join import _conjuncts, _unwrap
 
 NAME = "single_row_aggregates"
@@ -170,6 +182,76 @@ class Keyed:
         return False
 
 
+class Listed(Keyed):
+    """A table read through a derived table or a ``WITH`` name that lists values of its rows: the names of the
+    list, read as the columns they show. ``shown`` holds every name of the list with its value over the table."""
+
+    def __init__(self, inner: Keyed, alias: str, shown: dict[str, exp.Expression]) -> None:
+        super().__init__(inner.table, inner.name, sorted(inner.columns), inner.types, inner.never_null, inner.keys)
+        self.inner = inner
+        self.alias = alias
+        self.shown = shown
+
+    @classmethod
+    def read_list(cls, source: exp.Expression | None, schema: dict | None, keys: dict | None, not_null: dict | None, types: dict | None) -> "Listed | None":
+        if isinstance(source, exp.Subquery):
+            alias, body = source.args.get("alias"), source.this
+            if _set_args(source) - {"this", "alias"} or alias is None:
+                return None
+        elif type(source) is exp.Table and isinstance(source.this, exp.Identifier) and not _set_args(source) - {"this", "alias"}:
+            cte = binding_cte(source)
+            if cte is None or not isinstance(cte.parent, exp.With) or cte.parent.args.get("recursive"):
+                return None
+            named = cte.args.get("alias")
+            if named is None or named.args.get("columns") or _set_args(cte) - {"this", "alias"}:
+                return None
+            alias, body = source.args.get("alias") or named, cte.this
+        else:
+            return None
+        if alias.args.get("columns") or not isinstance(alias.this, exp.Identifier) or not isinstance(body, exp.Select):
+            return None
+        listed = _set_args(body)
+        if listed - {"expressions", FROM_KEY, "where", "distinct"} or FROM_KEY not in listed:
+            return None  # a join, a grouping, a limit: the rows are not rows of the table
+        if body.args.get("distinct") is not None and body.args["distinct"].args.get("on"):
+            return None
+        inner = Keyed.read(body.args[FROM_KEY].this, schema, keys, not_null, types)
+        if inner is None:
+            return None
+        shown: dict[str, exp.Expression] = {}
+        for item in body.expressions:
+            if isinstance(item, exp.Star) or (isinstance(item, exp.Column) and isinstance(item.this, exp.Star)):
+                if _set_args(item) - {"this", "table"} or (isinstance(item, exp.Column) and (item.table or "").lower() != inner.alias):
+                    return None
+                new = {name: exp.column(name) for name in inner.columns}
+            else:
+                value = item.unalias()
+                name = (item.alias if isinstance(item, exp.Alias) else (_unwrap(value).name if isinstance(_unwrap(value), exp.Column) else "")).lower()
+                if not name or any(isinstance(node, (exp.Window, exp.AggFunc, exp.Subquery, exp.Select)) for node in value.walk()):
+                    return None
+                new = {name: value}
+            if set(new) & set(shown):
+                return None  # two values under one name
+            shown.update(new)
+        return cls(inner, alias.name.lower(), shown)
+
+    def value(self, node: exp.Expression | None) -> exp.Expression | None:
+        """The value over the table a name of the list shows."""
+
+        node = _unwrap(node) if node is not None else None
+        if not isinstance(node, exp.Column) or node.args.get("db") or node.args.get("catalog") or not isinstance(node.this, exp.Identifier):
+            return None
+        if node.table and node.table.lower() != self.alias:
+            return None
+        return self.shown.get(node.name.lower())
+
+    def column(self, node: exp.Expression | None, qualified: bool = False) -> str | None:
+        value = self.value(node)
+        if value is None or (qualified and not _unwrap(node).table):
+            return None
+        return self.inner.column(value)
+
+
 def guarded(argument: exp.Expression) -> tuple[exp.Expression, exp.Expression] | None:
     """``(condition, value)`` of an argument that is ``value`` on the rows that pass ``condition`` and NULL elsewhere."""
 
@@ -238,7 +320,7 @@ def _rewrite(select: exp.Select, schema: dict, keys: dict, not_null: dict | None
     source = select.args.get(FROM_KEY)
     if source is None or select.args.get("joins") or select.args.get("laterals"):
         return False
-    table = Keyed.read(source.this, schema, keys, not_null, types)
+    table = Keyed.read(source.this, schema, keys, not_null, types) or Listed.read_list(source.this, schema, keys, not_null, types)
     if table is None or not table.keys:
         return False
     grouped = grouped_columns(select, table)
@@ -253,16 +335,23 @@ def _rewrite(select: exp.Select, schema: dict, keys: dict, not_null: dict | None
             if len(argument.expressions) != 1 or argument.args.get("on"):
                 continue
             argument = argument.expressions[0]
+        over, new = table, None
         reading = guarded(argument)
+        if reading is None and isinstance(table, Listed):
+            # a name of the list that shows the CASE: the test is made on the table's own columns
+            shown = table.value(argument)
+            reading = guarded(shown) if shown is not None else None
+            over, new = table.inner, exp.Max(this=_unwrap(argument).copy())
         if reading is None:
             continue
         condition, value = reading
-        pinned = table.pinned(condition)
+        pinned = over.pinned(condition)
         if pinned is None or not table.one_row(grouped | set(pinned)):
             continue
-        if isinstance(call, exp.Sum) and not (sums and table.exact_number(value)):
+        if isinstance(call, exp.Sum) and not (sums and over.exact_number(value)):
             continue
-        new = exp.Max(this=exp.Case(ifs=[exp.If(this=condition.copy(), true=value.copy())]))  # one spelling of the argument
+        if new is None:
+            new = exp.Max(this=exp.Case(ifs=[exp.If(this=condition.copy(), true=value.copy())]))  # one spelling of the argument
         if new != call:
             call.replace(new)
             wrote = True

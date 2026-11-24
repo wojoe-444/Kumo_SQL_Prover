@@ -41,6 +41,15 @@ READ = [
     ("SELECT item, SUM(CASE shop WHEN 'north' THEN cost ELSE NULL END) AS north FROM prices GROUP BY item", ["MAX"]),
     ("SELECT p.item, SUM(CASE WHEN p.shop = 'north' AND p.cost > 5 THEN p.cost * 2 - 1 END) AS north FROM prices AS p GROUP BY p.item", ["MAX"]),
     ("SELECT item, SUM(DISTINCT CASE WHEN shop = 'south' THEN cost END) AS south FROM prices WHERE cost > 7 GROUP BY item", ["MAX"]),
+    # through a list of the table's columns: a WITH name or a derived table, with or without DISTINCT and WHERE
+    (
+        "WITH wide AS (SELECT DISTINCT item, CASE WHEN shop = 'north' THEN cost END AS north, CASE WHEN shop = 'south' THEN cost END AS south FROM prices) "
+        "SELECT item, SUM(north) AS north, MIN(south) AS south FROM wide GROUP BY item",
+        ["MAX", "MAX"],
+    ),
+    ("SELECT w.item, SUM(w.north) AS north FROM (SELECT item, IF(shop = 'north', cost, NULL) AS north FROM prices WHERE cost > 5) AS w GROUP BY w.item", ["MAX"]),
+    ("SELECT id, SUM(CASE WHEN place = 'east' THEN cost END) AS east FROM (SELECT DISTINCT item AS id, shop AS place, cost FROM prices) AS w GROUP BY id", ["MAX"]),
+    ("WITH w AS (SELECT * FROM prices) SELECT item, MIN(CASE WHEN shop = 'south' THEN note END) AS said FROM w AS v GROUP BY 1", ["MAX"]),
     # the whole key in the condition: no grouping is needed
     ("SELECT MIN(CASE WHEN item = 1 AND shop = 'south' THEN note END) AS said FROM prices", ["MAX"]),
     # the whole key in the GROUP BY: every group is one row
@@ -65,9 +74,18 @@ LEFT_ALONE = [
     "SELECT item, MIN(CASE WHEN shop = 'north' THEN cost END) OVER (PARTITION BY item) AS north FROM prices",
     "SELECT item, MIN(CASE WHEN shop = 'north' THEN cost END) AS north FROM prices GROUP BY ROLLUP (item)",
     "SELECT MIN(CASE WHEN shop = 'north' THEN cost END) AS north FROM prices",  # no grouping: every item's north row
-    "SELECT item, MIN(CASE WHEN shop = 'north' THEN cost END) AS north FROM (SELECT * FROM prices) AS p GROUP BY item",
+    "SELECT item, MIN(CASE WHEN shop = 'north' THEN cost END) AS north FROM (SELECT * FROM prices ORDER BY cost LIMIT 5) AS p GROUP BY item",
     "WITH prices AS (SELECT 1 AS item, 'north' AS shop, 2 AS cost UNION ALL SELECT 1, 'north', 3) SELECT item, MIN(CASE WHEN shop = 'north' THEN cost END) AS north FROM prices GROUP BY item",
     "SELECT shop AS item, MIN(CASE WHEN shop = 'north' THEN cost END) AS north FROM prices GROUP BY item",  # a name that is a column and an alias
+    # lists that are not read
+    "SELECT item, SUM(north) AS north FROM (SELECT item, CASE WHEN note = 'a' THEN cost END AS north FROM prices) AS w GROUP BY item",  # not a key
+    "SELECT item, SUM(north) AS north FROM (SELECT p.item, CASE WHEN p.shop = 'north' THEN p.cost END AS north FROM prices AS p JOIN prices AS q ON q.item = p.item) AS w GROUP BY item",
+    "SELECT place, SUM(north) AS north FROM (SELECT note AS place, CASE WHEN shop = 'north' THEN cost END AS north FROM prices) AS w GROUP BY place",
+    "SELECT item, SUM(north) AS north FROM (SELECT item, CASE WHEN shop = 'north' THEN weight END AS north FROM prices) AS w GROUP BY item",  # a floating-point column
+    "WITH w (item, north) AS (SELECT item, CASE WHEN shop = 'north' THEN cost END FROM prices) SELECT item, SUM(north) AS north FROM w GROUP BY item",
+    "SELECT item, SUM(north) AS north FROM (SELECT item, CASE WHEN shop = 'north' THEN cost END AS north FROM prices GROUP BY item, shop, cost) AS w GROUP BY item",
+    "SELECT item, SUM(north) AS north FROM (SELECT item, CASE WHEN shop = 'north' THEN cost END AS north FROM prices LIMIT 3) AS w GROUP BY item",
+    "SELECT item, SUM(north) AS north FROM (SELECT item, SUM(cost) OVER (PARTITION BY item) AS north FROM prices) AS w GROUP BY item",
 ]
 
 
@@ -197,3 +215,23 @@ def test_a_sum_is_read_only_where_it_is_used_like_its_one_value():
     greatest = summed.replace("SUM(", "MAX(")
     assert prove(summed, greatest).proven
     assert not prove_equivalent_algebraic(summed, greatest, schema=SCHEMA, types=TYPES, constraints=CONSTRAINTS, compare_names=False, dialect="postgres", exact_arithmetic=True, timeout_ms=5000).proven
+
+
+def test_a_list_that_is_not_read_would_change_rows():
+    listed = [sql for sql in LEFT_ALONE if "AS w GROUP BY" in sql]
+    # two notes of one item are 'a'; the join shows a row once per row of its item; two items share a note
+    more = ROWS + [(1, "west", 5, "a", 1.0), (2, "north", 3, "a", 1.0)]
+    for sql in listed[:3]:
+        assert _sqlite_rows(sql, more) != _sqlite_rows(sql.replace("SUM(north)", "MAX(north)"), more)
+
+
+def test_a_sum_over_a_list_is_proved_equal_to_the_grouped_select():
+    wide = (
+        "WITH wide AS (SELECT DISTINCT item, CASE WHEN shop = 'north' THEN cost END AS north, CASE WHEN shop = 'south' THEN cost END AS south FROM prices) "
+        "SELECT item, SUM(north) AS north, SUM(south) AS south FROM wide GROUP BY item"
+    )
+    assert prove(wide, SUMS).proven and prove(wide, GREATEST).proven
+    with shape_fallback.without("single_row_aggregates"):
+        assert not prove(wide, SUMS).proven
+    assert not prove(wide, SUMS, {"prices": TableConstraints(not_null=NOT_NULL["prices"])}).proven
+    assert not prove(wide.replace("'south'", "'east'"), SUMS).proven
