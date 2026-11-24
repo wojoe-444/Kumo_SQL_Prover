@@ -246,7 +246,8 @@ NINTH_BATCH = frozenset(
 # pre-passes; ``early_group_names``: a GROUP BY name two joined tables share): nothing in the prover switches them
 # off, and with one of them off the stages run as they did before that reading was made early. ``aggregate_date_windows``
 # is the part of ``date_windows`` that reads MIN and MAX of a DATE column (batch 26): off, the rule reads what it read.
-_BESIDE_NINTH = frozenset({"verieql_worker_rules", "early_using", "early_group_names", "aggregate_date_windows"})
+# ``same_text_pairs`` (batch 28) is asked after every stage, of a pair they left unproved.
+_BESIDE_NINTH = frozenset({"verieql_worker_rules", "early_using", "early_group_names", "aggregate_date_windows", "same_text_pairs"})
 
 _NINTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_ninth_stage", default=None)
 _NINTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_ninth_seen", default=None)

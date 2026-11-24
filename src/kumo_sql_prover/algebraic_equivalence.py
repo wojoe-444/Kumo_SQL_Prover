@@ -5890,6 +5890,13 @@ def _prove_equivalent_algebraic_as_written(left_sql: str, right_sql: str, **kwar
 
     # MySQL stores a quotient a derived table materialises rounded to its declared scale (issue 45): the pair is read so.
     result = derived_rounding.proved(read_numerically, left_sql, right_sql, kwargs)
+    if result.status is SmtStatus.NOT_PROVEN and shape_fallback.rule_enabled("same_text_pairs"):
+        from . import same_text_pairs
+
+        # a query is equal to itself, also one the provers cannot read (hardest-cases batch 28); asked last, so a
+        # pair an earlier step decides is decided as it was
+        if same_text_pairs.same_text(left_sql, right_sql, kwargs.get("dialect", "bigquery")):
+            result = SmtEquivalenceResult(SmtStatus.PROVEN_EQUIVALENT, same_text_pairs.REASON, assumptions=(same_text_pairs.SAME_TEXT_ASSUMPTION,))
     # The rules below may merge or drop a call; a pair that holds a volatile one as written is never proven.
     return without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
 
