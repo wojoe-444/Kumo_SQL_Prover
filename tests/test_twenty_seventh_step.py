@@ -46,7 +46,7 @@ def switch_off(monkeypatch) -> None:
 
 
 def test_the_batch_names_its_rules_and_has_its_own_entry_in_the_stage_key():
-    assert shape_fallback.TWENTY_SEVENTH_BATCH == frozenset({"group_alias_names", "if_as_case", "keyed_join_windows", "lookup_pivots", "one_source_names", "regrouped_windows", "rejoined_parents", "single_row_aggregates", "unread_join_chains"})
+    assert shape_fallback.TWENTY_SEVENTH_BATCH == frozenset({"group_alias_names", "if_as_case", "keyed_join_windows", "lookup_pivots", "nested_membership_joins", "one_source_names", "regrouped_windows", "rejoined_parents", "single_row_aggregates", "unread_join_chains"})
     assert len(shape_fallback.stage_key()) == 13 and shape_fallback.stage_key()[12] is False
     with shape_fallback.twenty_seventh_deferred():
         assert shape_fallback.stage_key()[12] is False

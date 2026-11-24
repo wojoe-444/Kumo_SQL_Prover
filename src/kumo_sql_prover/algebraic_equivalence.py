@@ -5289,6 +5289,16 @@ def normalize(
             shape_fallback.note_fired("one_source_names")
         elif wrote:
             shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
+    if shape_fallback.rule_enabled("nested_membership_joins") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+        from .nested_membership_joins import read_nested_membership_joins
+
+        # pre-pass (batch 29, in the twenty-seventh step): x IN (..) inside the subquery of another IN, as a join in that subquery
+        merged, wrote = read_nested_membership_joins(tree, schema)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = merged
+            shape_fallback.note_fired("nested_membership_joins")
+        elif wrote:
+            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
     if any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH) and schema and keys and (
         shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()
     ):

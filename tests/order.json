@@ -742,7 +742,10 @@
   "tests/test_regrouped_windows.py::test_a_pair_is_proved_and_only_with_the_rule": 2.2,
   "tests/test_if_as_case.py::test_pairs_that_differ_stay_unproved": 5.1,
   "tests/test_if_as_case.py::test_a_pair_is_proved_and_only_with_the_rule[left0-right0]": 2.5,
-  "tests/test_if_as_case.py::test_a_pair_is_proved_and_only_with_the_rule[left1-right1]": 2.8
+  "tests/test_if_as_case.py::test_a_pair_is_proved_and_only_with_the_rule[left1-right1]": 2.8,
+  "tests/test_nested_membership_joins.py::test_pairs_that_differ_stay_unproved": 7.2,
+  "tests/test_nested_membership_joins.py::test_a_pair_is_proved_and_only_with_the_rule[IN]": 2.1,
+  "tests/test_nested_membership_joins.py::test_a_pair_is_proved_and_only_with_the_rule[NOT IN]": 2.2
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,
