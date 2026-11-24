@@ -3243,8 +3243,15 @@ def _using_to_on(tree: exp.Expression, schema: dict[str, list[str]] | None) -> e
         aliases = [(src.alias_or_name or "").lower() for src in sources]
         if from_ is None or any(k is None for k in known) or "" in aliases or len(set(aliases)) != len(aliases):
             continue
-        stars = [i for i in select.expressions if isinstance(i, exp.Star) or (isinstance(i, exp.Column) and isinstance(i.this, exp.Star))]
-        if stars and (len(stars) > 1 or not isinstance(stars[0], exp.Star) or star_modified(stars[0])):
+        # A bare star is replaced where it stands, and the select items beside it stay. ``t.*`` lists the columns of
+        # one source, which USING does not change: it is left as it is written. Not beside a RIGHT or FULL join,
+        # where SQLite lists the merged column for the left source and the other engines the stored one.
+        stars = [i for i in select.expressions if isinstance(i, exp.Star)]
+        if len(stars) > 1 or any(star_modified(i) for i in select.expressions):
+            continue
+        if any(isinstance(i, exp.Column) and isinstance(i.this, exp.Star) for i in select.expressions) and any(
+            (j.args.get("side") or "").upper() in ("RIGHT", "FULL") for j in joins
+        ):
             continue
         # The columns of the running result, as (name, expression) pairs, to expand a bare star.
         running = [(c, exp.column(c, table=exp.to_identifier(aliases[0]))) for c in known[0]]
@@ -3306,10 +3313,8 @@ def _using_to_on(tree: exp.Expression, schema: dict[str, list[str]] | None) -> e
             if column.name.lower() in merged:
                 column.replace(merged[column.name.lower()].copy())
         if stars:
-            select.set(
-                "expressions",
-                [e.copy() if isinstance(e, exp.Column) and e.name.lower() == n else exp.alias_(e.copy(), n) for n, e in running],
-            )
+            listed = [e.copy() if isinstance(e, exp.Column) and e.name.lower() == n else exp.alias_(e.copy(), n) for n, e in running]
+            select.set("expressions", [new for item in select.expressions for new in (listed if item is stars[0] else [item])])
         select.set("joins", new_joins)
     return tree
 
@@ -5215,6 +5220,8 @@ def normalize(
             else:
                 shape_fallback.note_thirteenth_candidate()  # said here: inlining may decline the query as it is written
     tree = _inline_ctes(tree)
+    if shape_fallback.rule_enabled("early_using") and schema:
+        tree = _using_to_on(tree, schema)  # USING read as ON before the pre-passes, which leave a USING join alone
     if shape_fallback.rule_enabled("apart_table_names") and (shape_fallback.twenty_fourth_batch_enabled() or shape_fallback.twenty_fourth_watching()):
         from .apart_table_names import name_tables_apart
 
