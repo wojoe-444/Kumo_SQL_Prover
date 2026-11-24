@@ -5371,6 +5371,16 @@ def normalize(
             shape_fallback.note_fired("date_windows")
         elif windowed:
             shape_fallback.note_twelfth_candidate()  # an earlier stage: stage five is worth running
+    if shape_fallback.rule_enabled("half_open_days") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+        from .half_open_days import read_half_open_days
+
+        # pre-pass (batch 30, in the twenty-seventh step): a DATE column against a day, written with >= and < only
+        opened, wrote, bound = read_half_open_days(tree, schema, types, dialect)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = opened
+            shape_fallback.note_fired("half_open_days")
+        elif bound and not shape_fallback.twenty_seventh_batch_enabled():
+            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
     if shape_fallback.rule_enabled("constant_bins") and (shape_fallback.sixteenth_batch_enabled() or shape_fallback.sixteenth_watching()):
         from .constant_bins import read_constant_bins
 

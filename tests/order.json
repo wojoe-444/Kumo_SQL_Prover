@@ -754,7 +754,13 @@
   "tests/test_kept_union_names.py::test_pairs_that_differ_stay_unproved[left1-right1]": 2.5,
   "tests/test_kept_union_names.py::test_pairs_that_differ_stay_unproved[left2-right2]": 2.3,
   "tests/test_kept_union_names.py::test_pairs_that_differ_stay_unproved[left3-right3]": 2.9,
-  "tests/test_kept_union_names.py::test_a_pair_is_proved_and_was_declined_without_the_repair": 2.6
+  "tests/test_kept_union_names.py::test_a_pair_is_proved_and_was_declined_without_the_repair": 2.6,
+  "tests/test_half_open_days.py::test_a_pair_is_proved_and_only_with_the_rule[DATE(c.seen) < '2024-01-01' OR DATE(c.seen) > '2024-01-07']": 20.0,
+  "tests/test_half_open_days.py::test_a_pair_is_proved_and_only_with_the_rule[c.seen <= '2023-12-31' OR c.seen >= '2024-01-08']": 20.0,
+  "tests/test_half_open_days.py::test_pairs_that_differ_stay_unproved[seen-DATE(c.seen) < '2024-01-01' OR DATE(c.seen) > '2024-01-08']": 20.0,
+  "tests/test_half_open_days.py::test_pairs_that_differ_stay_unproved[seen-DATE(c.seen) <= '2024-01-01' OR DATE(c.seen) > '2024-01-07']": 20.0,
+  "tests/test_half_open_days.py::test_pairs_that_differ_stay_unproved[logged-DATE(c.logged) < '2024-01-01' OR DATE(c.logged) > '2024-01-07']": 9.0,
+  "tests/test_half_open_days.py::test_pairs_that_differ_stay_unproved[logged-c.logged <= '2023-12-31' OR c.logged >= '2024-01-08']": 9.0
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,

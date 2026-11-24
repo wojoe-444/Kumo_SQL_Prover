@@ -1119,7 +1119,7 @@ def note_twenty_fifth_candidate() -> None:
 # whether one of its rules would have fired, and then the staged proof runs once more with the fifteenth to the
 # twenty-seventh batch on. So a pair an earlier step decides is decided as it was.
 
-TWENTY_SEVENTH_BATCH = frozenset({"group_alias_names", "if_as_case", "key_fixed_groupings", "keyed_join_windows", "lookup_pivots", "nested_membership_joins", "one_source_names", "regrouped_windows", "rejoined_parents", "single_row_aggregates", "unread_join_chains"})
+TWENTY_SEVENTH_BATCH = frozenset({"group_alias_names", "half_open_days", "if_as_case", "key_fixed_groupings", "keyed_join_windows", "lookup_pivots", "nested_membership_joins", "one_source_names", "regrouped_windows", "rejoined_parents", "single_row_aggregates", "unread_join_chains"})
 
 _TWENTY_SEVENTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_twenty_seventh_stage", default=None)
 _TWENTY_SEVENTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_twenty_seventh_seen", default=None)
