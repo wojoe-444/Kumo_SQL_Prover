@@ -30,8 +30,9 @@ column names and do not change.
 branches of a ``UNION``, or a read inside an ``IN`` or ``EXISTS`` subquery or a scalar subquery: the prover reads
 those under one name already, and the rule would only cost a second run); a table read with a database name, a
 table function, a sample or a hint and no alias; a query with a qualified column that names no source around it, or
-with a database-qualified column; a select that reads two sources of one name (the engines refuse it), a
-parenthesized join or a lateral source.
+with a database-qualified column; a query in which a column without a source name is spelled like one of the names
+to change (BigQuery and PostgreSQL read a source's name alone as its whole row); a select that reads two sources of
+one name (the engines refuse it), a parenthesized join or a lateral source.
 
 A pre-pass of the last proof step (``shape_fallback.TWENTY_FIFTH_BATCH``), after ``apart_table_names``.
 """
@@ -93,6 +94,9 @@ def _rename(tree: exp.Expression) -> bool:
     ]
     if not targets:
         return False
+    renamed = {_name(source) for source in targets}
+    if any(not column.table and _lower(column.name) in renamed for column in tree.find_all(exp.Column)):
+        return False  # a bare name that may be the source itself (BigQuery and PostgreSQL read a row that way)
     # every qualified column, with the source it names
     bound: dict[int, list[exp.Column]] = {}
     for column in tree.find_all(exp.Column):
