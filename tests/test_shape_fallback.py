@@ -258,7 +258,8 @@ def test_the_stage_switches():
                 with shape_fallback.without("own_key_membership"):
                     assert not shape_fallback.ninth_batch_enabled()
     assert not shape_fallback.ninth_staged()
-    assert shape_fallback._BESIDE_NINTH == {worker_rules.NAME}
+    # the worker group, and the switches of the batch 26 readings, which only tests turn off
+    assert shape_fallback._BESIDE_NINTH == {worker_rules.NAME, "early_using", "early_group_names", "aggregate_date_windows"}
 
 
 def test_a_pair_proved_before_the_batch_never_sees_it(monkeypatch):
@@ -569,18 +570,33 @@ def test_a_pair_the_eleventh_batch_reads_and_does_not_prove_costs_three_attempts
 
 def test_earlier_stages_ask_the_eleventh_batch_and_change_nothing():
     options = {"schema": ITEM_SALES, "types": ITEM_SALE_TYPES, "dialect": "mysql", "not_null": {"sale": frozenset({"buyer", "item_id"}), "item": frozenset({"item_id", "label"})}}
-    for sql in (BY_SUMS, f"SELECT s.item_id, COUNT(*) AS n {SOLD} GROUP BY item_id", f"SELECT SUM(s.buyer + i.item_id) AS n {SOLD}"):
+    shared = f"SELECT s.item_id, COUNT(*) AS n {SOLD} GROUP BY item_id"
+    for sql in (BY_SUMS, shared, f"SELECT SUM(s.buyer + i.item_id) AS n {SOLD}"):
+        # A GROUP BY name two tables share is read at every stage since batch 26 (``early_group_names``): an earlier
+        # stage reads the query as the one with the name written out, and still says stage four is worth running.
+        read_as = sql.replace("GROUP BY item_id", "GROUP BY s.item_id")
         with shape_fallback.without_all(shape_fallback.ELEVENTH_BATCH), shape_fallback.without_all(shape_fallback.TENTH_BATCH):
             try:
-                before = normalize(sql, **options)
+                before = normalize(read_as, **options)
             except Exception as error:  # a query the prover declines without the batch
                 before = str(error)
+            try:
+                unread = normalize(sql, **options)
+            except Exception as error:
+                unread = str(error)
         with shape_fallback.eleventh_deferred() as seen, shape_fallback.tenth_deferred(), shape_fallback.ninth_on():
             try:
                 now = normalize(sql, **options)
             except Exception as error:
                 now = str(error)
         assert now == before and seen == [True], sql
+        with shape_fallback.without("early_group_names"), shape_fallback.eleventh_deferred() as seen, shape_fallback.tenth_deferred(), shape_fallback.ninth_on():
+            try:
+                as_before = normalize(sql, **options)
+            except Exception as error:
+                as_before = str(error)
+        assert as_before == unread and seen == [True], sql  # with the switch off, the stage reads what it read
+        assert (unread != before) == (sql is shared)
         with shape_fallback.tracking() as fired:
             normalize(sql, **options)
         assert fired & shape_fallback.ELEVENTH_BATCH, sql
