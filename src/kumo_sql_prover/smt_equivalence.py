@@ -84,7 +84,7 @@ from .solver_lock import Z3_MISSING, bound, bounded_solver, serialized, sweep
 from .string_literals import canonical_literals
 from .type_names import invalid_type_name
 from .sqlx_fragments import masked_template_problem
-from . import date_witness, derived_types, numeric_column_reading, opaque_pairing, shape_fallback, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals, volatile_calls
+from . import date_witness, derived_types, engine_null_results, numeric_column_reading, opaque_pairing, shape_fallback, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals, volatile_calls
 from . import float_halving, sum_argument_types
 from .float_sum_order import Ledger
 
@@ -863,6 +863,7 @@ _STRICT_FUNCTIONS = tuple(
 _EXACT_DECIMAL_LITERALS = {"mysql", "postgres", "duckdb"}
 
 # NULLIF(a, b) has the common type of a and b in these dialects, and a's own type in the second set.
+_NUMBER_CLASSES = (smt_values.INT64, smt_values.NUMERIC, smt_values.BIGNUMERIC, smt_values.FLOAT64)
 _NULLIF_SUPERTYPE = {"bigquery", "postgres"}
 _NULLIF_FIRST_TYPE = {"duckdb", "mysql", "sqlite"}
 
@@ -2257,8 +2258,11 @@ class _Compiler:
             null_fn, val_fn = self._function(type(e).__name__, len(vals))
             args = self._uf_args(vals)
             nulls = z3.Or(*[v.null for v in vals])
-            if isinstance(e, exp.Div):
-                nulls = z3.Or(nulls, null_fn(*args))  # SAFE_DIVIDE-like shapes stay possible
+            if isinstance(e, (exp.Div, exp.Mod)):
+                nulls = z3.Or(nulls, self._zero_divisor_null(e, parts[1], vals[1], null_fn(*args), env, agg, aliases))
+                if self.dialect == "duckdb" and divisor is not vals[1]:
+                    # DuckDB's x / 0 is infinity, not NULL: there the NULLIF adds the zero divisor to the NULLs
+                    nulls = z3.Or(nulls, divisor.null)
             return _Val(nulls, val_fn(*args))
         if isinstance(e, exp.Abs) and self.exact:
             a = self._val(e.this, env, agg, aliases)
@@ -2301,8 +2305,12 @@ class _Compiler:
             failing = self._cast_sites(e, to, source, v)
             if failing is not None:
                 self._site("failed cast", e, z3.And(z3.Not(v.null), failing[0]), under=failing[1])
-            _, val_fn = self._function(f"CAST:{to.sql(dialect='bigquery')}", 1)
-            return _Val(v.null, val_fn(*self._uf_args([v])))
+            null_fn, val_fn = self._function(f"CAST:{to.sql(dialect='bigquery')}", 1)
+            nulls = v.null
+            if self.dialect == "mysql" and engine_null_results.mysql_cast_may_be_null(e, lambda column: self._declared_type(column, env, agg, aliases)):
+                # CAST('soon' AS DATE) is NULL in MySQL, where the other engines raise an error
+                nulls = z3.Or(nulls, null_fn(*self._uf_args([v])))
+            return _Val(nulls, val_fn(*self._uf_args([v])))
         if isinstance(e, exp.TryCast):
             # SAFE_CAST is the cast, and NULL where the cast fails.
             to = e.args["to"]
@@ -2671,6 +2679,42 @@ class _Compiler:
         elif cls is None:
             self._site("overflow", e, self._may_fail(f"{type(e).__name__}", [a]))
 
+    @staticmethod
+    def _zero_number(value: _Val, otherwise):
+        """Whether ``value`` is the number zero; ``otherwise`` for a value that is not a number."""
+
+        V = _value_sort()
+        return z3.If(V.is_Num(value.val), V.num(value.val) == 0, otherwise)
+
+    def _zero_divisor_null(self, e, divisor, value: _Val, unknown, env, agg, aliases):
+        """Where ``x / y`` or ``x % y`` is NULL although neither operand is (``engine_null_results``).
+
+        BigQuery and PostgreSQL raise an error for a zero modulus, so there the remainder is never NULL, and no engine
+        gives NULL for a divisor written as a whole number other than zero. In MySQL a divisor that is a number gives
+        NULL exactly when it is zero. Everywhere else it is ``unknown``: the result can be NULL (``5 % 0`` in MySQL,
+        SQLite and DuckDB), and the proof may not depend on when."""
+
+        if isinstance(e, exp.Mod) and engine_null_results.fails_instead(self.dialect):
+            return z3.BoolVal(False)
+        if engine_null_results.nonzero_whole_literal(divisor):
+            return z3.BoolVal(False)  # x / 2 and x % 2 are NULL in no engine
+        if engine_null_results.zero_divisor_only(self.dialect) and self._visible_class(divisor, env, agg, aliases) in _NUMBER_CLASSES:
+            self._numeric(value)  # what its type says
+            return self._zero_number(value, unknown)
+        return unknown
+
+    def _declared_type(self, column: exp.Column, env, agg, aliases) -> str | None:
+        """The declared type of a base-table column, None for any other value."""
+
+        try:
+            v = self._val(column, env, agg, aliases)
+        except Unsupported:
+            return None
+        if not (z3.is_const(v.val) and v.val.decl().kind() == z3.Z3_OP_UNINTERPRETED):
+            return None
+        uid, _, name = str(v.val).partition(".")
+        return self.types.get(self.occ_tables.get(uid, ""), {}).get(name)
+
     def _division_site(self, e, a: _Val, divisor: _Val, integer: bool) -> None:
         """``/``, ``DIV`` and ``MOD`` fail on a zero divisor (``DIV`` also on INT64_MIN / -1)."""
 
@@ -3001,7 +3045,11 @@ class _Compiler:
             count = self._aggregate("COUNT", exp.Count(this=e.this.copy()), env, agg)
             null_fn, val_fn = self._function("Div", 2)
             args = self._uf_args([total, count])
-            return _Val(z3.Or(total.null, null_fn(*args)), val_fn(*args))
+            # the same reading as the spelled-out SUM(x) / COUNT(x)
+            unknown = null_fn(*args)
+            if engine_null_results.zero_divisor_only(self.dialect):
+                unknown = self._zero_number(count, unknown)
+            return _Val(z3.Or(total.null, unknown), val_fn(*args))
         V = _value_sort()
         target = e.this
         distinct = False

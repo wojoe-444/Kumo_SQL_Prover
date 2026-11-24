@@ -32,6 +32,7 @@ from typing import Iterable, Mapping
 import sqlglot
 from sqlglot import exp
 
+from . import engine_null_results
 from .ast_utils import conjuncts as _conjuncts, is_call, star_modifier
 from .smt_equivalence import TableConstraints
 
@@ -727,10 +728,14 @@ class _Analyzer:
                     if ok and (not best[0] or len(prov) < len(best[1])):
                         best = (True, prov)
                 return best
+            if isinstance(n, (exp.Div, exp.Mod)) and not engine_null_results.fails_instead(self.dialect):
+                return none  # a zero divisor gives NULL where it is not an error
             if isinstance(n, (exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Mod, exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.And, exp.Or, exp.DPipe, exp.Like, exp.Neg, exp.Not)):
                 return combine(n.args.get("this"), n.args.get("expression"))
             if isinstance(n, exp.Cast):
-                return none if isinstance(n, exp.TryCast) else go(n.this)
+                if isinstance(n, exp.TryCast) or (self.dialect == "mysql" and engine_null_results.temporal_target(n.args.get("to"))):
+                    return none  # MySQL gives NULL for a value that is not a date
+                return go(n.this)
             if isinstance(n, exp.Case):
                 if n.args.get("default") is None or n.this is not None:
                     return none
@@ -753,6 +758,8 @@ class _Analyzer:
                 return inner.cols[inner.order[0]] if len(inner.order) == 1 and inner.exactly_one else none
             if isinstance(n, (exp.Anonymous, exp.Func)):
                 name = (n.name if isinstance(n, exp.Anonymous) else n.sql_name()).upper()
+                if name in engine_null_results.LIMITED_DOMAIN and not engine_null_results.fails_instead(self.dialect):
+                    return none  # SQRT(-1), LN(0) and MOD(x, 0) are NULL where they are not errors
                 if name in _NULL_PROPAGATING:
                     return all_args(n)
                 if name in _ALWAYS_NON_NULL:

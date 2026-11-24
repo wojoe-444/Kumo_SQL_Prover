@@ -11,6 +11,8 @@ unknown rather than being scored under a guessed meaning.
 * ``pipes_as_concat``: Calcite's ``||`` (string concatenation; MySQL reads it as OR).
 * ``barewords_as_strings``: VeriEQL's LeetCode answers whose double-quoted strings lost their quotes
   (``THEN YES ELSE NO``).
+* ``schema_table_names``: a LeetCode answer that spells the schema's table with underscores (``MY_NUMBERS``
+  for ``MYNUMBERS``).
 """
 
 from __future__ import annotations
@@ -328,4 +330,49 @@ def barewords_as_strings(sql: str, columns: set[str]) -> str:
     out = sql
     for start, end in sorted(words, reverse=True):
         out = out[:start] + "'" + out[start:end] + "'" + out[end:]
+    return out if sqlglot.parse_one(out, read="mysql") == tree else sql
+
+
+def schema_table_names(sql: str, tables: set[str]) -> str:
+    """A LeetCode answer that spells a table of the schema with other underscores, with the schema's spelling.
+
+    VeriEQL's schema for one problem names its table ``MYNUMBERS`` while most of the problem's answers read
+    ``MY_NUMBERS`` (the problem's table was renamed at some point). A table name of the query that is no table of
+    the schema and no ``WITH`` name of the query, and that equals exactly one schema table once underscores are
+    dropped from both (letter case aside), is that table: nothing else in the schema could be meant. Only the
+    name is rewritten where it stands as a table (a qualifier ``MY_NUMBERS.NUM`` keeps the query as written);
+    the rest of the text is kept character for character, and the result is parsed again and must be the query
+    with those tables renamed. A query without such a name is returned as written.
+    """
+
+    def bare(name: str) -> str:
+        return name.replace("_", "").lower()
+
+    schema = {name.lower() for name in tables}
+    folded: dict[str, list[str]] = {}
+    for name in tables:
+        folded.setdefault(bare(name), []).append(name)
+    tree = sqlglot.parse_one(sql, read="mysql")
+    local = {cte.alias.lower() for cte in tree.find_all(exp.CTE)}
+    spans = []
+    for table in tree.find_all(exp.Table):
+        name = table.name
+        if not name or name.lower() in schema or name.lower() in local or table.args.get("db") or table.args.get("catalog"):
+            continue
+        matches = folded.get(bare(name), [])
+        identifier = table.this
+        if len(matches) != 1 or not isinstance(identifier, exp.Identifier) or identifier.quoted:
+            continue
+        meta = identifier.meta
+        if "start" not in meta or "end" not in meta or sql[meta["start"] : meta["end"] + 1] != name:
+            return sql
+        if not table.alias and any(column.table.lower() == name.lower() for column in tree.find_all(exp.Column)):
+            return sql  # the old name is also used as a qualifier
+        spans.append((meta["start"], meta["end"] + 1, matches[0], table))
+    if not spans:
+        return sql
+    out = sql
+    for start, end, name, table in sorted(spans, key=lambda item: -item[0]):
+        out = out[:start] + name + out[end:]
+        table.set("this", exp.to_identifier(name))
     return out if sqlglot.parse_one(out, read="mysql") == tree else sql

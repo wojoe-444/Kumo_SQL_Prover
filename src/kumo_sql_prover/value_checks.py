@@ -19,8 +19,11 @@ NULL". Whether the column can be NULL is the business of ``TableConstraints.not_
 A value is an ``int``, a ``fractions.Fraction`` or a ``str``. A text is compared as the solver compares texts: exactly.
 **Assumed** for a text value: the column holds the listed text as it is written (what an ``ENUM`` column stores), not
 another text that a collation calls equal to it. An ordering (``< <= > >=``) is read as an ordering of numbers, so the
-caller passes one only for columns that hold numbers; with a text on either side it is skipped, and so is every check
-this module cannot read. A skipped check is a fact not used, which is always safe.
+caller passes one only for columns that hold numbers, or for two date or time columns of one type together with
+queries that use such values for nothing but their order (comparing, counting, picking one of several, selecting):
+those cannot tell dates from numbers in the same order (``tools/bench_order_only.py`` is how the VeriEQL harness
+decides). With a text on either side an ordering is skipped, and so is every check this module cannot read. A
+skipped check is a fact not used, which is always safe.
 
 ``facts`` gives the solver's assertions for one occurrence of the table; ``violated`` tells whether a row of a
 made-up database breaks a check (such a database is not a legal counterexample).

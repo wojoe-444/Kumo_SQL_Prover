@@ -13,6 +13,19 @@ when every path ends in a column declared INT64, an integer literal, ``COUNT``, 
 an undeclared table, a bare column two sources could own, a column of an outer query) is ``False``: the assumption
 then stays, which is the answer the prover gave before.
 
+Two spellings change which column a name means, and both are followed or refused, never guessed. A derived table
+that is ``SELECT *`` over its sources and nothing else passes each column through under its own name, so the name
+is looked up among those sources. A table read with a column list (``t AS u (b, a)``) names its columns by
+position: the name is placed only when the caller gives the declared order of the table's columns (``order``), and
+is ``False`` without it. Reading the list by name instead called a FLOAT64 column INT64 when the list swapped two
+names. A star with ``EXCEPT``, ``REPLACE`` or ``RENAME``, a star beside other items, and a column list on a derived
+table or a ``WITH`` name are ``False``.
+
+``LATERAL (SELECT ..) AS l`` is read as the derived table it is. A source that cannot be read (a lateral function
+call, ``UNNEST``, ``VALUES``) makes an unqualified name ``False``, since it may own it; a name qualified with
+another source is still placed. Calcite's rewrites spell every join as ``.. AS a, LATERAL (SELECT ..) AS b``, and
+without this no column of such a query had a type.
+
 :func:`is_exact` answers the wider question the float regrouping check asks: whether a ``SUM`` adds only values
 that can be added in any grouping without rounding. That is INT64 as above, and with ``decimals`` also a fixed-point
 type (``NUMERIC``, ``DECIMAL``): adding or subtracting two of them is exact, and so is a product when the decimal
@@ -38,6 +51,7 @@ _UNBOUNDED = 10**6  # a declared decimal type without a scale: any number of pla
 class _Context(NamedTuple):
     types: dict
     decimals: bool
+    order: dict | None = None  # table -> its column names in declared order, lower case; needed to read a column list
 
 
 class _Number(NamedTuple):
@@ -137,20 +151,57 @@ def _declared(declared: str, ctx: _Context) -> _Number | None:
     return None
 
 
-def _column(column: exp.Column, select: exp.Select, ctx: _Context, depth: int) -> _Number | None:
-    if isinstance(column.this, exp.Star) or column.args.get("db") or column.args.get("catalog"):
+def _sole_star(select: exp.Select) -> bool:
+    """``SELECT *`` and nothing else, the star without ``EXCEPT``, ``REPLACE`` or ``RENAME``."""
+
+    items = select.expressions
+    return len(items) == 1 and type(items[0]) is exp.Star and not any(items[0].args.values())
+
+
+def _lateral_subquery(source: exp.Expression) -> exp.Subquery | None:
+    """The subquery of ``LATERAL (SELECT ..) AS l``: it outputs its select items like a derived table. A name it takes
+    from the sources before it is not placed (its own select has no such source), so the answer is ``False`` there."""
+
+    if not isinstance(source, exp.Lateral) or source.args.get("view"):
+        return None
+    inner = source.this
+    if not isinstance(inner, exp.Subquery) or inner.args.get("alias") or inner.args.get("pivots") or inner.args.get("sample"):
+        return None
+    return inner
+
+
+def _named_apart(source: exp.Expression, qualifier: str) -> bool:
+    """Whether a source that cannot be read has a name of its own that is not ``qualifier``, and names no column
+    ``qualifier`` either (``UNNEST(..) AS v`` is read as ``v.field``)."""
+
+    alias = source.args.get("alias")
+    if not isinstance(alias, exp.TableAlias) or not alias.name:
+        return False
+    return alias.name.lower() != qualifier and all(identifier.name.lower() != qualifier for identifier in alias.columns)
+
+
+def _owners(column: exp.Column, select: exp.Select, ctx: _Context, depth: int) -> list | None:
+    """What each source of ``select`` that has a column of this name says about it (a :class:`_Number`, or ``None``
+    for a value that is not exact); ``None`` for the whole answer when a source cannot be read."""
+
+    if depth <= 0 or isinstance(column.this, exp.Star) or column.args.get("db") or column.args.get("catalog"):
         return None
     from_ = select.args.get("from_") or select.args.get("from")
     sources = ([from_.this] if from_ is not None else []) + [join.this for join in select.args.get("joins") or []]
     name, qualifier = column.name.lower(), column.table.lower()
-    owners = []
+    owners: list = []
     for source in sources:
-        if not isinstance(source, (exp.Table, exp.Subquery)):
+        lateral = _lateral_subquery(source)
+        if not isinstance(source, (exp.Table, exp.Subquery)) and lateral is None:
+            if qualifier and _named_apart(source, qualifier):
+                continue  # the name is qualified with another source: this one cannot own it
             return None
         if qualifier and source.alias_or_name.lower() != qualifier:
             continue
         if source.args.get("pivots") or source.args.get("sample"):
             return None
+        alias = source.args.get("alias")
+        renamed = [identifier.name.lower() for identifier in (alias.columns if alias is not None else [])]
         if isinstance(source, exp.Table):
             body = None if source.args.get("db") else _cte_body(source.name.lower(), select)
             if body is None:
@@ -158,21 +209,45 @@ def _column(column: exp.Column, select: exp.Select, ctx: _Context, depth: int) -
                 declared = ctx.types.get(key)
                 if declared is None:
                     return None  # an undeclared table may own the column
-                if name in declared:
+                if renamed:
+                    # ``t AS u (b, a)`` names the columns by position: without the declared order nothing is known
+                    columns = [c.lower() for c in (ctx.order or {}).get(key) or []]
+                    if len(renamed) > len(columns) or sorted(columns) != sorted(declared):
+                        return None
+                    visible = renamed + columns[len(renamed):]
+                    if visible.count(name) > 1:
+                        return None
+                    if name in visible:
+                        owners.append(_declared(declared[columns[visible.index(name)]], ctx))
+                elif name in declared:
                     owners.append(_declared(declared[name], ctx))
                 continue
+            if renamed:
+                return None  # a WITH name read with a column list
         else:
-            if source.args["alias"].columns if source.args.get("alias") is not None else False:
+            if renamed:
                 return None
-            body = source.this
+            body = source.this if lateral is None else lateral
         outputs = _unwrap(body)
+        if isinstance(outputs, exp.Select) and _sole_star(outputs):
+            # ``SELECT * FROM ..`` passes every column through under its own name
+            inner = _owners(exp.column(name), outputs, ctx, depth - 1)
+            if inner is None:
+                return None
+            owners.extend(inner)
+            continue
         while isinstance(outputs, exp.SetOperation):
             outputs = _unwrap(outputs.this)
         if not isinstance(outputs, exp.Select) or any(isinstance(i, exp.Star) or (isinstance(i, exp.Column) and isinstance(i.this, exp.Star)) for i in outputs.expressions):
             return None
         if name in [item.alias_or_name.lower() for item in outputs.expressions]:
             owners.append(_output(body, name, ctx, depth - 1))
-    return owners[0] if len(owners) == 1 else None
+    return owners
+
+
+def _column(column: exp.Column, select: exp.Select, ctx: _Context, depth: int) -> _Number | None:
+    owners = _owners(column, select, ctx, depth)
+    return owners[0] if owners is not None and len(owners) == 1 else None
 
 
 def _decimal_literal(node: exp.Expression) -> _Number | None:
@@ -243,27 +318,29 @@ def _value(node: exp.Expression, select: exp.Select, ctx: _Context, depth: int) 
     return None
 
 
-def _argument(call: exp.Expression, types: dict[str, dict[str, str]], decimals: bool) -> _Number | None:
+def _argument(call: exp.Expression, types: dict[str, dict[str, str]], decimals: bool, order: dict | None = None) -> _Number | None:
     if not types or not isinstance(call.this, exp.Expression) or isinstance(call.this, exp.Distinct):
         return None
     select = call.find_ancestor(exp.Select)
     if select is None or not any(call is node for item in select.expressions for node in item.walk()):
         return None  # in ORDER BY, HAVING or QUALIFY a name can be a select alias instead
     try:
-        return _value(call.this, select, _Context(types, decimals), _DEPTH)
+        lowered = {t.lower(): [c.lower() for c in columns] for t, columns in (order or {}).items()}
+        return _value(call.this, select, _Context(types, decimals, lowered), _DEPTH)
     except (AttributeError, KeyError, RecursionError):
         return None
 
 
-def is_int64(call: exp.Expression, types: dict[str, dict[str, str]]) -> bool:
-    """Whether the argument of aggregate ``call`` (a ``SUM``) is certainly INT64. ``types`` is keyed in lower case."""
+def is_int64(call: exp.Expression, types: dict[str, dict[str, str]], order: dict | None = None) -> bool:
+    """Whether the argument of aggregate ``call`` (a ``SUM``) is certainly INT64. ``types`` is keyed in lower case;
+    ``order`` gives each table's column names in declared order (only a table read with a column list needs it)."""
 
-    return _argument(call, types, False) is not None
+    return _argument(call, types, False, order) is not None
 
 
-def is_exact(call: exp.Expression, types: dict[str, dict[str, str]]) -> bool:
+def is_exact(call: exp.Expression, types: dict[str, dict[str, str]], order: dict | None = None) -> bool:
     """Whether aggregate ``call`` adds only values that add without rounding, in any grouping: INT64 as for
     :func:`is_int64`, and fixed-point values (see the module doc). Also true for an ``AVG`` of such values: the sum is
     exact and one division follows, whatever the grouping of the rows. ``types`` is keyed in lower case."""
 
-    return _argument(call, types, True) is not None
+    return _argument(call, types, True, order) is not None

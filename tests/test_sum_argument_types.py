@@ -14,10 +14,10 @@ TYPES = {"t": {"x": "INT64", "y": "INT64", "f": "FLOAT64", "s": "STRING"}, "u": 
 ROW_ORDER = BASE_ASSUMPTIONS[2]
 
 
-def _is_int64(sql: str, types=TYPES) -> bool:
-    tree = sqlglot.parse_one(sql, read="bigquery")
+def _is_int64(sql: str, types=TYPES, order=None, read="bigquery") -> bool:
+    tree = sqlglot.parse_one(sql, read=read)
     call = next(node for node in tree.find_all(exp.Sum) if node.find_ancestor(exp.Sum) is None and node.find_ancestor(exp.Subquery, exp.CTE) is None)
-    return sum_argument_types.is_int64(call, types)
+    return sum_argument_types.is_int64(call, types, order)
 
 
 @pytest.mark.parametrize(
@@ -52,7 +52,6 @@ def test_int64_through_derived_tables(sql):
         "SELECT SUM(v) FROM (SELECT x * 1.0 AS v FROM t)",
         "SELECT SUM(v) FROM (SELECT x + f AS v FROM t)",
         "SELECT SUM(v) FROM (SELECT * FROM t) AS d(v)",
-        "SELECT SUM(x) FROM (SELECT * FROM t)",  # a star's columns are not traced
         "SELECT SUM(v) FROM (SELECT x AS v FROM missing)",  # undeclared table
         "SELECT SUM(x) FROM (SELECT x FROM t) AS a JOIN (SELECT x FROM u) AS b ON TRUE",  # two owners
         "SELECT SUM(x) FROM (SELECT x FROM t) AS a JOIN missing AS b ON TRUE",  # the undeclared table may own x
@@ -176,3 +175,67 @@ def test_an_average_is_exact_when_its_values_are():
     assert not exact("SELECT AVG(v) FROM (SELECT SUM(f) AS v FROM t GROUP BY x)")
     # an average is not itself a value that adds exactly
     assert not _is_exact("SELECT SUM(v) FROM (SELECT AVG(d) AS v FROM t GROUP BY x)")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT SUM(x) FROM (SELECT * FROM t)",
+        "SELECT SUM(d.x) FROM (SELECT * FROM t WHERE s = 'a') AS d",
+        "SELECT SUM(x) FROM (SELECT * FROM (SELECT * FROM t) AS e) AS d",
+        "WITH a AS (SELECT * FROM t) SELECT SUM(y) FROM a",
+        "SELECT SUM(v) FROM (SELECT * FROM (SELECT x + y AS v, f FROM t) AS e) AS d",
+        "SELECT SUM(y) FROM (SELECT * FROM t JOIN u ON t.x = u.x) AS d",  # only t has a column y
+        "SELECT SUM(d.f) FROM (SELECT * FROM u) AS d",  # u.f is INT64
+    ],
+)
+def test_a_star_select_passes_its_columns_through(sql):
+    assert _is_int64(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT SUM(f) FROM (SELECT * FROM t)",  # FLOAT64
+        "SELECT SUM(x) FROM (SELECT * FROM t JOIN u ON t.x = u.x) AS d",  # two owners, one of them FLOAT64
+        "SELECT SUM(x) FROM (SELECT * FROM t, missing) AS d",  # the undeclared table may own x
+        "SELECT SUM(x) FROM (SELECT * EXCEPT (y) FROM t) AS d",
+        "SELECT SUM(x) FROM (SELECT * REPLACE (f AS x) FROM t) AS d",  # x is the FLOAT64 column now
+        "SELECT SUM(x) FROM (SELECT *, f AS z FROM t) AS d",  # a star beside other items is not followed
+        "SELECT SUM(x) FROM (SELECT t.* FROM t) AS d",
+        "SELECT SUM(x) FROM (SELECT * FROM t UNION ALL SELECT * FROM u) AS d",
+        "SELECT SUM(v) FROM (SELECT * FROM (SELECT f AS v FROM t) AS e) AS d",
+    ],
+)
+def test_a_star_that_is_not_plainly_a_pass_through_is_not_placed(sql):
+    assert not _is_int64(sql)
+
+
+ORDER = {"t": ["x", "y", "f", "s"], "u": ["x", "f"]}
+
+
+@pytest.mark.parametrize(
+    "sql, placed",
+    [
+        ("SELECT SUM(a) FROM t AS r (a, b, c, d)", True),  # a is t.x
+        ("SELECT SUM(c) FROM t AS r (a, b, c, d)", False),  # c is t.f
+        ("SELECT SUM(f) FROM t AS r (f, y, x, s)", True),  # the name f is on the INT64 column x
+        ("SELECT SUM(x) FROM t AS r (f, y, x, s)", False),  # the name x is on the FLOAT64 column f
+        ("SELECT SUM(y) FROM t AS r (a)", True),  # a shorter list leaves the other names
+        ("SELECT SUM(x) FROM t AS r (a)", False),  # x is hidden by the list: no such column
+        ("SELECT SUM(a) FROM t AS r (a, b, c, d, e)", False),  # more names than columns
+        ("SELECT SUM(r.a) FROM t AS r (a, b, c, d) JOIN u ON r.a = u.f", True),
+        ("SELECT SUM(a) FROM (SELECT * FROM t AS r (a, b, c, d)) AS q", True),
+        ("SELECT SUM(c) FROM (SELECT * FROM t AS r (a, b, c, d)) AS q", False),
+    ],
+)
+def test_a_column_list_names_the_columns_by_position(sql, placed):
+    assert _is_int64(sql, order=ORDER, read="postgres") is placed
+    # without the declared order of the columns nothing is placed: the list is never read by name
+    assert not _is_int64(sql, read="postgres")
+
+
+def test_a_column_list_is_not_read_with_an_order_that_does_not_match_the_declared_columns():
+    assert not _is_int64("SELECT SUM(a) FROM t AS r (a, b, c, d)", order={"t": ["x", "y", "f"]}, read="postgres")
+    assert not _is_int64("SELECT SUM(a) FROM t AS r (a, b, c, d)", order={"u": ["x", "f"]}, read="postgres")
+
