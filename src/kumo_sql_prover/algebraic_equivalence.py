@@ -5259,6 +5259,16 @@ def normalize(
             shape_fallback.note_fired("apart_alias_names")
         elif wrote:
             shape_fallback.note_twenty_fifth_candidate()  # an earlier step: the step after the last is worth running
+    if shape_fallback.rule_enabled("if_as_case") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+        from .if_as_case import read_if_as_case
+
+        # pre-pass (batch 29, in the twenty-seventh step): IF(test, a, b) as the CASE the pre-passes below look for
+        cased, wrote = read_if_as_case(tree)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = cased
+            shape_fallback.note_fired("if_as_case")
+        elif wrote:
+            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
     if any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH) and schema and keys and (
         shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()
     ):
