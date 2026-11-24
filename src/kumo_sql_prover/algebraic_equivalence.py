@@ -144,6 +144,7 @@ from .counted_outer_groups import count_outer_groups
 from .discrete_bounds import close_strict_bounds, fold_chained_dates
 from .filter_terms import exists_outer_terms, pinned_columns, shared_filter_terms
 from .self_lookup_counts import read_self_lookup_counts, waits_for_lookup
+from .unread_join_chains import drop_unread_chained_join
 from .labelled_cases import read_labelled_cases
 from .lookup_conditions import lookup_conditions
 from .grouped_key_counts import grouped_key_counts
@@ -5062,6 +5063,19 @@ def _narrow_twentieth(name: str, rule, select):
     return _narrow(name, rule, select)
 
 
+def _narrow_twenty_seventh(name: str, rule, select):
+    """A narrow-retry rule of the twenty-seventh step (hardest-cases batches 27 and 28): it fires only in the last step
+    of a proof (``shape_fallback.twenty_seventh_batch_enabled``). In the steps before, it is tried where it would fire
+    and its result thrown away (the rule copies the select it is given), which tells the prover that the last step is
+    worth running."""
+
+    if not shape_fallback.twenty_seventh_batch_enabled():
+        if shape_fallback.twenty_seventh_watching() and shape_fallback.rule_enabled(name) and rule(select) is not None:
+            shape_fallback.note_twenty_seventh_candidate()
+        return None
+    return _narrow(name, rule, select)
+
+
 def _waits_for_seventeenth(select, schema, keys, not_null, types_map, dialect) -> bool:
     """In the last step only: the found rows of a lookup ``self_lookup_counts`` reads keep their spelling until it has
     read the join. Leaving a select alone is always sound."""
@@ -5723,6 +5737,7 @@ def normalize(
         lambda sel: _narrow_eighteenth("exists_outer_terms", exists_outer_terms, sel),
         lambda sel: _narrow_eighteenth("pinned_columns", lambda s: pinned_columns(s, types_map), sel),
         lambda sel: _narrow_twentieth("grouped_key_counts", lambda s: grouped_key_counts(s, keys, not_null, types_map), sel),
+        lambda sel: _narrow_twenty_seventh("unread_join_chains", lambda s: drop_unread_chained_join(s, schema), sel),
         lambda sel: _narrow_sixteenth("labelled_cases", read_labelled_cases, sel),
         lambda sel: _narrow_sixteenth("quotient_comparisons", lambda s: quotient_step(s, types_map, dialect), sel),
         lambda sel: close_strict_bounds(sel, types_map, dialect),
