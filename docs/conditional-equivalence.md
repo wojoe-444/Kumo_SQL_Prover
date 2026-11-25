@@ -33,6 +33,8 @@ The search assumes every candidate at once (first without the foreign keys, then
 
 A search that runs out of its 30 seconds returns the set it has, marked in the reason as possibly not minimal.
 
+A proof under conditions never stands in for an outright one (since 2026-11-25). The algebraic prover proves in [stages](provers.md), each stage searches for conditions, and the first stage that proves ends the proof. A stage that ended with "equivalent whenever .." therefore kept a later stage from proving the pair with no condition: a pivot that adds one value per store against the pivot that takes the largest was reported as equal whenever the product alone is unique, although the declared key on product and store already makes the two equal. Now a proof under conditions is followed by the staged proof without the search, and an outright proof of it is the verdict. Nothing else changes: when that proof does not prove, the conditions stand as found. On the 3,000-case VeriEQL sample of 2026-11-25, 11 conditional verdicts named a condition the prover itself did not need for this reason (`tests/test_conditional_outright_later.py`).
+
 Three guards keep the verdict honest:
 
 - **Not vacuous.** A set that makes both queries return the same thing on every test database is passed over for another set. A unique key under `HAVING COUNT(*) > 1`, or a self join on a key that asks for two different rows, proves the pair for the wrong reason: both queries come back empty.

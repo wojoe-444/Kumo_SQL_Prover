@@ -642,7 +642,7 @@ def flatten_grouped_join(select: exp.Select) -> exp.Expression | None:
     return result
 
 
-def pull_up_aggregate(select: exp.Select, keys: dict[str, list[tuple[str, ...]]] | None) -> exp.Expression | None:
+def pull_up_aggregate(select: exp.Select, keys: dict[str, list[tuple[str, ...]]] | None, not_null: dict[str, frozenset[str]] | None = None) -> exp.Expression | None:
     """A keyed table joined to a pre-aggregated one is the aggregate over the flat join.
 
     ``SELECT c.name, g.s FROM customers c JOIN (SELECT k, SUM(x) AS s FROM orders GROUP BY k) g ON c.id = g.k``
@@ -650,6 +650,12 @@ def pull_up_aggregate(select: exp.Select, keys: dict[str, list[tuple[str, ...]]]
     ``SELECT c.name, SUM(o.x) FROM customers c JOIN orders o ON c.id = o.k GROUP BY c.id, c.name``:
     each ``customers`` row is its own group, and it meets exactly the rows of ``orders`` its
     pre-aggregated row summarized. Only inner joins, one keyed table and one grouped table.
+
+    "Its own group" needs a key that tells every joined row of the table apart, and a declared key says nothing
+    about rows that hold NULL in it: a UNIQUE column admits two such rows, the join lists both, and a ``GROUP BY``
+    of the key and the columns read puts them in one group when those columns agree. So a key is used only when
+    each of its columns is declared NOT NULL or is the column the join equates with a group key of the grouped
+    table (the equality is TRUE on every joined row, so the column is not NULL there).
     """
 
     if not keys or not _plain(select, grouped=False) or select.args.get("group") or select.args.get("order"):
@@ -710,10 +716,14 @@ def pull_up_aggregate(select: exp.Select, keys: dict[str, list[tuple[str, ...]]]
         rest.append(condition)
     if set(tie) != set(grouped.keys):
         return None
-    if not any(set(k) <= {c.name.lower() for c in own if c.table.lower() == t_alias} | {t.name.lower() for t in tie.values()} for k in declared) and not any(
-        set(k) <= {t.name.lower() for t in tie.values()} for k in declared
-    ):
-        pass  # the key columns are added to the grouping below, whether or not the query mentions them
+    # the key columns are added to the grouping below, whether or not the query mentions them; a key with a column
+    # that may be NULL on a joined row does not tell the table's rows apart (see the docstring)
+    table_name = ".".join(p.name for p in table.parts).lower()
+    never_null = {str(c).lower() for name, columns in (not_null or {}).items() if str(name).lower() == table_name for c in columns}
+    never_null |= {t.name.lower() for t in tie.values()}
+    declared = [k for k in declared if {str(c).lower() for c in k} <= never_null]
+    if not declared:
+        return None
     inlined = _inline(grouped)
     if inlined is None:
         return None

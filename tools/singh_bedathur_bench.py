@@ -231,7 +231,11 @@ def literal_domains(trees: list[exp.Expression]) -> tuple[list, list[str], list[
             day = datetime.date.fromisoformat(text[:10])
         except ValueError:
             continue
-        days.update((day + datetime.timedelta(days=d)).isoformat() for d in (-1, 0, 1))  # both sides of a boundary
+        for d in (-1, 0, 1):  # both sides of a boundary
+            try:
+                days.add((day + datetime.timedelta(days=d)).isoformat())
+            except OverflowError:  # the first or the last day of the calendar
+                pass
     dates = days or {"2020-01-01", "2020-01-02", "2020-02-01"}
     return sorted(numbers), sorted(strings), sorted(dates)
 

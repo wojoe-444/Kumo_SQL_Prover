@@ -84,7 +84,7 @@ from .solver_lock import Z3_MISSING, bound, bounded_solver, serialized, sweep
 from .string_literals import canonical_literals
 from .type_names import invalid_type_name
 from .sqlx_fragments import masked_template_problem
-from . import date_witness, derived_types, engine_null_results, numeric_column_reading, opaque_pairing, shape_fallback, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals, volatile_calls
+from . import date_witness, derived_types, engine_null_results, having_filters, numeric_column_reading, opaque_pairing, shape_fallback, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals, volatile_calls
 from . import float_halving, sum_argument_types
 from .float_sum_order import Ledger
 
@@ -4409,8 +4409,14 @@ class _Prover:
         return block
 
     def as_distinct_spj(self, block):
-        """``GROUP BY`` with no aggregates is ``SELECT DISTINCT`` when the
-        output determines the group key."""
+        """``GROUP BY`` with no aggregates is ``SELECT DISTINCT`` when the output determines the group key and
+        the group key determines the output.
+
+        The second half is what a select item outside the ``GROUP BY`` needs (MySQL and SQLite accept one and show
+        the value of some row of the group): ``SELECT id, name FROM t GROUP BY id`` returns one row per ``id``,
+        ``SELECT DISTINCT id, name FROM t`` one per pair, and they are the same rows only when rows that agree on
+        ``id`` agree on ``name`` (a NOT NULL key says so). Outputs built from the group keys pass it trivially.
+        """
 
         if not isinstance(block, _Agg) or block.aggs or block.having is not None or block.is_global:
             return block
@@ -4424,9 +4430,13 @@ class _Prover:
             z3.And(block.cond.t, _subst(block.cond.t, copy_pairs), _rows_eq(block.outputs, other_out)),
             _rows_eq(block.keys, other_keys),
         )
+        fixed = z3.Implies(
+            z3.And(block.cond.t, _subst(block.cond.t, copy_pairs), _rows_eq(block.keys, other_keys)),
+            _rows_eq(block.outputs, other_out),
+        )
         saved = len(self.candidates)
         facts = block.facts + [_subst(f, copy_pairs) for f in block.facts]
-        if self.valid(formula, block.occs + copies, facts):
+        if self.valid(formula, block.occs + copies, facts) and self.valid(fixed, block.occs + copies, facts):
             return _Spj(
                 block.occs, block.cond, block.outputs, block.names, distinct=True, facts=block.facts, subs=block.subs
             )
@@ -4838,8 +4848,11 @@ def _strings_between(literals: list[str], per_gap: int = 2) -> list[str]:
         dates = [datetime.date.fromisoformat(text) for text in (low, high) if text is not None and _ISO_DATE.match(text) and _is_date(text)]
         if dates and len(dates) == sum(text is not None for text in (low, high)):
             day = datetime.timedelta(days=1)
-            near = [dates[0] + day, dates[0] + 2 * day] if low is not None else [dates[0] - day, dates[0] - 2 * day]
-            candidates = [date.isoformat() for date in near if datetime.date.min + 3 * day < date < datetime.date.max - 3 * day] + candidates
+            # only a day with three days of the calendar on each side: its neighbours exist (the first and the
+            # last days of the calendar have none on one side, and adding a day to them is an error)
+            inside = datetime.date.min + 5 * day < dates[0] < datetime.date.max - 5 * day
+            near = [] if not inside else [dates[0] + day, dates[0] + 2 * day] if low is not None else [dates[0] - day, dates[0] - 2 * day]
+            candidates = [date.isoformat() for date in near] + candidates
         fits = [text for text in candidates if (low is None or low < text) and (high is None or text < high)]
         found.extend(fits[:per_gap])
     return found
@@ -5618,7 +5631,7 @@ def prove_equivalent_smt(left_sql: str, right_sql: str, **kwargs) -> SmtEquivale
 
 
 def _prove_equivalent_smt_as_written(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
-    from . import derived_rounding
+    from . import cross_kind_witness, derived_rounding
 
     def read_numerically(left: str, right: str, **options) -> SmtEquivalenceResult:
         return numeric_column_reading.checked(
@@ -5627,7 +5640,9 @@ def _prove_equivalent_smt_as_written(left_sql: str, right_sql: str, **kwargs) ->
 
     # MySQL stores a quotient a derived table materialises rounded to its declared scale (issue 45): the pair is read so.
     result = derived_rounding.proved(read_numerically, left_sql, right_sql, kwargs)
-    return without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
+    result = without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
+    # a model that sets a text of one query against a number of the other is not a database (issue 60)
+    return cross_kind_witness.without_cross_kind_counterexample(result, left_sql, right_sql, kwargs)
 
 
 UNLISTED_FUNCTION_ASSUMPTION = "functions the prover has no definition for return the same value for the same arguments: {names}"
@@ -5675,6 +5690,11 @@ def _prove_equivalent_smt(left_sql: str, right_sql: str, **kwargs) -> SmtEquival
         unknown_type = invalid_type_name(left_sql) or invalid_type_name(right_sql)
         if unknown_type:
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, f"unsupported: BigQuery would reject the query: {unknown_type}")
+    if kwargs.get("dialect", "bigquery") in having_filters.DIALECTS:
+        # MySQL's HAVING in a select that groups nothing filters the selected rows: written as a WHERE, or declined
+        (left_sql, left_unread), (right_sql, right_unread) = (having_filters.read(sql, kwargs["dialect"], kwargs.get("schema")) for sql in (left_sql, right_sql))
+        if left_unread or right_unread:
+            return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, left_unread or right_unread)
     left_sql, right_sql = (string_number_literals.normalize(sql, kwargs.get("dialect", "bigquery"), kwargs.get("types")) for sql in (left_sql, right_sql))
     result = _prove_with_limit(left_sql, right_sql, **kwargs)
     if not conditional or result.status is SmtStatus.PROVEN_EQUIVALENT:

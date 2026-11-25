@@ -237,7 +237,11 @@ def _domain(column: Column, constants: Constants, wide: bool = False) -> list:
                 day = _dt.date.fromisoformat(text)
             except ValueError:
                 continue
-            base.update({(day + _dt.timedelta(days=d)).isoformat() for d in (-1, 0, 1)})
+            for d in (-1, 0, 1):
+                try:
+                    base.add((day + _dt.timedelta(days=d)).isoformat())
+                except OverflowError:  # the first or the last day of the calendar has one neighbour
+                    pass
         return sorted(base)
     if kind == "TIME":
         return sorted({"00:00:00", "08:00:00", "12:00:00", "23:59:59"} | constants.times)
