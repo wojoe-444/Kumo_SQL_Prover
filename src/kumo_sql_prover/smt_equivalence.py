@@ -4409,8 +4409,14 @@ class _Prover:
         return block
 
     def as_distinct_spj(self, block):
-        """``GROUP BY`` with no aggregates is ``SELECT DISTINCT`` when the
-        output determines the group key."""
+        """``GROUP BY`` with no aggregates is ``SELECT DISTINCT`` when the output determines the group key and
+        the group key determines the output.
+
+        The second half is what a select item outside the ``GROUP BY`` needs (MySQL and SQLite accept one and show
+        the value of some row of the group): ``SELECT id, name FROM t GROUP BY id`` returns one row per ``id``,
+        ``SELECT DISTINCT id, name FROM t`` one per pair, and they are the same rows only when rows that agree on
+        ``id`` agree on ``name`` (a NOT NULL key says so). Outputs built from the group keys pass it trivially.
+        """
 
         if not isinstance(block, _Agg) or block.aggs or block.having is not None or block.is_global:
             return block
@@ -4424,9 +4430,13 @@ class _Prover:
             z3.And(block.cond.t, _subst(block.cond.t, copy_pairs), _rows_eq(block.outputs, other_out)),
             _rows_eq(block.keys, other_keys),
         )
+        fixed = z3.Implies(
+            z3.And(block.cond.t, _subst(block.cond.t, copy_pairs), _rows_eq(block.keys, other_keys)),
+            _rows_eq(block.outputs, other_out),
+        )
         saved = len(self.candidates)
         facts = block.facts + [_subst(f, copy_pairs) for f in block.facts]
-        if self.valid(formula, block.occs + copies, facts):
+        if self.valid(formula, block.occs + copies, facts) and self.valid(fixed, block.occs + copies, facts):
             return _Spj(
                 block.occs, block.cond, block.outputs, block.names, distinct=True, facts=block.facts, subs=block.subs
             )

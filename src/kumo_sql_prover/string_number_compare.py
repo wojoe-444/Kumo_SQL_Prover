@@ -938,6 +938,90 @@ def problem(
     return kinds.text_and_date_problem() or kinds.literal_problem(dialect)
 
 
+EQUATED = (
+    "a text is set equal to a value of another type and neither is a literal (several texts can equal one number or one "
+    "date, so the two sides do not share one value; the rules that read a join or a correlated subquery do not model it)"
+)
+
+
+def _declared_texts(types: dict[str, dict[str, str]] | None) -> tuple[dict[str, dict[str, bool]], dict[str, set[bool]]]:
+    """Per declared table, and per column name over all tables: whether a column's declared type is a text."""
+
+    tables: dict[str, dict[str, bool]] = {}
+    names: dict[str, set[bool]] = {}
+    for table, columns in (types or {}).items():
+        for name, type_sql in (columns or {}).items():
+            if not type_sql:
+                continue
+            base = re.split(r"[\s(<]", str(type_sql).strip().upper(), maxsplit=1)[0]
+            text = base in _STRING
+            tables.setdefault(str(table).lower().split(".")[-1], {})[str(name).lower()] = text
+            names.setdefault(str(name).lower(), set()).add(text)
+    return tables, names
+
+
+def equated_kinds_problem(sql: str, dialect: str = "bigquery", types: dict[str, dict[str, str]] | None = None) -> str | None:
+    """:data:`EQUATED` when ``sql`` sets a declared text equal to a declared value of another type, neither a literal.
+
+    ``b.code = m.staff_id`` with a text ``code`` and a whole-number ``staff_id`` is true for the codes ``'2'`` and
+    ``'02'`` and the number 2 in MySQL, SQLite and DuckDB (the text is converted), so the codes a staff row is equal to
+    are not one value. The SMT prover reads such a comparison as an opaque test and is right whatever the conversion.
+    The rules of the algebraic prover read ``=`` as "the same value": a per-row subquery ``(SELECT SUM(b.hours) FROM
+    badges AS b WHERE b.code = m.staff_id)`` was written as a join to the table grouped by ``code``, which has two rows
+    for that staff row, and proved equal to that join as a user would write it (Kumo_SQL_Prover issue 71). So the
+    algebraic prover declines a pair that holds such an equality: ``=``, ``<=>``, ``IN (subquery)`` or ``USING``.
+    A comparison with a literal is one value on one side and stays with :func:`problem`.
+    """
+
+    try:
+        tree = sqlglot.parse_one(sql, read=dialect)
+    except Exception:  # noqa: BLE001 - the prover reports the parse error itself
+        return None
+    tables, names = _declared_texts(types)
+    if not tables:
+        return None
+    aliases: dict[str, set[str]] = {}
+    for table in tree.find_all(exp.Table):
+        aliases.setdefault((table.alias or table.name).lower(), set()).add(table.name.lower())
+    with_names = {cte.alias.lower() for cte in tree.find_all(exp.CTE) if cte.alias}
+    columns = _column_kinds(types)
+
+    def kind(node: exp.Expression) -> str | None:
+        while isinstance(node, (exp.Paren, exp.Alias)):
+            node = node.this
+        if isinstance(node, exp.Literal):
+            return None
+        if isinstance(node, exp.Column):
+            read = aliases.get(node.table.lower()) if node.table else None
+            if read is not None and len(read) == 1 and next(iter(read)) not in with_names:
+                # a table read under this name: its own declared type, and nothing when it declares none
+                declared = tables.get(next(iter(read)), {}).get(node.name.lower())
+                found = None if declared is None else {declared}
+            else:
+                # a bare name, or one of a derived table or a WITH name: the type every declared table gives that name
+                found = names.get(node.name.lower())
+            if not found or len(found) != 1:
+                return None
+            return "text" if next(iter(found)) else "other"
+        return {"string": "text", "number": "other"}.get(_kind(node, columns) or "")
+
+    for node in tree.walk():
+        pairs: list[tuple[exp.Expression, exp.Expression]] = []
+        if isinstance(node, (exp.EQ, exp.NullSafeEQ)):
+            pairs.append((node.this, node.expression))
+        elif isinstance(node, exp.In) and node.args.get("query") is not None:
+            for branch in _branches(node.args["query"]):
+                if branch.selects and not _is_star(branch.selects[0]):
+                    pairs.append((node.this, branch.selects[0]))
+        elif isinstance(node, exp.Join):
+            for ident in node.args.get("using") or []:
+                if len(names.get(ident.name.lower(), ())) > 1:
+                    return EQUATED
+        if any({kind(left), kind(right)} == {"text", "other"} for left, right in pairs):
+            return EQUATED
+    return None
+
+
 def _is_operand(node: exp.Expression) -> bool:
     """Whether ``node`` is read as a value by a comparison, arithmetic or an aggregate that adds."""
 
