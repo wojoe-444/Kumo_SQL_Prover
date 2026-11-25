@@ -148,6 +148,7 @@ from .discrete_bounds import close_strict_bounds, fold_chained_dates
 from .filter_terms import exists_outer_terms, pinned_columns, shared_filter_terms
 from .self_lookup_counts import read_self_lookup_counts, waits_for_lookup
 from .key_fixed_groupings import read_key_fixed_grouping
+from .child_aggregates import read_child_aggregates
 from .keyed_join_distinct import read_keyed_join_distinct
 from .rejoined_parents import drop_rejoined_parent
 from .unread_join_chains import drop_unread_chained_join
@@ -5897,6 +5898,7 @@ def normalize(
     early_shape_rules = (
         lambda sel: read_anti_join(sel, schema, not_null),
         lambda sel: guard_outer_counts(sel, schema, not_null),
+        lambda sel: _narrow_twenty_seventh("child_aggregates", lambda s: read_child_aggregates(s, schema, keys, not_null, types_map), sel),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
