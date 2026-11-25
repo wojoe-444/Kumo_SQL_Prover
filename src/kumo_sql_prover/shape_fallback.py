@@ -165,6 +165,7 @@ NARROW_MAX_CHARS = 24000
 
 _OFF: ContextVar[frozenset] = ContextVar("kumo_sql_prover_rules_off", default=frozenset())
 _FIRED: ContextVar[set | None] = ContextVar("kumo_sql_prover_rules_fired", default=None)
+_STEP_FIRED: ContextVar[set | None] = ContextVar("kumo_sql_prover_step_fired", default=None)
 
 
 def rule_enabled(name: str) -> bool:
@@ -185,6 +186,9 @@ def note_fired(name: str) -> None:
     fired = _FIRED.get()
     if fired is not None:
         fired.add(name)
+    step = _STEP_FIRED.get()
+    if step is not None:
+        step.add(name)
 
 
 @contextmanager
@@ -1127,8 +1131,26 @@ TWENTY_SEVENTH_BATCH = frozenset({"group_alias_names", "half_open_days", "if_as_
 # without the ninth to the thirteenth batch, and a pair would look as if it needed the rule when it needed those.
 _BESIDE_NINTH = _BESIDE_NINTH | TWENTY_SEVENTH_BATCH
 
+# Three rules of the batch are spellings: they fire on any query that writes ``IF``, a bare name beside a qualified one
+# or a ``GROUP BY`` alias, which is a large share of all queries, and measured on the development LeetCode pairs every
+# proof they add alone comes from the first attempt of the step. A pair only they touch gets that one attempt
+# (``one_attempt``) and not the whole staged proof again, which for a pair that stays unproved cost about two thirds
+# of every step before it together. (``half_open_days`` is not one of them: its pairs are proved by a late attempt.)
+TWENTY_SEVENTH_SPELLINGS = frozenset({"group_alias_names", "if_as_case", "one_source_names"})
+
+
+class _Candidates(list):
+    """What the steps before the twenty-seventh collect: an entry when a rule that asks for the whole step would have
+    fired, and ``spellings`` when one of ``TWENTY_SEVENTH_SPELLINGS`` would have."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.spellings: list = []
+
+
 _TWENTY_SEVENTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_twenty_seventh_stage", default=None)
-_TWENTY_SEVENTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_twenty_seventh_seen", default=None)
+_TWENTY_SEVENTH_SEEN: ContextVar[_Candidates | None] = ContextVar("kumo_sql_prover_twenty_seventh_seen", default=None)
+_ONE_ATTEMPT: ContextVar[bool] = ContextVar("kumo_sql_prover_one_attempt", default=False)
 
 
 def twenty_seventh_batch_enabled() -> bool:
@@ -1144,7 +1166,7 @@ def twenty_seventh_deferred(watch: bool = True):
     With ``watch`` false nothing is collected: the batch is off for the whole proof, and for the proofs inside it.
     """
 
-    seen: list | None = [] if watch else None
+    seen: _Candidates | None = _Candidates() if watch else None
     stage, watch = _TWENTY_SEVENTH_STAGE.set(False), _TWENTY_SEVENTH_SEEN.set(seen)
     try:
         yield seen
@@ -1179,6 +1201,43 @@ def note_twenty_seventh_candidate() -> None:
     seen = _TWENTY_SEVENTH_SEEN.get()
     if seen is not None and not seen:
         seen.append(True)
+
+
+def twenty_seventh_spelling_watching() -> bool:
+    """Whether an earlier step should try a spelling of the twenty-seventh batch on a copy here: while no rule of the
+    batch has said yes yet."""
+
+    seen = _TWENTY_SEVENTH_SEEN.get()
+    return twenty_seventh_watching() and not seen.spellings
+
+
+def note_twenty_seventh_spelling() -> None:
+    """Record that a spelling of the twenty-seventh batch would have fired in an earlier step: the step is worth one
+    attempt. The other rules of the batch are still asked."""
+
+    seen = _TWENTY_SEVENTH_SEEN.get()
+    if seen is not None and not seen.spellings:
+        seen.spellings.append(True)
+
+
+@contextmanager
+def one_attempt():
+    """Run the block with a staged proof cut down to its first attempt (the proofs inside that attempt are whole),
+    collecting the names of the rules that fire anywhere in it. Yields the set."""
+
+    fired: set = set()
+    attempt, step = _ONE_ATTEMPT.set(True), _STEP_FIRED.set(fired)
+    try:
+        yield fired
+    finally:
+        _STEP_FIRED.reset(step)
+        _ONE_ATTEMPT.reset(attempt)
+
+
+def one_attempt_only() -> bool:
+    """Whether the staged proof that is starting makes its first attempt only (``one_attempt``)."""
+
+    return _ONE_ATTEMPT.get()
 
 
 @contextmanager

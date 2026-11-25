@@ -170,3 +170,77 @@ def test_the_step_gives_proofs_only(monkeypatch):
     switch_off(monkeypatch)
     before = prove(SUMMED, different)
     assert not after.proven and after.status == before.status and after.reason == before.reason
+
+
+# A GROUP BY name that only the select list defines, over a derived table: one of the spellings of the batch
+# (``shape_fallback.TWENTY_SEVENTH_SPELLINGS``), and nothing else of the batch reads the query.
+DEAR = "SELECT cost > 2 AS dear, COUNT(*) AS n FROM (SELECT item, cost FROM prices) AS p GROUP BY dear"
+
+
+def attempts_of(monkeypatch) -> list:
+    """The attempts a proof makes with the batch on, outside the proofs inside them: whether each was the one attempt."""
+
+    attempts: list = []
+    depth = [0]
+    attempt = algebraic_equivalence._prove_algebraic
+
+    def counted(*args, **kwargs):
+        depth[0] += 1
+        try:
+            result = attempt(*args, **kwargs)
+        finally:
+            depth[0] -= 1
+        if depth[0] == 0 and shape_fallback.twenty_seventh_batch_enabled():
+            attempts.append(shape_fallback.one_attempt_only())
+        return result
+
+    monkeypatch.setattr(algebraic_equivalence, "_prove_algebraic", counted)
+    return attempts
+
+
+def test_a_spelling_asks_for_one_attempt_and_the_other_rules_are_still_asked():
+    assert shape_fallback.TWENTY_SEVENTH_SPELLINGS == frozenset({"group_alias_names", "if_as_case", "one_source_names"}) < shape_fallback.TWENTY_SEVENTH_BATCH
+    with shape_fallback.twenty_seventh_deferred() as seen:
+        assert shape_fallback.twenty_seventh_spelling_watching()
+        outside = normal(DEAR)
+        # the spelling said yes: no entry for the whole step, and the other rules of the batch are still asked
+        assert seen == [] and seen.spellings == [True]
+        assert shape_fallback.twenty_seventh_watching() and not shape_fallback.twenty_seventh_spelling_watching()
+        normal(SUMMED)
+        assert seen == [True] and not shape_fallback.twenty_seventh_watching()
+    with shape_fallback.twenty_seventh_deferred() as seen:
+        normal(GREATEST)
+        assert seen == [] and seen.spellings == []
+    with shape_fallback.twenty_seventh_on(), shape_fallback.tracking() as fired:
+        assert normal(DEAR) != outside
+    assert fired & shape_fallback.TWENTY_SEVENTH_BATCH == {"group_alias_names"}
+
+
+def test_a_pair_only_a_spelling_touches_gets_the_first_attempt_of_the_step_and_no_more(monkeypatch):
+    attempts = attempts_of(monkeypatch)
+    assert not prove(DEAR, DEAR.replace("> 2", "> 3")).proven
+    # one attempt is the three readings of DISTINCT (and three more for a pair with a semijoin reading)
+    assert attempts and all(attempts) and len(attempts) <= 6
+    attempts.clear()
+    assert not prove(SUMMED, GREATEST.replace("'south'", "'east'")).proven  # another rule of the batch asked: the whole step
+    assert attempts and not any(attempts)
+
+
+def test_the_whole_step_follows_the_one_attempt_when_another_rule_of_the_batch_fired_in_it(monkeypatch):
+    # with no rule counted as a spelling, the rule that fires in the one attempt is "another rule of the batch"
+    monkeypatch.setattr(shape_fallback, "TWENTY_SEVENTH_SPELLINGS", frozenset())
+    attempts = attempts_of(monkeypatch)
+    assert not prove(DEAR, DEAR.replace("> 2", "> 3")).proven
+    first = attempts.index(False)
+    assert 0 < first <= 6 and all(attempts[:first]) and not any(attempts[first:])
+
+
+def test_the_one_attempt_collects_the_rules_that_fire_in_the_proofs_inside_it():
+    with shape_fallback.one_attempt() as fired:
+        assert shape_fallback.one_attempt_only()
+        with shape_fallback.tracking() as inner:
+            shape_fallback.note_fired("lookup_pivots")
+        assert inner == {"lookup_pivots"}
+    assert fired == {"lookup_pivots"} and not shape_fallback.one_attempt_only()
+    shape_fallback.note_fired("lookup_pivots")  # outside: nothing collects
+    assert fired == {"lookup_pivots"}

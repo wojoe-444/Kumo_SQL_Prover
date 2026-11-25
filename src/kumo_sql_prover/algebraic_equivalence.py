@@ -5276,7 +5276,7 @@ def normalize(
             shape_fallback.note_fired("apart_alias_names")
         elif wrote:
             shape_fallback.note_twenty_fifth_candidate()  # an earlier step: the step after the last is worth running
-    if shape_fallback.rule_enabled("if_as_case") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+    if shape_fallback.rule_enabled("if_as_case") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_spelling_watching()):
         from .if_as_case import read_if_as_case
 
         # pre-pass (batch 29, in the twenty-seventh step): IF(test, a, b) as the CASE the pre-passes below look for
@@ -5285,8 +5285,8 @@ def normalize(
             tree = cased
             shape_fallback.note_fired("if_as_case")
         elif wrote:
-            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
-    if shape_fallback.rule_enabled("group_alias_names") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+            shape_fallback.note_twenty_seventh_spelling()  # an earlier step: one attempt of the step after the last is worth making
+    if shape_fallback.rule_enabled("group_alias_names") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_spelling_watching()):
         from .group_alias_names import read_group_alias_names
 
         # pre-pass (batch 29, in the twenty-seventh step): a GROUP BY name only the select list defines, as its expression
@@ -5295,8 +5295,8 @@ def normalize(
             tree = named
             shape_fallback.note_fired("group_alias_names")
         elif wrote:
-            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
-    if shape_fallback.rule_enabled("one_source_names") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+            shape_fallback.note_twenty_seventh_spelling()  # an earlier step: one attempt of the step after the last is worth making
+    if shape_fallback.rule_enabled("one_source_names") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_spelling_watching()):
         from .one_source_names import read_one_source_names
 
         # pre-pass (batch 29, in the twenty-seventh step): a column a one-source select names as x and as c.x, written bare
@@ -5305,7 +5305,7 @@ def normalize(
             tree = spelled
             shape_fallback.note_fired("one_source_names")
         elif wrote:
-            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
+            shape_fallback.note_twenty_seventh_spelling()  # an earlier step: one attempt of the step after the last is worth making
     if shape_fallback.rule_enabled("nested_membership_joins") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
         from .nested_membership_joins import read_nested_membership_joins
 
@@ -6031,12 +6031,23 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
             return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
     with shape_fallback.twenty_seventh_deferred() as twenty_seventh_seen:
         result, pair, assumed = _prove_with_twenty_fifth_step(left_sql, right_sql, **kwargs)
-    if result.status is SmtStatus.NOT_PROVEN and twenty_seventh_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH):
+    asked = twenty_seventh_seen or twenty_seventh_seen.spellings
+    if result.status is SmtStatus.NOT_PROVEN and asked and any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH):
         # One more step (hardest-cases batch 27): a rule of the twenty-seventh batch would have fired. The staged proof
         # once more with every last batch on, on the last pair tried before. Only a proof is taken.
+        proved = (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY)
+        quiet = {**kwargs, "search_counterexample": False}
         with shape_fallback.twenty_seventh_on():
-            later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
-        if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
+            whole = bool(twenty_seventh_seen)
+            if not whole:
+                # Only a spelling of the batch asked (``shape_fallback.TWENTY_SEVENTH_SPELLINGS``): the first attempt of
+                # that staged proof, and the rest of it when another rule of the batch fired in the attempt.
+                with shape_fallback.one_attempt() as fired:
+                    later = _prove_equivalent_algebraic_whole(*pair, **quiet)
+                whole = later.status not in proved and bool(fired & (shape_fallback.TWENTY_SEVENTH_BATCH - shape_fallback.TWENTY_SEVENTH_SPELLINGS))
+            if whole:
+                later = _prove_equivalent_algebraic_whole(*pair, **quiet)
+        if later.status in proved:
             return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
     return result
 
@@ -6353,6 +6364,11 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
         result = attempt()  # a sub-proof of stage three, four, five or six: one attempt, for the same reason
     elif shape_fallback.ninth_staged():
         result = ladder()  # a proof inside a staged proof: the stage it runs in decides which staged batches are on
+    elif shape_fallback.one_attempt_only():
+        # The first attempt of the staged proof below and nothing after it (the twenty-seventh step of a pair that only
+        # a spelling of its batch touches): stage one's attempt, with the ninth to the thirteenth batch off as there.
+        with shape_fallback.thirteenth_deferred(), shape_fallback.twelfth_deferred(), shape_fallback.eleventh_deferred(), shape_fallback.tenth_deferred(), shape_fallback.ninth_deferred():
+            result = attempt()
     else:
         with shape_fallback.thirteenth_deferred() as thirteenth_seen:
             with shape_fallback.twelfth_deferred() as twelfth_seen:
