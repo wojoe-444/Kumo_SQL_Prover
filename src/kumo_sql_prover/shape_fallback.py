@@ -165,6 +165,7 @@ NARROW_MAX_CHARS = 24000
 
 _OFF: ContextVar[frozenset] = ContextVar("kumo_sql_prover_rules_off", default=frozenset())
 _FIRED: ContextVar[set | None] = ContextVar("kumo_sql_prover_rules_fired", default=None)
+_STEP_FIRED: ContextVar[set | None] = ContextVar("kumo_sql_prover_step_fired", default=None)
 
 
 def rule_enabled(name: str) -> bool:
@@ -185,6 +186,9 @@ def note_fired(name: str) -> None:
     fired = _FIRED.get()
     if fired is not None:
         fired.add(name)
+    step = _STEP_FIRED.get()
+    if step is not None:
+        step.add(name)
 
 
 @contextmanager
@@ -246,7 +250,8 @@ NINTH_BATCH = frozenset(
 # pre-passes; ``early_group_names``: a GROUP BY name two joined tables share): nothing in the prover switches them
 # off, and with one of them off the stages run as they did before that reading was made early. ``aggregate_date_windows``
 # is the part of ``date_windows`` that reads MIN and MAX of a DATE column (batch 26): off, the rule reads what it read.
-_BESIDE_NINTH = frozenset({"verieql_worker_rules", "early_using", "early_group_names", "aggregate_date_windows"})
+# ``kept_union_names`` (batch 30) keeps an output name in every stage; off, the stages run as they did before it.
+_BESIDE_NINTH = frozenset({"verieql_worker_rules", "early_using", "early_group_names", "aggregate_date_windows", "kept_union_names"})
 
 _NINTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_ninth_stage", default=None)
 _NINTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_ninth_seen", default=None)
@@ -335,7 +340,7 @@ def tenth_batch_enabled() -> bool:
     )
 
 
-def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]:
+def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]:
     """Which of the staged batches are on (part of any normalization cache key)."""
 
     return (
@@ -351,6 +356,7 @@ def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, b
         _TWENTIETH_STAGE.get() is True,
         _TWENTY_FOURTH_STAGE.get() is True,
         _TWENTY_FIFTH_STAGE.get() is True,
+        _TWENTY_SEVENTH_STAGE.get() is True,
     )
 
 
@@ -1110,6 +1116,128 @@ def note_twenty_fifth_candidate() -> None:
     seen = _TWENTY_FIFTH_SEEN.get()
     if seen is not None and not seen:
         seen.append(True)
+
+
+# The twenty-seventh batch (2026-11-24: a table turned on its side, with one aggregate or one lookup per column) is
+# one more step after that one, driven in the same way: every step before it runs with the batch off, collecting
+# whether one of its rules would have fired, and then the staged proof runs once more with the fifteenth to the
+# twenty-seventh batch on. So a pair an earlier step decides is decided as it was.
+
+TWENTY_SEVENTH_BATCH = frozenset({"group_alias_names", "half_open_days", "if_as_case", "key_fixed_groupings", "keyed_join_windows", "late_cte_lists", "lookup_pivots", "merged_absence_tests", "named_nested_correlation", "nested_membership_joins", "one_source_names", "regrouped_windows", "rejoined_parents", "single_row_aggregates", "unread_join_chains"})
+
+# A rule of this batch fires only in that last step, where no attempt has a reading from before the batch to keep. With
+# one of them switched off (a narrow attempt of the step, or a test that asks what the prover does without the rule) the
+# staged batches stay on, as they do for the switches of ``_BESIDE_NINTH``: otherwise "without the rule" would also be
+# without the ninth to the thirteenth batch, and a pair would look as if it needed the rule when it needed those.
+_BESIDE_NINTH = _BESIDE_NINTH | TWENTY_SEVENTH_BATCH
+
+# Three rules of the batch are spellings: they fire on any query that writes ``IF``, a bare name beside a qualified one
+# or a ``GROUP BY`` alias, which is a large share of all queries, and measured on the development LeetCode pairs every
+# proof they add alone comes from the first attempt of the step. A pair only they touch gets that one attempt
+# (``one_attempt``) and not the whole staged proof again, which for a pair that stays unproved cost about two thirds
+# of every step before it together. (``half_open_days`` is not one of them: its pairs are proved by a late attempt.)
+TWENTY_SEVENTH_SPELLINGS = frozenset({"group_alias_names", "if_as_case", "one_source_names"})
+
+
+class _Candidates(list):
+    """What the steps before the twenty-seventh collect: an entry when a rule that asks for the whole step would have
+    fired, and ``spellings`` when one of ``TWENTY_SEVENTH_SPELLINGS`` would have."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.spellings: list = []
+
+
+_TWENTY_SEVENTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_twenty_seventh_stage", default=None)
+_TWENTY_SEVENTH_SEEN: ContextVar[_Candidates | None] = ContextVar("kumo_sql_prover_twenty_seventh_seen", default=None)
+_ONE_ATTEMPT: ContextVar[bool] = ContextVar("kumo_sql_prover_one_attempt", default=False)
+
+
+def twenty_seventh_batch_enabled() -> bool:
+    """Whether the rules of ``TWENTY_SEVENTH_BATCH`` may fire in the current attempt: only in the last step of a proof."""
+
+    return _TWENTY_SEVENTH_STAGE.get() is True and _ENABLED.get() and not _LATE.get()
+
+
+@contextmanager
+def twenty_seventh_deferred(watch: bool = True):
+    """Run the block with the twenty-seventh batch off, collecting whether a rule of it would have fired.
+
+    With ``watch`` false nothing is collected: the batch is off for the whole proof, and for the proofs inside it.
+    """
+
+    seen: _Candidates | None = _Candidates() if watch else None
+    stage, watch = _TWENTY_SEVENTH_STAGE.set(False), _TWENTY_SEVENTH_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _TWENTY_SEVENTH_SEEN.reset(watch)
+        _TWENTY_SEVENTH_STAGE.reset(stage)
+
+
+@contextmanager
+def twenty_seventh_on():
+    """The last step of all: run the block with the fifteenth to the twenty-seventh batch on."""
+
+    with twenty_fifth_on():
+        stage, watch = _TWENTY_SEVENTH_STAGE.set(True), _TWENTY_SEVENTH_SEEN.set(None)
+        try:
+            yield
+        finally:
+            _TWENTY_SEVENTH_SEEN.reset(watch)
+            _TWENTY_SEVENTH_STAGE.reset(stage)
+
+
+def twenty_seventh_watching() -> bool:
+    """Whether an earlier step should try the twenty-seventh batch on a copy here: while no rule of it has said yes yet."""
+
+    seen = _TWENTY_SEVENTH_SEEN.get()
+    return _TWENTY_SEVENTH_STAGE.get() is False and seen is not None and not seen and _ENABLED.get() and not _LATE.get()
+
+
+def note_twenty_seventh_candidate() -> None:
+    """Record that a rule of the twenty-seventh batch would have fired in an earlier step."""
+
+    seen = _TWENTY_SEVENTH_SEEN.get()
+    if seen is not None and not seen:
+        seen.append(True)
+
+
+def twenty_seventh_spelling_watching() -> bool:
+    """Whether an earlier step should try a spelling of the twenty-seventh batch on a copy here: while no rule of the
+    batch has said yes yet."""
+
+    seen = _TWENTY_SEVENTH_SEEN.get()
+    return twenty_seventh_watching() and not seen.spellings
+
+
+def note_twenty_seventh_spelling() -> None:
+    """Record that a spelling of the twenty-seventh batch would have fired in an earlier step: the step is worth one
+    attempt. The other rules of the batch are still asked."""
+
+    seen = _TWENTY_SEVENTH_SEEN.get()
+    if seen is not None and not seen.spellings:
+        seen.spellings.append(True)
+
+
+@contextmanager
+def one_attempt():
+    """Run the block with a staged proof cut down to its first attempt (the proofs inside that attempt are whole),
+    collecting the names of the rules that fire anywhere in it. Yields the set."""
+
+    fired: set = set()
+    attempt, step = _ONE_ATTEMPT.set(True), _STEP_FIRED.set(fired)
+    try:
+        yield fired
+    finally:
+        _STEP_FIRED.reset(step)
+        _ONE_ATTEMPT.reset(attempt)
+
+
+def one_attempt_only() -> bool:
+    """Whether the staged proof that is starting makes its first attempt only (``one_attempt``)."""
+
+    return _ONE_ATTEMPT.get()
 
 
 @contextmanager

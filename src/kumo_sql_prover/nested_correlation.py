@@ -117,7 +117,14 @@ def _probe(test: exp.Expression) -> tuple[exp.Select, tuple[str, str] | None] | 
     return None
 
 
-def flatten_nested_correlation(select: exp.Select, types: dict | None = None) -> exp.Expression | None:
+def flatten_nested_correlation(select: exp.Select, types: dict | None = None, whole: bool = False) -> exp.Expression | None:
+    """The select with its nested tests of the outer row asked once outside (module doc), or None.
+
+    ``whole`` (``named_nested_correlation``, batch 30) also moves the tests out when they are the subquery's whole
+    ``WHERE``: ``x IN (SELECT s.c FROM s WHERE b)`` is ``x IN (SELECT s.c FROM s) AND b`` when ``b`` reads no row of
+    ``s``, like ``EXISTS``. Without it such a subquery is left as it was read before that batch.
+    """
+
     from .algebraic_equivalence import _conjuncts
     from .counted_membership import _unstable
 
@@ -188,7 +195,10 @@ def flatten_nested_correlation(select: exp.Select, types: dict | None = None) ->
         if moved and kept:
             inner_where.set("this", exp.and_(*kept, copy=False))
             hoisted[position] = moved
-        if (moved and kept) or renamed:
+        elif moved and whole:
+            inner.set("where", None)
+            hoisted[position] = moved
+        if (moved and (kept or whole)) or renamed:
             changed = True
     if not changed or _unstable(select):
         return None

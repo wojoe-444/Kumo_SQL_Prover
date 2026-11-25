@@ -95,6 +95,8 @@ from .keyed_set_join import lift_keyed_set_join
 from .aggregate_rules import rewrite_aggregates
 from .null_facts import null_contradiction
 from .keyed_semijoin import distinct_key_join_to_exists
+from .merged_absence_tests import merge_absence_tests
+from .named_nested_correlation import flatten_named_correlation
 from .nested_correlation import flatten_nested_correlation
 from .null_rejecting_joins import left_join_to_inner
 from .presence_given_absence import drop_implied_presence_filters
@@ -118,6 +120,7 @@ from .bigquery_constructs import rewrite_bigquery_constructs
 from .boolean_identities import fold_boolean_identities
 from . import float_regrouping
 from . import shape_fallback, worker_rules
+from . import kept_union_names
 from . import union_source_names
 from .union_rollup import roll_up_grouped_union
 from .one_row_joins import cross_join_one_row
@@ -144,6 +147,9 @@ from .counted_outer_groups import count_outer_groups
 from .discrete_bounds import close_strict_bounds, fold_chained_dates
 from .filter_terms import exists_outer_terms, pinned_columns, shared_filter_terms
 from .self_lookup_counts import read_self_lookup_counts, waits_for_lookup
+from .key_fixed_groupings import read_key_fixed_grouping
+from .rejoined_parents import drop_rejoined_parent
+from .unread_join_chains import drop_unread_chained_join
 from .labelled_cases import read_labelled_cases
 from .lookup_conditions import lookup_conditions
 from .grouped_key_counts import grouped_key_counts
@@ -2486,10 +2492,14 @@ def _canonicalize_union_source(node: exp.Subquery) -> exp.Expression | None:
         elif column.name.lower() in renames:
             return None  # ambiguous unqualified use: leave it alone
     clashing = union_source_names.select_aliases(outer) if shape_fallback.enabled() else set()
+    renamed = []
     for column in targets:
         old_name = column.name
+        renamed.append((column, column.this.copy()))
         column.set("this", exp.to_identifier(renames[old_name.lower()]))
         union_source_names.qualify(column, old_name, node.alias, clashing)  # a new name that is also a select alias
+    if shape_fallback.rule_enabled("kept_union_names"):
+        kept_union_names.keep(outer, renamed)  # a select item by itself keeps the output name an outer query reads
     canonical.sort(key=lambda b: b.sql(dialect="bigquery"))
     union: exp.Expression = canonical[0]
     for branch in canonical[1:]:
@@ -5062,6 +5072,19 @@ def _narrow_twentieth(name: str, rule, select):
     return _narrow(name, rule, select)
 
 
+def _narrow_twenty_seventh(name: str, rule, select):
+    """A narrow-retry rule of the twenty-seventh step (hardest-cases batches 27 and 28): it fires only in the last step
+    of a proof (``shape_fallback.twenty_seventh_batch_enabled``). In the steps before, it is tried where it would fire
+    and its result thrown away (the rule copies the select it is given), which tells the prover that the last step is
+    worth running."""
+
+    if not shape_fallback.twenty_seventh_batch_enabled():
+        if shape_fallback.twenty_seventh_watching() and shape_fallback.rule_enabled(name) and rule(select) is not None:
+            shape_fallback.note_twenty_seventh_candidate()
+        return None
+    return _narrow(name, rule, select)
+
+
 def _waits_for_seventeenth(select, schema, keys, not_null, types_map, dialect) -> bool:
     """In the last step only: the found rows of a lookup ``self_lookup_counts`` reads keep their spelling until it has
     read the join. Leaving a select alone is always sound."""
@@ -5208,7 +5231,10 @@ def normalize(
     tree = _resolve_ordinals(tree, group_by=not group_by_constants)
     tree = _unwrap_output_columns(_lowercase_columns(tree))
     listed: list[str] = []
-    if shape_fallback.rule_enabled("listed_cte_names") and (shape_fallback.thirteenth_batch_enabled() or shape_fallback.thirteenth_watching()):
+    # batch 30: the last step of batch 27 reads the list in each of its attempts. The thirteenth batch's stage makes one
+    # attempt, so a pair that needs the list read and a rule of a later attempt was not reached.
+    late_lists = shape_fallback.rule_enabled("late_cte_lists") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching())
+    if shape_fallback.rule_enabled("listed_cte_names") and (shape_fallback.thirteenth_batch_enabled() or shape_fallback.thirteenth_watching() or late_lists):
         from .listed_cte_names import name_listed_cte_outputs
 
         # pre-pass (thirteenth batch), before the WITH queries are inlined: a column list on a WITH name as aliases
@@ -5217,8 +5243,14 @@ def normalize(
             listed.append("listed_cte_names")
             if shape_fallback.thirteenth_batch_enabled():
                 tree = named_ctes
+            elif late_lists and shape_fallback.twenty_seventh_batch_enabled():
+                tree = named_ctes
+                shape_fallback.note_fired("late_cte_lists")
             else:
-                shape_fallback.note_thirteenth_candidate()  # said here: inlining may decline the query as it is written
+                if shape_fallback.thirteenth_watching():
+                    shape_fallback.note_thirteenth_candidate()  # said here: inlining may decline the query as it is written
+                if late_lists:
+                    shape_fallback.note_twenty_seventh_candidate()
     tree = _inline_ctes(tree)
     if shape_fallback.rule_enabled("early_using") and schema:
         tree = _using_to_on(tree, schema)  # USING read as ON before the pre-passes, which leave a USING join alone
@@ -5244,6 +5276,86 @@ def normalize(
             shape_fallback.note_fired("apart_alias_names")
         elif wrote:
             shape_fallback.note_twenty_fifth_candidate()  # an earlier step: the step after the last is worth running
+    if shape_fallback.rule_enabled("if_as_case") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_spelling_watching()):
+        from .if_as_case import read_if_as_case
+
+        # pre-pass (batch 29, in the twenty-seventh step): IF(test, a, b) as the CASE the pre-passes below look for
+        cased, wrote = read_if_as_case(tree)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = cased
+            shape_fallback.note_fired("if_as_case")
+        elif wrote:
+            shape_fallback.note_twenty_seventh_spelling()  # an earlier step: one attempt of the step after the last is worth making
+    if shape_fallback.rule_enabled("group_alias_names") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_spelling_watching()):
+        from .group_alias_names import read_group_alias_names
+
+        # pre-pass (batch 29, in the twenty-seventh step): a GROUP BY name only the select list defines, as its expression
+        named, wrote = read_group_alias_names(tree, schema, dialect)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = named
+            shape_fallback.note_fired("group_alias_names")
+        elif wrote:
+            shape_fallback.note_twenty_seventh_spelling()  # an earlier step: one attempt of the step after the last is worth making
+    if shape_fallback.rule_enabled("one_source_names") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_spelling_watching()):
+        from .one_source_names import read_one_source_names
+
+        # pre-pass (batch 29, in the twenty-seventh step): a column a one-source select names as x and as c.x, written bare
+        spelled, wrote = read_one_source_names(tree)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = spelled
+            shape_fallback.note_fired("one_source_names")
+        elif wrote:
+            shape_fallback.note_twenty_seventh_spelling()  # an earlier step: one attempt of the step after the last is worth making
+    if shape_fallback.rule_enabled("nested_membership_joins") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+        from .nested_membership_joins import read_nested_membership_joins
+
+        # pre-pass (batch 29, in the twenty-seventh step): x IN (..) inside the subquery of another IN, as a join in that subquery
+        merged, wrote = read_nested_membership_joins(tree, schema)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = merged
+            shape_fallback.note_fired("nested_membership_joins")
+        elif wrote:
+            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
+    if any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH) and schema and keys and (
+        shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()
+    ):
+        # pre-pass (twenty-seventh batch): a table turned on its side. A lookup per column (a LEFT JOIN or a scalar
+        # subquery that a key answers with at most one row) is the grouped select with one MAX per lookup, and MIN
+        # or SUM of a value only one row of a group can have is that MAX.
+        turned, wrote = tree, False
+        if shape_fallback.rule_enabled("lookup_pivots"):
+            from .lookup_pivots import read_lookup_pivots
+
+            turned, wrote = read_lookup_pivots(turned, schema, keys, not_null, types)
+            if wrote and shape_fallback.twenty_seventh_batch_enabled():
+                shape_fallback.note_fired("lookup_pivots")
+        if shape_fallback.rule_enabled("single_row_aggregates"):
+            from .single_row_aggregates import read_single_row_aggregates
+
+            turned, single = read_single_row_aggregates(turned, schema, keys, not_null, types, dialect)
+            if single and shape_fallback.twenty_seventh_batch_enabled():
+                shape_fallback.note_fired("single_row_aggregates")
+            wrote = wrote or single
+        if shape_fallback.rule_enabled("keyed_join_windows"):
+            from .keyed_join_windows import read_keyed_join_windows
+
+            # batch 28: AGG(c) OVER (PARTITION BY fk) beside a join to the keyed row is a join with the grouped table
+            turned, keyed = read_keyed_join_windows(turned, schema, keys, not_null, types)
+            if keyed and shape_fallback.twenty_seventh_batch_enabled():
+                shape_fallback.note_fired("keyed_join_windows")
+            wrote = wrote or keyed
+        if shape_fallback.rule_enabled("regrouped_windows"):
+            from .regrouped_windows import read_regrouped_windows
+
+            # batch 28: AGG(SUM(x)) OVER (PARTITION BY k) in a grouped derived table is a join with the table grouped again
+            turned, regrouped = read_regrouped_windows(turned)
+            if regrouped and shape_fallback.twenty_seventh_batch_enabled():
+                shape_fallback.note_fired("regrouped_windows")
+            wrote = wrote or regrouped
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = turned
+        elif wrote:
+            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
     if shape_fallback.rule_enabled("shared_group_names"):
         from .shared_group_names import qualify_shared_group_names
 
@@ -5270,6 +5382,16 @@ def normalize(
             shape_fallback.note_fired("date_windows")
         elif windowed:
             shape_fallback.note_twelfth_candidate()  # an earlier stage: stage five is worth running
+    if shape_fallback.rule_enabled("half_open_days") and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+        from .half_open_days import read_half_open_days
+
+        # pre-pass (batch 30, in the twenty-seventh step): a DATE column against a day, written with >= and < only
+        opened, wrote, bound = read_half_open_days(tree, schema, types, dialect)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = opened
+            shape_fallback.note_fired("half_open_days")
+        elif bound and not shape_fallback.twenty_seventh_batch_enabled():
+            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
     if shape_fallback.rule_enabled("constant_bins") and (shape_fallback.sixteenth_batch_enabled() or shape_fallback.sixteenth_watching()):
         from .constant_bins import read_constant_bins
 
@@ -5671,6 +5793,8 @@ def normalize(
         lambda sel: _narrow("keyed_semijoin", lambda s: distinct_key_join_to_exists(s, keys, not_null, types_map, schema), sel),
         lambda sel: _narrow_shape("distinct_match_joins", lambda s: ask_unlisted_joins(s, types_map, schema), sel),
         lambda sel: _narrow("nested_correlation", lambda s: flatten_nested_correlation(s, types_map), sel),
+        lambda sel: _narrow_twenty_seventh("named_nested_correlation", lambda s: flatten_named_correlation(s, types_map, schema), sel),
+        lambda sel: _narrow_twenty_seventh("merged_absence_tests", merge_absence_tests, sel),
         lambda sel: _narrow("presence_given_absence", lambda s: drop_implied_presence_filters(s, not_null, schema), sel),
         merge_preserved_join_source,
         lambda sel: prune_windowed_outputs(sel, schema),
@@ -5699,6 +5823,9 @@ def normalize(
         lambda sel: _narrow_eighteenth("exists_outer_terms", exists_outer_terms, sel),
         lambda sel: _narrow_eighteenth("pinned_columns", lambda s: pinned_columns(s, types_map), sel),
         lambda sel: _narrow_twentieth("grouped_key_counts", lambda s: grouped_key_counts(s, keys, not_null, types_map), sel),
+        lambda sel: _narrow_twenty_seventh("unread_join_chains", lambda s: drop_unread_chained_join(s, schema), sel),
+        lambda sel: _narrow_twenty_seventh("rejoined_parents", lambda s: drop_rejoined_parent(s, schema, keys, not_null, types_map), sel),
+        lambda sel: _narrow_twenty_seventh("key_fixed_groupings", lambda s: read_key_fixed_grouping(s, schema, keys, not_null, types_map, dialect), sel),
         lambda sel: _narrow_sixteenth("labelled_cases", read_labelled_cases, sel),
         lambda sel: _narrow_sixteenth("quotient_comparisons", lambda s: quotient_step(s, types_map, dialect), sel),
         lambda sel: close_strict_bounds(sel, types_map, dialect),
@@ -5900,8 +6027,35 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     if not shape_fallback.last_steps_worth_trying(left_sql, right_sql):
         # Each last step is another whole attempt, and a long pair that stays unproved would pay for every one of
         # them: over the size limit the proof is the one before the steps, for this pair and the proofs inside it.
-        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False), shape_fallback.seventeenth_deferred(watch=False), shape_fallback.eighteenth_deferred(watch=False), shape_fallback.twentieth_deferred(watch=False), shape_fallback.twenty_fourth_deferred(watch=False), shape_fallback.twenty_fifth_deferred(watch=False):
+        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False), shape_fallback.seventeenth_deferred(watch=False), shape_fallback.eighteenth_deferred(watch=False), shape_fallback.twentieth_deferred(watch=False), shape_fallback.twenty_fourth_deferred(watch=False), shape_fallback.twenty_fifth_deferred(watch=False), shape_fallback.twenty_seventh_deferred(watch=False):
             return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
+    with shape_fallback.twenty_seventh_deferred() as twenty_seventh_seen:
+        result, pair, assumed = _prove_with_twenty_fifth_step(left_sql, right_sql, **kwargs)
+    asked = twenty_seventh_seen or twenty_seventh_seen.spellings
+    if result.status is SmtStatus.NOT_PROVEN and asked and any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH):
+        # One more step (hardest-cases batch 27): a rule of the twenty-seventh batch would have fired. The staged proof
+        # once more with every last batch on, on the last pair tried before. Only a proof is taken.
+        proved = (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY)
+        quiet = {**kwargs, "search_counterexample": False}
+        with shape_fallback.twenty_seventh_on():
+            whole = bool(twenty_seventh_seen)
+            if not whole:
+                # Only a spelling of the batch asked (``shape_fallback.TWENTY_SEVENTH_SPELLINGS``): the first attempt of
+                # that staged proof, and the rest of it when another rule of the batch fired in the attempt.
+                with shape_fallback.one_attempt() as fired:
+                    later = _prove_equivalent_algebraic_whole(*pair, **quiet)
+                whole = later.status not in proved and bool(fired & (shape_fallback.TWENTY_SEVENTH_BATCH - shape_fallback.TWENTY_SEVENTH_SPELLINGS))
+            if whole:
+                later = _prove_equivalent_algebraic_whole(*pair, **quiet)
+        if later.status in proved:
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
+    return result
+
+
+def _prove_with_twenty_fifth_step(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:
+    """The proof up to and including the step of batch 25, the last pair it tried, and the assumptions of the steps
+    before a later one."""
+
     with shape_fallback.twenty_fifth_deferred() as twenty_fifth_seen:
         result, pair, assumed = _prove_with_twenty_fourth_step(left_sql, right_sql, **kwargs)
     if result.status is SmtStatus.NOT_PROVEN and twenty_fifth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_FIFTH_BATCH):
@@ -5910,8 +6064,8 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
         with shape_fallback.twenty_fifth_on():
             later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
         if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
-            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
-    return result
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed)))), pair, assumed
+    return result, pair, assumed
 
 
 def _prove_with_twenty_fourth_step(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:
@@ -6210,6 +6364,11 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
         result = attempt()  # a sub-proof of stage three, four, five or six: one attempt, for the same reason
     elif shape_fallback.ninth_staged():
         result = ladder()  # a proof inside a staged proof: the stage it runs in decides which staged batches are on
+    elif shape_fallback.one_attempt_only():
+        # The first attempt of the staged proof below and nothing after it (the twenty-seventh step of a pair that only
+        # a spelling of its batch touches): stage one's attempt, with the ninth to the thirteenth batch off as there.
+        with shape_fallback.thirteenth_deferred(), shape_fallback.twelfth_deferred(), shape_fallback.eleventh_deferred(), shape_fallback.tenth_deferred(), shape_fallback.ninth_deferred():
+            result = attempt()
     else:
         with shape_fallback.thirteenth_deferred() as thirteenth_seen:
             with shape_fallback.twelfth_deferred() as twelfth_seen:
