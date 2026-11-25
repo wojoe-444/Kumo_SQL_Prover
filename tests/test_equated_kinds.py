@@ -73,8 +73,9 @@ FOUND = [
     "SELECT b.code FROM badges AS b JOIN days AS d ON d.day = b.day",  # a text and a date
     "SELECT b.code FROM badges AS b JOIN days AS d USING (day)",
     "SELECT g.code FROM (SELECT code FROM badges) AS g JOIN staff AS m ON g.code = m.staff_id",
-    "SELECT m.staff_id FROM staff AS m JOIN badges AS b ON b.code = COUNT(*)",
     "WITH g AS (SELECT code FROM badges) SELECT g.code FROM g JOIN staff AS m ON g.code = m.staff_id",
+    "SELECT m.staff_id FROM staff AS m WHERE EXISTS (SELECT 1 FROM badges WHERE code = staff_id)",  # bare names of two tables
+    "SELECT m.staff_id FROM staff AS m, badges AS b WHERE code = staff_id",
 ]
 NOT_FOUND = [
     "SELECT m.staff_id FROM staff AS m JOIN badges AS b ON b.code = m.badge",
@@ -84,6 +85,10 @@ NOT_FOUND = [
     "SELECT m.staff_id FROM staff AS m JOIN badges AS b ON b.code < m.staff_id",  # no rule reads an ordering as one value
     "SELECT m.staff_id FROM staff AS m JOIN other AS o ON o.code = m.staff_id",  # no declared type
     "SELECT m.staff_id FROM staff AS m JOIN staff AS r USING (staff_id)",
+    # two values of one row: a test on that row, whatever the engine converts
+    "SELECT b.code FROM badges AS b WHERE b.hours + 1 = b.code",
+    "SELECT code FROM badges WHERE hours = code",
+    "SELECT b.code FROM badges AS b GROUP BY b.code HAVING b.code = COUNT(*)",
     "SELECT d.note FROM days AS d JOIN days AS e ON d.day = e.day",
 ]
 

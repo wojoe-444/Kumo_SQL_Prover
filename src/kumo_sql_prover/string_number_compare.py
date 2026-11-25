@@ -939,8 +939,9 @@ def problem(
 
 
 EQUATED = (
-    "a text is set equal to a value of another type and neither is a literal (several texts can equal one number or one "
-    "date, so the two sides do not share one value; the rules that read a join or a correlated subquery do not model it)"
+    "a text of one source is set equal to a value of another type from another source (several texts can equal one "
+    "number or one date, so the two sides do not share one value; the rules that read a join or a correlated subquery "
+    "do not model it)"
 )
 
 
@@ -969,8 +970,9 @@ def equated_kinds_problem(sql: str, dialect: str = "bigquery", types: dict[str, 
     The rules of the algebraic prover read ``=`` as "the same value": a per-row subquery ``(SELECT SUM(b.hours) FROM
     badges AS b WHERE b.code = m.staff_id)`` was written as a join to the table grouped by ``code``, which has two rows
     for that staff row, and proved equal to that join as a user would write it (Kumo_SQL_Prover issue 71). So the
-    algebraic prover declines a pair that holds such an equality: ``=``, ``<=>``, ``IN (subquery)`` or ``USING``.
-    A comparison with a literal is one value on one side and stays with :func:`problem`.
+    algebraic prover declines a pair that holds such an equality between two sources: ``=``, ``<=>``, ``IN (subquery)``
+    or ``USING``. A comparison with a literal is one value on one side and stays with :func:`problem`, and an equality
+    of two values of one row (``d.sal + 1 = d.job``) is a test on that row, kept as written by every rule.
     """
 
     try:
@@ -1005,10 +1007,28 @@ def equated_kinds_problem(sql: str, dialect: str = "bigquery", types: dict[str, 
             return "text" if next(iter(found)) else "other"
         return {"string": "text", "number": "other"}.get(_kind(node, columns) or "")
 
+    def one_row(left: exp.Expression, right: exp.Expression) -> bool:
+        """Whether both operands read the same row of one source: the comparison is then a test on that row, which
+        every rule keeps as it is written (``d.sal + 1 = d.job``)."""
+
+        names = {column.table.lower() for side in (left, right) for column in side.find_all(exp.Column)}
+        if len(names) != 1:
+            return not names
+        if "" not in names:
+            return True
+        # bare names: one row only when the select reads a single declared table that has them all
+        select = left.find_ancestor(exp.Select)
+        source = (select.args.get("from_") or select.args.get("from")) if select is not None else None
+        if source is None or select.args.get("joins") or not isinstance(source.this, exp.Table):
+            return False
+        declared = tables.get(source.this.name.lower(), {})
+        return all(column.name.lower() in declared for side in (left, right) for column in side.find_all(exp.Column))
+
     for node in tree.walk():
         pairs: list[tuple[exp.Expression, exp.Expression]] = []
         if isinstance(node, (exp.EQ, exp.NullSafeEQ)):
-            pairs.append((node.this, node.expression))
+            if not one_row(node.this, node.expression):
+                pairs.append((node.this, node.expression))
         elif isinstance(node, exp.In) and node.args.get("query") is not None:
             for branch in _branches(node.args["query"]):
                 if branch.selects and not _is_star(branch.selects[0]):
