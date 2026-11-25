@@ -725,7 +725,9 @@
   "tests/test_twenty_fourth_step.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[4]": 2.0,
   "tests/test_twenty_fifth_step.py::test_pairs_that_differ_stay_unproved": 3.7,
   "tests/test_twenty_fifth_step.py::test_a_pair_is_proved_in_one_more_run_and_only_with_the_rule[2]": 2.4,
-  "tests/test_harness_translation.py::test_the_leetcode_harness_reads_two_updates_as_the_tables_they_leave": 2.8
+  "tests/test_harness_translation.py::test_the_leetcode_harness_reads_two_updates_as_the_tables_they_leave": 2.8,
+  "tests/test_using_star_items.py::test_a_using_join_is_read_by_the_rules_that_run_before_the_normal_form": 5.1,
+  "tests/test_listed_cte_names.py::test_a_query_that_uses_listed_names_is_proved": 3.5
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,
