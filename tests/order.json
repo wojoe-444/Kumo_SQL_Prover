@@ -775,7 +775,16 @@
   "tests/test_merged_absence_tests.py::test_pairs_that_differ_stay_unproved[<= '2024-01-01'-> '2024-01-07']": 10.0,
   "tests/test_merged_absence_tests.py::test_pairs_that_differ_stay_unproved[< '2024-01-01'-< '2024-01-01']": 10.0,
   "tests/test_using_star_items.py::test_a_using_join_is_read_by_the_rules_that_run_before_the_normal_form": 5.1,
-  "tests/test_listed_cte_names.py::test_a_query_that_uses_listed_names_is_proved": 3.5
+  "tests/test_listed_cte_names.py::test_a_query_that_uses_listed_names_is_proved": 3.5,
+  "tests/test_numbered_islands.py::test_the_numbered_spelling_is_proved_equal_to_the_lookup_spelling[sql0]": 3.8,
+  "tests/test_numbered_islands.py::test_the_numbered_spelling_is_proved_equal_to_the_lookup_spelling[sql1]": 5.6,
+  "tests/test_numbered_islands.py::test_the_numbered_spelling_is_proved_equal_to_the_lookup_spelling[sql2]": 3.3,
+  "tests/test_numbered_islands.py::test_the_numbered_spelling_is_proved_equal_to_the_lookup_spelling[sql3]": 3.7,
+  "tests/test_numbered_islands.py::test_the_numbered_spelling_is_proved_equal_to_the_lookup_spelling[sql5]": 3.4,
+  "tests/test_numbered_islands.py::test_the_numbered_spelling_is_proved_equal_to_the_lookup_spelling[sql6]": 5.1,
+  "tests/test_numbered_islands.py::test_a_longer_run_is_not_proved_equal_to_a_neighbour": 4.4,
+  "tests/test_numbered_islands.py::test_two_numbered_spellings_are_proved_equal": 2.8,
+  "tests/test_numbered_islands.py::test_without_a_key_nothing_is_proved": 2.3
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,
