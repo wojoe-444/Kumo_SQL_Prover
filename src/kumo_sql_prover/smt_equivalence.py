@@ -84,7 +84,7 @@ from .solver_lock import Z3_MISSING, bound, bounded_solver, serialized, sweep
 from .string_literals import canonical_literals
 from .type_names import invalid_type_name
 from .sqlx_fragments import masked_template_problem
-from . import date_witness, derived_types, engine_null_results, numeric_column_reading, opaque_pairing, shape_fallback, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals, volatile_calls
+from . import date_witness, derived_types, engine_null_results, having_filters, numeric_column_reading, opaque_pairing, shape_fallback, smt_errors, smt_group_sums, smt_literal_coercion, smt_numeric, smt_values, string_number_compare, string_number_literals, volatile_calls
 from . import float_halving, sum_argument_types
 from .float_sum_order import Ledger
 
@@ -4838,8 +4838,11 @@ def _strings_between(literals: list[str], per_gap: int = 2) -> list[str]:
         dates = [datetime.date.fromisoformat(text) for text in (low, high) if text is not None and _ISO_DATE.match(text) and _is_date(text)]
         if dates and len(dates) == sum(text is not None for text in (low, high)):
             day = datetime.timedelta(days=1)
-            near = [dates[0] + day, dates[0] + 2 * day] if low is not None else [dates[0] - day, dates[0] - 2 * day]
-            candidates = [date.isoformat() for date in near if datetime.date.min + 3 * day < date < datetime.date.max - 3 * day] + candidates
+            # only a day with three days of the calendar on each side: its neighbours exist (the first and the
+            # last days of the calendar have none on one side, and adding a day to them is an error)
+            inside = datetime.date.min + 5 * day < dates[0] < datetime.date.max - 5 * day
+            near = [] if not inside else [dates[0] + day, dates[0] + 2 * day] if low is not None else [dates[0] - day, dates[0] - 2 * day]
+            candidates = [date.isoformat() for date in near] + candidates
         fits = [text for text in candidates if (low is None or low < text) and (high is None or text < high)]
         found.extend(fits[:per_gap])
     return found
@@ -5677,6 +5680,11 @@ def _prove_equivalent_smt(left_sql: str, right_sql: str, **kwargs) -> SmtEquival
         unknown_type = invalid_type_name(left_sql) or invalid_type_name(right_sql)
         if unknown_type:
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, f"unsupported: BigQuery would reject the query: {unknown_type}")
+    if kwargs.get("dialect", "bigquery") in having_filters.DIALECTS:
+        # MySQL's HAVING in a select that groups nothing filters the selected rows: written as a WHERE, or declined
+        (left_sql, left_unread), (right_sql, right_unread) = (having_filters.read(sql, kwargs["dialect"], kwargs.get("schema")) for sql in (left_sql, right_sql))
+        if left_unread or right_unread:
+            return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, left_unread or right_unread)
     left_sql, right_sql = (string_number_literals.normalize(sql, kwargs.get("dialect", "bigquery"), kwargs.get("types")) for sql in (left_sql, right_sql))
     result = _prove_with_limit(left_sql, right_sql, **kwargs)
     if not conditional or result.status is SmtStatus.PROVEN_EQUIVALENT:

@@ -110,7 +110,7 @@ from .set_operation_types import ASSUMPTION as SET_TYPES_ASSUMPTION, mixed_types
 from .grouped_join_facts import propagate_grouped_join_facts
 from .correlated_key_groups import expose_correlated_key_groups
 from .lateral_boolean_groups import nullable_lateral_boolean_group
-from . import numeric_column_reading, string_number_compare, string_number_literals
+from . import having_filters, numeric_column_reading, string_number_compare, string_number_literals
 from .constant_correlation import propagate_constant_correlations
 from .constant_window_sums import count_constant_window_sums
 from .conditional_count_sums import count_conditional_sums
@@ -766,10 +766,11 @@ def _date_of(node: exp.Expression) -> datetime.date | None:
 
 
 def _shift(day: datetime.date, count: int, unit: str) -> datetime.date | None:
-    if unit == "DAY":
-        return day + datetime.timedelta(days=count)
-    if unit == "WEEK":
-        return day + datetime.timedelta(weeks=count)
+    if unit in ("DAY", "WEEK"):
+        try:
+            return day + datetime.timedelta(days=count if unit == "DAY" else 7 * count)
+        except OverflowError:  # past the first or the last day of the calendar: the call stays as written
+            return None
     if unit in ("MONTH", "YEAR"):
         months = day.year * 12 + day.month - 1 + count * (12 if unit == "YEAR" else 1)
         year, month = divmod(months, 12)
@@ -5548,7 +5549,11 @@ def normalize(
 
         tree = counted_join_rules(tree)  # pre-pass: COUNT(*) over a FULL JOIN as the count of its two halves
         from .count_exists_rules import count_tests_to_exists
+        from .scalar_counts import read_spelled_out_counts
 
+        # pre-pass: MySQL's `HAVING n > 0` on a scalar count arrives as a WHERE on the count itself (having_filters);
+        # read here, before the rules below take the WHERE test and the select item apart
+        tree = worker_rules.prepass(read_spelled_out_counts, tree, schema, keys, not_null)
         tree = count_tests_to_exists(tree)  # pre-pass: (SELECT COUNT(*) ..) > 0 as EXISTS
         from .subquery_absorption import absorb_subquery_tests
 
@@ -6014,6 +6019,11 @@ def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs)
         return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, Z3_MISSING)
     dialect = kwargs.get("dialect", "bigquery")
     try:
+        if dialect in having_filters.DIALECTS:
+            # MySQL's HAVING in a select that groups nothing filters the selected rows: written as a WHERE, or declined
+            (left_sql, left_unread), (right_sql, right_unread) = (having_filters.read(sql, dialect, kwargs.get("schema")) for sql in (left_sql, right_sql))
+            if left_unread or right_unread:
+                return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, left_unread or right_unread)
         left_sql, right_sql = (string_number_literals.normalize(sql, dialect, kwargs.get("types")) for sql in (left_sql, right_sql))
         if dialect == "bigquery" and (invalid_literal(left_sql) or invalid_literal(right_sql)):
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, "unsupported: a single-quoted literal holds a line break (not valid GoogleSQL)")

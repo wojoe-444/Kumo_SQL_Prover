@@ -234,3 +234,21 @@ def test_the_rewritten_query_returns_the_same_rows(sql):
         strict = after.replace("GROUP BY p.id", "GROUP BY p.id, p.name").replace("GROUP BY people.id", "GROUP BY people.id, people.name")
         before_rows, after_rows = run(tables, sql, strict)
         assert before_rows == after_rows, (tables, sql, after)
+
+
+def test_the_item_written_out_again_under_where_is_read_like_its_name():
+    """MySQL's ``HAVING wins > 0`` reaches the rule as a ``WHERE`` on the item itself (``having_filters``)."""
+
+    count = "(SELECT COUNT(*) FROM games AS g WHERE g.w1 = p.id)"
+    named = rewritten(f"SELECT p.id, {count} AS wins FROM people AS p HAVING wins > 0")
+    assert named is not None
+    assert rewritten(f"SELECT p.id, {count} AS wins FROM people AS p WHERE {count} > 0") == named
+    assert rewritten(f"SELECT p.id, {count} AS wins FROM people AS p WHERE ({count}) >= 1") is not None
+    # another count, another test, or the item twice: not this reading
+    other = "(SELECT COUNT(*) FROM games AS g WHERE g.w2 = p.id)"
+    assert rewritten(f"SELECT p.id, {count} AS wins FROM people AS p WHERE {other} > 0") is None
+    assert rewritten(f"SELECT p.id, {count} AS wins FROM people AS p WHERE {count} >= 0") is None
+    assert rewritten(f"SELECT p.id, {count} AS wins, {count} AS again FROM people AS p WHERE {count} > 0") is None
+    # and the pair is proved from either spelling of the filter
+    flat = "SELECT p.id, COUNT(*) FROM people AS p JOIN games AS g ON g.w1 = p.id GROUP BY p.id"
+    assert proved(f"SELECT p.id, {count} AS wins FROM people AS p WHERE {count} > 0", flat)
