@@ -14,7 +14,7 @@ from sqlglot import exp
 
 from kumo_sql_prover import shape_fallback
 from kumo_sql_prover.algebraic_equivalence import prove_equivalent_algebraic
-from kumo_sql_prover.child_aggregates import read_child_aggregates, read_grouped_left_join, read_subquery_spellings, split_joined_aggregates
+from kumo_sql_prover.child_aggregates import read_child_aggregates, read_grouped_left_join, read_matched_parents, read_subquery_spellings, split_joined_aggregates
 from kumo_sql_prover.smt_equivalence import SmtStatus, TableConstraints
 
 TABLES = {
@@ -59,6 +59,21 @@ READ = [
     "SELECT m.staff_id, (SELECT COUNT(*) FROM staff AS r WHERE r.lead_id = m.staff_id GROUP BY r.lead_id) AS reports FROM staff AS m",
     "SELECT m.staff_id, (SELECT ROUND(AVG(r.age) + 1, 0) FROM staff AS r WHERE r.lead_id = m.staff_id GROUP BY r.lead_id) AS mean_age FROM staff AS m",
     "SELECT m.staff_id, (SELECT SUM(s.rate) FROM shifts AS s WHERE s.staff_id = m.staff_id AND s.hours = m.lead_id GROUP BY s.hours, s.staff_id) AS total FROM staff AS m",
+]
+
+def _per_lead(name: str, value: str, test: str = "") -> str:
+    return f"LEFT JOIN (SELECT r.lead_id AS kqk0, {value} AS kqv FROM staff AS r{' WHERE ' + test if test else ''} GROUP BY r.lead_id) AS {name} ON m.staff_id = {name}.kqk0"
+
+
+HAS_REPORT = "EXISTS (SELECT 1 FROM staff AS t WHERE t.lead_id = m.staff_id)"
+# parents that have a child row: the form per-row subqueries under such a filter are read as
+READ += [
+    f"SELECT m.staff_id, COALESCE(a.kqv, 0) AS reports, ROUND(b.kqv, 0) AS mean_age FROM staff AS m {_per_lead('a', 'COUNT(*)')} {_per_lead('b', 'AVG(r.age)')} WHERE {HAS_REPORT}",
+    f"SELECT m.staff_id, m.label, NULLIF(COALESCE(a.kqv, 0), 0) AS reports, b.kqv + 1 AS oldest FROM staff AS m {_per_lead('a', 'COUNT(*)')} {_per_lead('b', 'MAX(r.age)')} WHERE {HAS_REPORT} AND m.age > 35",
+    f"SELECT m.staff_id, a.kqv AS known, b.kqv AS total FROM staff AS m {_per_lead('a', 'COUNT(r.age)', 'r.age > 35')} {_per_lead('b', 'SUM(r.age)', 'r.age > 35')} WHERE EXISTS (SELECT 1 FROM staff AS t WHERE t.age > 35 AND m.staff_id = t.lead_id)",
+    f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE m.staff_id IN (SELECT t.lead_id FROM staff AS t)",
+    f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE m.staff_id IN (SELECT lead_id FROM staff AS t WHERE t.lead_id = m.staff_id)",
+    "SELECT m.staff_id, a.kqv AS pay FROM staff AS m LEFT JOIN (SELECT staff_id AS kqk0, SUM(hours * rate) AS kqv FROM shifts GROUP BY staff_id) AS a ON m.staff_id = a.kqk0 WHERE EXISTS (SELECT 1 FROM shifts AS t WHERE t.staff_id = m.staff_id)",
 ]
 
 LEFT_ALONE = [
@@ -112,6 +127,23 @@ LEFT_ALONE = [
     "SELECT m.staff_id, (SELECT COUNT(r.age) FROM staff AS r WHERE r.lead_id = m.staff_id GROUP BY r.lead_id) AS known FROM staff AS m",
     "SELECT m.staff_id, (SELECT AVG(r.age) FROM staff AS r WHERE r.lead_id = m.staff_id GROUP BY r.lead_id HAVING COUNT(*) > 1) AS mean_age FROM staff AS m",
     "SELECT m.staff_id, (SELECT COALESCE(SUM(r.age), 0) FROM staff AS r WHERE r.lead_id = m.staff_id GROUP BY r.lead_id) AS total FROM staff AS m",
+    # a subquery that is a list of rows, not one value
+    "SELECT m.staff_id, m.age IN (SELECT ROUND(AVG(r.age), 0) FROM staff AS r WHERE r.lead_id = m.staff_id) AS mean FROM staff AS m",
+    "SELECT m.staff_id, m.age > ALL (SELECT ROUND(AVG(r.age), 0) FROM staff AS r WHERE r.lead_id = m.staff_id) AS above FROM staff AS m",
+    "SELECT m.staff_id, EXISTS (SELECT ROUND(AVG(r.age), 0) FROM staff AS r WHERE r.lead_id = m.staff_id) AS has FROM staff AS m",
+    # grouped tables without the filter, or with a filter that asks another question
+    f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')}",
+    f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE m.age > 35",
+    f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE EXISTS (SELECT 1 FROM staff AS t WHERE t.lead_id = m.staff_id AND t.age > 35)",
+    f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)', 'r.age > 35')} WHERE {HAS_REPORT}",
+    f"SELECT m.staff_id, a.kqv AS oldest, b.kqv AS n FROM staff AS m {_per_lead('a', 'MAX(r.age)', 'r.age > 35')} {_per_lead('b', 'COUNT(*)')} WHERE {HAS_REPORT}",
+    f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE EXISTS (SELECT 1 FROM staff AS t WHERE t.staff_id = m.staff_id)",
+    f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE NOT {HAS_REPORT}",
+    f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE {HAS_REPORT} OR m.age > 35",
+    f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE EXISTS (SELECT 1 FROM shifts AS t WHERE t.staff_id = m.staff_id)",
+    f"SELECT m.staff_id, a.kqk0 AS lead, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE {HAS_REPORT}",
+    f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE m.lead_id IN (SELECT t.lead_id FROM staff AS t)",
+    "SELECT n.note_id, a.kqv AS total FROM notes AS n LEFT JOIN (SELECT s.staff_id AS kqk0, SUM(s.hours) AS kqv FROM shifts AS s GROUP BY s.staff_id) AS a ON n.staff_id = a.kqk0 WHERE EXISTS (SELECT 1 FROM shifts AS t WHERE t.staff_id = n.staff_id)",
 ]
 
 
@@ -154,12 +186,12 @@ def test_a_reading_returns_the_rows_of_the_query_as_written(written, dialect):
     assert read is not None and read.sql(dialect="mysql") != sqlglot.parse_one(written, read="mysql").sql(dialect="mysql")
     database = _database(dialect)
     try:
-        as_written = _rows(database, written, dialect)
+        as_written, as_read = _rows(database, written, dialect), _rows(database, read.sql(dialect="mysql"), dialect)
     except Exception as error:  # DuckDB wants every shown parent column in the GROUP BY; SQLite and MySQL run it
         if dialect == "duckdb" and "must appear in the GROUP BY clause" in str(error):
             pytest.skip("DuckDB rejects a column the GROUP BY does not list")
         raise
-    assert as_written == _rows(database, read.sql(dialect="mysql"), dialect)
+    assert as_written == as_read
 
 
 def test_the_readings_are_written_one_table_per_aggregate():
@@ -226,6 +258,13 @@ BY_HAND = [
     (LEFT_ALONE[24], "SELECT m.staff_id, a.total, b.longest FROM staff AS m LEFT JOIN (SELECT s.staff_id, s.day, SUM(s.hours) AS total FROM shifts AS s GROUP BY s.staff_id, s.day) AS a ON a.staff_id = m.staff_id LEFT JOIN (SELECT s.staff_id, s.day, MAX(s.hours) AS longest FROM shifts AS s GROUP BY s.staff_id, s.day) AS b ON b.staff_id = m.staff_id"),
     # COUNT of a column can be 0 for a group; NULLIF would hide it
     (LEFT_ALONE[40], "SELECT m.staff_id, NULLIF((SELECT COUNT(r.age) FROM staff AS r WHERE r.lead_id = m.staff_id), 0) AS known FROM staff AS m"),
+    # a filter that asks for an older report drops the lead of one report of no known age; the plain join keeps that lead
+    (LEFT_ALONE[48], "SELECT m.staff_id, MAX(r.age) AS oldest FROM staff AS m JOIN staff AS r ON r.lead_id = m.staff_id GROUP BY m.staff_id"),
+    # a table of older reports under a plain filter shows that lead with NULL; the join with the test drops the lead
+    (LEFT_ALONE[49], "SELECT m.staff_id, MAX(r.age) AS oldest FROM staff AS m JOIN staff AS r ON r.lead_id = m.staff_id AND r.age > 35 GROUP BY m.staff_id"),
+    (LEFT_ALONE[56], "SELECT m.staff_id, MAX(r.age) AS oldest FROM staff AS m JOIN staff AS r ON r.lead_id = m.lead_id GROUP BY m.staff_id"),
+    # two notes without an id are one group
+    (LEFT_ALONE[57], "SELECT n.note_id, SUM(s.hours) AS total FROM notes AS n JOIN shifts AS s ON s.staff_id = n.staff_id GROUP BY n.note_id"),
     # COALESCE has a value for no rows; with the GROUP BY there is no row
     (LEFT_ALONE[42], "SELECT m.staff_id, (SELECT COALESCE(SUM(r.age), 0) FROM staff AS r WHERE r.lead_id = m.staff_id) AS total FROM staff AS m"),
 ]
@@ -242,7 +281,10 @@ OPTIONS = dict(schema=SCHEMA, types=TYPES, constraints=CONSTRAINTS, compare_name
 SUBQUERIES = "SELECT m.staff_id, m.label, (SELECT MAX(r.age) FROM staff AS r WHERE r.lead_id = m.staff_id) AS oldest, (SELECT AVG(r.age) FROM staff AS r WHERE r.lead_id = m.staff_id) AS mean_age FROM staff AS m"
 GROUPED = f"SELECT m.staff_id, m.label, MAX(r.age) AS oldest, AVG(r.age) AS mean_age {REPORTS} GROUP BY m.staff_id"
 JOINED = f"SELECT m.staff_id, m.label, g.oldest, g.mean_age FROM staff AS m LEFT JOIN {PER_LEAD} ON g.lead_id = m.staff_id"
+LEADS_BY_SUBQUERY = "SELECT m.staff_id, m.label, (SELECT COUNT(*) FROM staff AS r WHERE r.lead_id = m.staff_id GROUP BY r.lead_id) AS reports, (SELECT ROUND(AVG(r.age), 0) FROM staff AS r WHERE r.lead_id = m.staff_id) AS mean_age FROM staff AS m WHERE m.staff_id IN (SELECT t.lead_id FROM staff AS t WHERE t.lead_id = m.staff_id)"
+LEADS_BY_JOIN = "SELECT m.staff_id, m.label, COUNT(*) AS reports, ROUND(AVG(r.age), 0) AS mean_age FROM staff AS m JOIN staff AS r ON r.lead_id = m.staff_id GROUP BY m.staff_id"
 PAIRS = [
+    (LEADS_BY_SUBQUERY, LEADS_BY_JOIN),
     (SUBQUERIES, GROUPED),
     (SUBQUERIES, JOINED),
     (GROUPED, JOINED),
@@ -263,6 +305,10 @@ def test_the_three_spellings_are_proved_equal_and_only_with_the_rule(left, right
 
 
 NOT_EQUAL = [
+    # without the filter every staff row is listed, with it only the leads
+    (LEADS_BY_SUBQUERY.split(" WHERE m.staff_id IN")[0], LEADS_BY_JOIN),
+    # a lead whose reports are all 35 or younger is kept by the join's count and dropped by the filter
+    (LEADS_BY_SUBQUERY.replace("WHERE t.lead_id = m.staff_id)", "WHERE t.lead_id = m.staff_id AND t.age > 35)"), LEADS_BY_JOIN),
     # COUNT(*) after the join is 1 for a lead of nobody
     (f"SELECT m.staff_id, COUNT(*) AS n, MAX(r.age) AS oldest {REPORTS} GROUP BY m.staff_id", "SELECT m.staff_id, (SELECT COUNT(*) FROM staff AS r WHERE r.lead_id = m.staff_id) AS n, (SELECT MAX(r.age) FROM staff AS r WHERE r.lead_id = m.staff_id) AS oldest FROM staff AS m"),
     # a text set equal to a number: '2' and '02' are one sum per row and two groups

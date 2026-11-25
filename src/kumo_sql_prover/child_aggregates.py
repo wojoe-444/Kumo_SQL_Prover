@@ -63,6 +63,14 @@ values, and an aggregate nothing reads needs no join. The table's group columns 
   is written ``NULLIF(COUNT(*), 0)`` (with a group it is at least 1). ``COALESCE`` around the aggregate, or ``COUNT`` of
   a column, has a value for no rows and is left alone.
 
+**Parents that have a child row** (:func:`read_matched_parents`). Per-row subqueries under ``WHERE EXISTS (a child
+row)`` are read as ``LEFT JOIN``s to grouped tables plus that ``EXISTS``. Each kept parent row has child rows, so each
+grouped table over the same child, link and tests has exactly one row for it; the inner join of parent and child
+grouped by the parent's NOT NULL key has one group per such parent row, made of the same child rows. The select is
+written that way (``COUNT(*)`` of such a group is at least 1, so ``COALESCE(count, 0)`` and ``NULLIF(count, 0)`` around
+it are the count). ``p.x IN (SELECT c.k FROM child AS c ..)`` as a part of the ``WHERE`` is the same filter with one
+more link. Left alone unless every grouped table and the filter read the same child table with the same link and tests.
+
 **Left alone.** An inner, right or full join; more than two sources; a parent without a NOT NULL key in the
 ``GROUP BY``; a ``GROUP BY`` on anything but parent columns; ``HAVING``, ``DISTINCT``, a window, ``ORDER BY``, ``LIMIT``
 or a subquery in the grouped select; ``COUNT(*)`` there (it counts the padded row); an aggregate over a parent column
@@ -413,6 +421,8 @@ def read_subquery_spellings(select: exp.Select) -> exp.Select | None:
             inner = subquery.this
             if subquery.find_ancestor(exp.Select) is not select or type(inner) is not exp.Select or _set_args(subquery) - {"this"}:
                 continue
+            if isinstance(subquery.parent, (exp.In, exp.Any, exp.All, exp.Exists, exp.Unnest, exp.Lateral)):
+                continue  # a list of rows, not one value
             if _set_args(inner) - _SUBQUERY_ARGS or len(inner.expressions) != 1 or inner.args.get(FROM_KEY) is None:
                 continue
             if any(isinstance(node, _NESTED + (exp.Star,)) and not (isinstance(node, exp.Star) and isinstance(node.parent, exp.Count)) for node in inner.walk() if node is not inner):
@@ -497,7 +507,236 @@ def _ungrouped(subquery: exp.Subquery, inner: exp.Select, value: exp.Expression,
     return exp.Nullif(this=plain, expression=exp.Literal.number(0)) if wrap else plain
 
 
-def read_child_aggregates(select: exp.Select, schema, keys, not_null, types) -> exp.Select | None:
-    """``select`` with one of the three readings of the module doc applied, else ``None``. The input is not changed."""
+def _per_group_table(join: exp.Join, parent: str, sources: _Sources, schema, keys, not_null, types):
+    """``(alias, child table, child alias, links, tests, value)`` for a ``LEFT JOIN`` to one grouped table of the written
+    form: ``(SELECT c.k AS kqk0, <value> AS kqv FROM child AS c [WHERE tests] GROUP BY c.k) AS alias ON p.x = alias.kqk0``."""
 
-    return read_subquery_spellings(select) or read_grouped_left_join(select, schema, keys, not_null, types) or split_joined_aggregates(select)
+    source = join.this
+    if _set_args(join) - {"this", "on", "side", "kind"} or join.args.get("on") is None:
+        return None
+    if (join.args.get("side") or "").upper() != "LEFT" or (join.args.get("kind") or "").upper() not in ("", "OUTER"):
+        return None
+    if type(source) is not exp.Subquery or _set_args(source) - {"this", "alias"} or type(source.this) is not exp.Select:
+        return None
+    alias, inner = source.args.get("alias"), source.this
+    if alias is None or alias.args.get("columns") or not isinstance(alias.this, exp.Identifier):
+        return None
+    name, group = alias.name.lower(), inner.args.get("group")
+    if _set_args(inner) - {"expressions", FROM_KEY, "where", "group"} or group is None or _set_args(group) - {"expressions"}:
+        return None
+    if any(isinstance(node, _NESTED) or (isinstance(node, exp.Star) and not isinstance(node.parent, exp.Count)) for node in inner.walk() if node is not inner):
+        return None
+    child = _Sources()
+    if type(inner.args[FROM_KEY].this) is not exp.Table or not child.add(inner.args[FROM_KEY].this, schema, keys, not_null, types) or not child.keyed:
+        return None
+    child_alias = next(iter(child.keyed))
+    items = inner.expressions
+    if len(items) != len(group.expressions) + 1 or any(not isinstance(item, exp.Alias) for item in items):
+        return None
+    shown: list[str] = []
+    for position, (item, grouped) in enumerate(zip(items, group.expressions)):
+        column, again = child.column(item.this), child.column(grouped)
+        if item.alias.lower() != f"{_KEY}{position}" or column is None or column != again:
+            return None
+        shown.append(column[1])
+    value = items[-1]
+    if value.alias.lower() != _VALUE or not _own_aggregates(value.this):
+        return None
+    if any(child.column(c) is None or not any(isinstance(a, exp.AggFunc) for a in _ancestors(c, value.this)) for c in value.this.find_all(exp.Column)):
+        return None
+    tests = []
+    if inner.args.get("where") is not None:
+        for part in conjuncts(inner.args["where"].this):
+            if any(child.column(c) is None for c in part.find_all(exp.Column)) or any(isinstance(n, exp.AggFunc) for n in part.walk()):
+                return None
+            tests.append(part)
+    links: dict[int, tuple[str, str]] = {}
+    for part in conjuncts(join.args["on"]):
+        part = _unwrap(part)
+        if not isinstance(part, exp.EQ):
+            return None
+        for mine, other in ((part.this, part.expression), (part.expression, part.this)):
+            mine, owner = _unwrap(mine), sources.column(other)
+            if isinstance(mine, exp.Column) and mine.table.lower() == name and mine.name.lower().startswith(_KEY) and mine.name[len(_KEY) :].isdigit() and owner is not None and owner[0] == parent:
+                position = int(mine.name[len(_KEY) :])
+                if position >= len(shown) or position in links:
+                    return None
+                declared = [sources.keyed[parent].types.get(owner[1]), child.keyed[child_alias].types.get(shown[position])]
+                if any(declared) and not _same_declared(declared):
+                    return None
+                links[position] = owner
+                break
+        else:
+            return None
+    if set(links) != set(range(len(shown))):
+        return None
+    return name, child.keyed[child_alias], child, frozenset((shown[i], links[i][1]) for i in links), tests, value.this
+
+
+def _same_declared(declared: list) -> bool:
+    classes = [smt_values.type_class(str(d)) if d else None for d in declared]
+    if classes[0] is None or classes[0] != classes[1]:
+        return False
+    names = [re.sub(r"[(<].*", "", str(d)).strip().upper() for d in declared]
+    return classes[0] != smt_values.OTHER or names[0] == names[1]
+
+
+def _renamed(node: exp.Expression, reader: _Sources, name: str) -> exp.Expression:
+    """A copy of ``node``, whose columns are all of the one table ``reader`` holds, with each written as ``name.column``."""
+
+    copy = node.copy()
+    for column in [copy] if isinstance(copy, exp.Column) else list(copy.find_all(exp.Column)):
+        fresh = exp.column(column.name, table=name)
+        if column is copy:
+            return fresh
+        column.replace(fresh)
+    return copy
+
+
+def read_matched_parents(select: exp.Select, schema, keys, not_null, types) -> exp.Select | None:
+    """Parent rows that have a child row, each with aggregates over its child rows, written as one grouped inner join.
+
+        SELECT m.staff_id, COALESCE(a.kqv, 0), b.kqv
+        FROM staff AS m LEFT JOIN (SELECT r.lead_id AS kqk0, COUNT(*) AS kqv FROM staff AS r GROUP BY r.lead_id) AS a ON m.staff_id = a.kqk0
+                        LEFT JOIN (SELECT s.lead_id AS kqk0, AVG(s.age) AS kqv FROM staff AS s GROUP BY s.lead_id) AS b ON m.staff_id = b.kqk0
+        WHERE EXISTS (SELECT 1 FROM staff AS t WHERE t.lead_id = m.staff_id)
+
+    is what per-row subqueries under a "has a report" filter are read as. Every kept parent row has child rows, so each
+    grouped table (same child, same link, same tests as the ``EXISTS``) has exactly one row for it, holding the
+    aggregate over those child rows. The inner join of the parent with the child, grouped by the parent's NOT NULL key,
+    has one group per such parent row, made of the same child rows:
+
+        SELECT m.staff_id, COUNT(*), AVG(r.age) FROM staff AS m JOIN staff AS r ON r.lead_id = m.staff_id GROUP BY m.staff_id
+    """
+
+    if not schema or not keys or _set_args(select) - {"expressions", FROM_KEY, "joins", "where"} or select.args.get(FROM_KEY) is None:
+        return None
+    joins, where = select.args.get("joins") or [], select.args.get("where")
+    if not joins or where is None:
+        return None
+    sources = _Sources()
+    if type(select.args[FROM_KEY].this) is not exp.Table or not sources.add(select.args[FROM_KEY].this, schema, keys, not_null, types) or not sources.keyed:
+        return None
+    parent = next(iter(sources.keyed))
+    if not sources.keyed[parent].keys:
+        return None
+    tables = [_per_group_table(join, parent, sources, schema, keys, not_null, types) for join in joins]
+    if any(table is None for table in tables) or len({table[0] for table in tables}) != len(tables) or parent in {table[0] for table in tables}:
+        return None
+    first = tables[0]
+    row = _fresh({parent} | {table[0] for table in tables}, 1)[0]
+
+    def canonical(reader: _Sources, tests: list[exp.Expression]) -> frozenset[str]:
+        return frozenset(_renamed(test, reader, row).sql() for test in tests)
+
+    link, wanted = first[3], canonical(first[2], first[4])
+    if any(table[1].name != first[1].name or table[3] != link or canonical(table[2], table[4]) != wanted for table in tables):
+        return None
+
+    # the WHERE: one EXISTS over the same child, link and tests, and tests on the parent alone
+    kept, found = [], False
+    for part in conjuncts(where.this):
+        part = _unwrap(part)
+        if not found and _same_rows(part, parent, sources, link, wanted, first[1].name, row, schema, keys, not_null, types):
+            found = True
+            continue
+        if any(isinstance(node, _NESTED + (exp.AggFunc,)) for node in part.walk()):
+            return None
+        if any((sources.column(column) or ("", ""))[0] != parent for column in part.find_all(exp.Column)):
+            return None
+        kept.append(part)
+    if not found:
+        return None
+
+    values = {table[0]: _renamed(table[5], table[2], row) for table in tables}
+    copy = select.copy()
+    for item in copy.expressions:
+        if any(isinstance(node, _NESTED + (exp.AggFunc, exp.Star)) for node in item.walk()):
+            return None
+        for column in list(item.find_all(exp.Column)):
+            if column.table.lower() in values:
+                if column.name.lower() != _VALUE:
+                    return None
+                value, holder = values[column.table.lower()].copy(), column.parent
+                if isinstance(holder, exp.Coalesce) and holder.this is column and isinstance(value, exp.Count) and len(holder.expressions) == 1:
+                    column = holder  # a count of a parent row that has child rows is never NULL
+                    holder = column.parent
+                counted = isinstance(value, exp.Count) and isinstance(value.this, exp.Star)
+                if counted and isinstance(holder, exp.Nullif) and holder.this is column and isinstance(holder.expression, exp.Literal) and holder.expression.sql() == "0":
+                    column = holder  # and the count of its child rows is at least 1
+                if column is item:
+                    return None
+                column.replace(value if isinstance(column.parent, (exp.Alias, exp.Select)) else exp.Paren(this=value) if not isinstance(value, exp.Func) else value)
+            elif (sources.column(column) or ("", ""))[0] != parent:
+                return None
+    child_source = exp.Table(this=exp.to_identifier(first[1].table.name), alias=exp.TableAlias(this=exp.to_identifier(row)))
+    on = [exp.EQ(this=exp.column(child_column, table=row), expression=exp.column(parent_column, table=parent)) for child_column, parent_column in sorted(link)]
+    on += [_renamed(test, first[2], row) for test in first[4]]
+    copy.set("joins", [exp.Join(this=child_source, on=_and_all(on))])
+    copy.set("where", exp.Where(this=_and_all([part.copy() for part in kept])) if kept else None)
+    key = sorted(sources.keyed[parent].keys)[0]
+    copy.set("group", exp.Group(expressions=[exp.column(column, table=parent) for column in key]))
+    return copy
+
+
+def _same_rows(test: exp.Expression, parent: str, sources: _Sources, link: frozenset, wanted: frozenset, table: str, row: str, schema, keys, not_null, types) -> bool:
+    """Whether ``EXISTS (SELECT .. FROM child AS c WHERE ..)`` asks for a child row with the given link and tests.
+
+    ``p.x IN (SELECT c.k FROM child AS c WHERE ..)`` as a part of the ``WHERE`` is the same question with one more
+    link: it keeps the row only when it is TRUE, which is when a listed ``c.k`` equals ``p.x``."""
+
+    listed = None
+    if isinstance(test, exp.Exists):
+        inner = test.this
+    elif isinstance(test, exp.In) and not test.expressions and isinstance(test.args.get("query"), exp.Subquery) and not _set_args(test) - {"this", "query"}:
+        inner, listed = test.args["query"].this, sources.column(test.this)
+        if listed is None or listed[0] != parent or _set_args(test.args["query"]) - {"this"}:
+            return False
+    else:
+        return False
+    if type(inner) is not exp.Select or _set_args(inner) - {"expressions", FROM_KEY, "where"} or inner.args.get(FROM_KEY) is None:
+        return False
+    if len(inner.expressions) != 1 or any(isinstance(node, _NESTED + (exp.AggFunc,)) for node in inner.walk() if node is not inner):
+        return False
+    child = _Sources()
+    if type(inner.args[FROM_KEY].this) is not exp.Table or not child.add(inner.args[FROM_KEY].this, schema, keys, not_null, types) or not child.keyed:
+        return False
+    child_alias = next(iter(child.keyed))
+    if child.keyed[child_alias].name != table or child_alias == parent:
+        return False
+    links, tests = set(), []
+    if listed is not None:
+        shown = _unwrap(inner.expressions[0].this if isinstance(inner.expressions[0], exp.Alias) else inner.expressions[0])
+        if not isinstance(shown, exp.Column) or shown.table.lower() not in ("", child_alias) or shown.name.lower() not in child.columns[child_alias]:
+            return False
+        links.add((shown.name.lower(), listed[1]))
+    for part in conjuncts(inner.args["where"].this) if inner.args.get("where") is not None else []:
+        part = _unwrap(part)
+        if isinstance(part, exp.EQ):
+            pair = None
+            for mine, other in ((part.this, part.expression), (part.expression, part.this)):
+                mine, other = _unwrap(mine), _unwrap(other)
+                # the child's column is written with the child's name here; a bare name inside the subquery is the child's too
+                if isinstance(mine, exp.Column) and isinstance(other, exp.Column) and other.table.lower() == parent and mine.table.lower() in ("", child_alias) and mine.name.lower() in child.columns[child_alias]:
+                    owner = sources.column(other)
+                    if owner is not None:
+                        pair = (mine.name.lower(), owner[1])
+                        break
+            if pair is not None:
+                links.add(pair)
+                continue
+        if any(column.table.lower() not in ("", child_alias) or column.name.lower() not in child.columns[child_alias] for column in part.find_all(exp.Column)):
+            return False
+        tests.append(part)
+    return frozenset(links) == link and frozenset(_renamed(test, child, row).sql() for test in tests) == wanted
+
+
+def read_child_aggregates(select: exp.Select, schema, keys, not_null, types) -> exp.Select | None:
+    """``select`` with one of the readings of the module doc applied, else ``None``. The input is not changed."""
+
+    return (
+        read_subquery_spellings(select)
+        or read_grouped_left_join(select, schema, keys, not_null, types)
+        or split_joined_aggregates(select)
+        or read_matched_parents(select, schema, keys, not_null, types)
+    )
