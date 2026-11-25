@@ -785,7 +785,9 @@
   "tests/test_numbered_islands.py::test_a_longer_run_is_not_proved_equal_to_a_neighbour": 4.4,
   "tests/test_numbered_islands.py::test_two_numbered_spellings_are_proved_equal": 2.8,
   "tests/test_numbered_islands.py::test_without_a_key_nothing_is_proved": 2.3,
-  "tests/test_nullable_key_pull_up.py::test_the_conditions_it_is_equal_under_name_the_not_null_column": 2.5
+  "tests/test_nullable_key_pull_up.py::test_the_conditions_it_is_equal_under_name_the_not_null_column": 2.5,
+  "tests/test_conditional_outright_later.py::test_without_the_later_step_the_proof_under_conditions_is_kept": 2.1,
+  "tests/test_conditional_outright_later.py::test_without_the_key_the_pair_is_not_equal_and_stays_conditional": 2.0
  },
  "together": {
   "tests/test_llm_sql_solver_bench.py": 38.1,

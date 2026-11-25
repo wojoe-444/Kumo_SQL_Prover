@@ -6038,6 +6038,13 @@ def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs)
         if masked:
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, masked)
         result = _prove_equivalent_algebraic(left_sql, right_sql, **kwargs)
+        if _outright_proof_may_follow(result, left_sql, right_sql, kwargs):
+            # A step that ends with a proof under conditions ends the staged proof, so the steps after it never
+            # got to prove the pair outright. They get to here, without the search for conditions, and only an
+            # outright proof is taken from them: the pair is then equivalent with no condition at all.
+            outright = _prove_equivalent_algebraic(left_sql, right_sql, **{**kwargs, "conditional": False, "search_counterexample": False})
+            if outright.status is SmtStatus.PROVEN_EQUIVALENT:
+                result = outright
         if result.proven and (unchecked_types(left_sql, kwargs.get("types"), dialect) or unchecked_types(right_sql, kwargs.get("types"), dialect)):
             result = dataclasses.replace(result, assumptions=tuple(dict.fromkeys(tuple(result.assumptions) + (SET_TYPES_ASSUMPTION,))))
     except sqlglot.errors.SqlglotError as error:
@@ -6045,6 +6052,23 @@ def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs)
     except RecursionError:
         return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, "unsupported: the query nests too deeply")
     return result
+
+
+def _outright_proof_may_follow(result: SmtEquivalenceResult, left_sql: str, right_sql: str, kwargs: dict) -> bool:
+    """Whether a proof under conditions that ``conditional=True`` found may hide an outright proof of a later step.
+
+    Only a proof under conditions taken from the queries counts (one that rests on the value of ``NOW()`` is the same
+    with and without the search for conditions), and only a pair that gets the last steps at all.
+    """
+
+    if not kwargs.get("conditional") or result.status is not SmtStatus.PROVEN_CONDITIONALLY or shape_fallback.fifteenth_staged():
+        return False
+    from . import statement_values
+
+    conditions = tuple(result.conditions or ())
+    if not conditions or all(getattr(c, "kind", None) in statement_values.KINDS for c in conditions):
+        return False
+    return shape_fallback.last_steps_worth_trying(left_sql, right_sql)
 
 
 def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
