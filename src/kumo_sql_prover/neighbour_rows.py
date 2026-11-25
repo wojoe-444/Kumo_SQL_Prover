@@ -28,8 +28,17 @@ never repeats, is one of the outputs), so it has exactly one row per row of the 
 (the lookups read the table, which the row count does not depend on). The select that reads it and nothing else
 is therefore the same select over the table itself with each column replaced by its expression.
 
-**Left alone.** A window with ``PARTITION BY``, a frame, a name, ``IGNORE NULLS`` or a default value other than
-NULL; an offset that is not a positive whole number written out; an ``ORDER BY`` that is not exactly one column
+**A default.** ``LEAD(x, 1, 0)`` gives 0 where no row follows, and the ``x`` of the next row where one does, NULL
+included. When ``x`` is a column declared NOT NULL (or the consecutive column itself) the lookup is NULL exactly
+when no row is there, so the neighbour is ``COALESCE((SELECT b.x ..), 0)`` (hardest-cases batch 31). For a column
+that may be NULL the two differ on a neighbour whose value is NULL, and the window is left alone. The column must
+also be declared with a whole-number type (or be a true/false column in MySQL, a small whole number there): DuckDB
+gives the default the type of the value, so beside a BOOLEAN ``LEAD(b, 1, -1)`` is TRUE where the ``COALESCE`` is
+-1, and it refuses the ``COALESCE`` of a text and a number.
+
+**Left alone.** A window with ``PARTITION BY``, a frame, a name, ``IGNORE NULLS``, or a default value that is not a
+whole number written out (DuckDB converts a default to the value's type, which ``COALESCE`` does not) or that comes
+with a value which may be NULL; an offset that is not a positive whole number written out; an ``ORDER BY`` that is not exactly one column
 declared consecutive; any other window, an aggregate or a subquery in the derived table; a derived table with a
 ``WHERE``, a join, ``GROUP BY``, ``HAVING``, ``LIMIT`` or a ``DISTINCT`` without the consecutive column among its
 outputs, or one that is not read from a declared table; a query that still has a ``WITH`` clause (a name there could hide the declared table); an enclosing select with another source, ``GROUP BY``, ``HAVING``, ``LIMIT``, a window, a star or a
@@ -68,11 +77,11 @@ def _whole(node: exp.Expression | None) -> int | None:
 class _Neighbour:
     """One ``LAG`` or ``LEAD`` the rule reads: the value read, the key, and how far before (negative) or after."""
 
-    def __init__(self, value: exp.Expression, key: str, shift: int):
-        self.value, self.key, self.shift = value, key, shift
+    def __init__(self, value: exp.Expression, key: str, shift: int, default: exp.Expression | None = None):
+        self.value, self.key, self.shift, self.default = value, key, shift, default
 
 
-def _neighbour(window: exp.Window, table: exp.Table, columns: frozenset, consecutive: frozenset) -> _Neighbour | None:
+def _neighbour(window: exp.Window, table: exp.Table, columns: frozenset, consecutive: frozenset, never_null: frozenset = frozenset()) -> _Neighbour | None:
     call = window.this
     if not isinstance(call, (exp.Lag, exp.Lead)):
         return None
@@ -88,7 +97,11 @@ def _neighbour(window: exp.Window, table: exp.Table, columns: frozenset, consecu
     if set(k for k, v in call.args.items() if v) - {"this", "offset", "default"}:
         return None
     default = call.args.get("default")
-    if default is not None and not isinstance(default, exp.Null):
+    if isinstance(default, exp.Null):
+        default = None
+    if default is not None and _whole(default.this if isinstance(default, exp.Neg) else default) is None and not (isinstance(default, exp.Literal) and default.name == "0"):
+        # only a whole number written out: DuckDB converts the default to the value's type (LEAD(n, 1, 1.5) is 2 for
+        # a whole-number n), and COALESCE does not
         return None
     offset = call.args.get("offset")
     places = 1 if offset is None else _whole(offset)
@@ -97,8 +110,12 @@ def _neighbour(window: exp.Window, table: exp.Table, columns: frozenset, consecu
     value = call.this
     if value is None or not _plain(value, table, columns):
         return None
+    if default is not None and not (isinstance(value, exp.Column) and _lower(value.name) in never_null | consecutive):
+        # the default stands for a missing row only: a neighbour whose value is NULL gives NULL, which a lookup
+        # cannot tell from no neighbour unless the value is a column that is never NULL
+        return None
     back = isinstance(call, exp.Lag) != bool(isinstance(ordered, exp.Ordered) and ordered.args.get("desc"))
-    return _Neighbour(value, _lower(key.name), -places if back else places)
+    return _Neighbour(value, _lower(key.name), -places if back else places, default)
 
 
 def _own(column: exp.Column, table: exp.Table, columns: frozenset) -> bool:
@@ -121,7 +138,7 @@ def _plain(node: exp.Expression, table: exp.Table, columns: frozenset) -> bool:
     return True
 
 
-def _outputs(inner: exp.Select, table: exp.Table, columns: list[str], consecutive: frozenset) -> dict[str, exp.Expression] | None:
+def _outputs(inner: exp.Select, table: exp.Table, columns: list[str], consecutive: frozenset, never_null: frozenset = frozenset()) -> dict[str, exp.Expression] | None:
     """The derived table's columns by name, each an expression of the table's row with the windows still in it;
     None unless every window is a neighbour the rule reads and there is at least one."""
 
@@ -145,7 +162,7 @@ def _outputs(inner: exp.Select, table: exp.Table, columns: list[str], consecutiv
                 return None
             windows = list(value.find_all(exp.Window))
             for window in windows:
-                if _neighbour(window, table, declared, consecutive) is None:
+                if _neighbour(window, table, declared, consecutive, never_null) is None:
                     return None
                 found = True
             rest = value.copy()
@@ -171,22 +188,46 @@ def _requalified(node: exp.Expression, alias: str) -> exp.Expression:
     return node
 
 
-def _lookup(neighbour: _Neighbour, table: exp.Table, alias: str, fresh: str) -> exp.Subquery:
+def _lookup(neighbour: _Neighbour, table: exp.Table, alias: str, fresh: str) -> exp.Expression:
     """``(SELECT b.x FROM t AS b WHERE b.k = a.k - n)`` for a row before, ``b.k = a.k + n`` for a row after: the
-    key alone on one side, which is the spelling the rules for keyed lookups read."""
+    key alone on one side, which is the spelling the rules for keyed lookups read. With a default it is
+    ``COALESCE((SELECT ..), default)``: the value is never NULL, so the lookup is NULL exactly when no row is there."""
 
     mine, theirs = exp.column(neighbour.key, table=alias), exp.column(neighbour.key, table=fresh)
     places = exp.Literal.number(abs(neighbour.shift))
     test = exp.EQ(this=theirs, expression=(exp.Sub if neighbour.shift < 0 else exp.Add)(this=mine, expression=places))
     source = exp.Table(this=table.this.copy(), db=table.args.get("db") and table.args["db"].copy(), catalog=table.args.get("catalog") and table.args["catalog"].copy())
     source.set("alias", exp.TableAlias(this=exp.to_identifier(fresh)))
-    return exp.Subquery(this=exp.Select(expressions=[_requalified(neighbour.value, fresh)]).from_(source).where(test))
+    lookup = exp.Subquery(this=exp.Select(expressions=[_requalified(neighbour.value, fresh)]).from_(source).where(test))
+    if neighbour.default is None:
+        return lookup
+    return exp.Coalesce(this=lookup, expressions=[neighbour.default.copy()])
 
 
 _ATOMS = (exp.Column, exp.Literal, exp.Subquery, exp.Paren, exp.Func, exp.Case, exp.Null, exp.Boolean)
 
 
-def _read(select: exp.Select, schema: dict, consecutive: dict, taken: set[str]) -> bool:
+def _whole_numbers_never_null(declared: str, not_null: dict | None, types: dict | None, dialect: str | None) -> frozenset:
+    """The columns of the declared table that are NOT NULL and hold whole numbers: a declared whole-number type, or a
+    true/false column in MySQL, where it is a small whole number. Only beside such a value is a whole-number default
+    the same value in the window and in ``COALESCE``: DuckDB turns the default of a BOOLEAN value into TRUE or FALSE
+    (``LEAD(b, 1, -1)`` is TRUE where ``COALESCE(b, -1)`` is -1) and refuses ``COALESCE`` of a text and a number."""
+
+    from .single_row_aggregates import column_kind
+
+    def of(mapping: dict | None) -> object:
+        return next((v for k, v in (mapping or {}).items() if _lower(k) == declared), None)
+
+    kinds = {_lower(c): str(v) for c, v in (of(types) or {}).items() if v}
+    flags = ("BOOL", "BOOLEAN") if dialect == "mysql" else ()
+    return frozenset(
+        _lower(c) for c in of(not_null) or () if column_kind(kinds.get(_lower(c))) == "int" or kinds.get(_lower(c), "").strip().upper() in flags
+    )
+
+
+def _read(
+    select: exp.Select, schema: dict, consecutive: dict, taken: set[str], not_null: dict | None = None, types: dict | None = None, dialect: str | None = None
+) -> bool:
     """Fold the one derived table of ``select`` when it is a table with neighbours read over a consecutive column."""
 
     source = _from(select)
@@ -210,7 +251,8 @@ def _read(select: exp.Select, schema: dict, consecutive: dict, taken: set[str]) 
     keys = frozenset(_lower(c) for c in (consecutive or {}).get(declared) or next((v for k, v in (consecutive or {}).items() if _lower(k) == declared), ()))
     if not columns or not keys or not keys <= set(columns):
         return False
-    outputs = _outputs(inner, table, columns, keys)
+    never_null = _whole_numbers_never_null(declared, not_null, types, dialect)
+    outputs = _outputs(inner, table, columns, keys, never_null)
     if outputs is None:
         return False
     if "distinct" in extras and not any(isinstance(value, exp.Column) and _lower(value.name) in keys for value in outputs.values()):
@@ -251,7 +293,7 @@ def _read(select: exp.Select, schema: dict, consecutive: dict, taken: set[str]) 
         new = _requalified(value, alias)
         windows = [new] if isinstance(new, exp.Window) else list(new.find_all(exp.Window))
         for window in windows:
-            neighbour = _neighbour(_original(window, table), table, frozenset(columns), keys)
+            neighbour = _neighbour(_original(window, table), table, frozenset(columns), keys, never_null)
             lookup = _lookup(neighbour, table, alias, fresh)
             if window is new:
                 new = lookup
@@ -294,7 +336,9 @@ def _fresh(taken: set[str]) -> str:
     return f"kqn{number}"
 
 
-def read_neighbour_rows(tree: exp.Expression, schema: dict | None, consecutive: dict | None) -> tuple[exp.Expression, bool]:
+def read_neighbour_rows(
+    tree: exp.Expression, schema: dict | None, consecutive: dict | None, not_null: dict | None = None, types: dict | None = None, dialect: str | None = None
+) -> tuple[exp.Expression, bool]:
     """``tree`` with every derived table of neighbours over a consecutive column folded into the select that reads it
     (module doc), and whether anything was written. The tree given is not changed."""
 
@@ -309,7 +353,7 @@ def read_neighbour_rows(tree: exp.Expression, schema: dict | None, consecutive: 
     wrote = False
     for _ in range(_PASSES):
         for select in list(new.find_all(exp.Select)):
-            if _read(select, schema, consecutive, taken):
+            if _read(select, schema, consecutive, taken, not_null, types, dialect):
                 wrote = True
                 break
         else:

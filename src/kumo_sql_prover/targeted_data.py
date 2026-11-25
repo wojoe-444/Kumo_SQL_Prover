@@ -77,8 +77,16 @@ def _coerce(text: str, col_type: str) -> Any:
 
 
 def _neighbours(value: Any, col_type: str) -> list[Any]:
-    """The constant and the nearest values on each side of it."""
+    """The constant and the nearest values on each side of it (the first and the last moment of the calendar have
+    one neighbour: the constant alone is given)."""
 
+    try:
+        return _near(value, col_type)
+    except OverflowError:
+        return [value]
+
+
+def _near(value: Any, col_type: str) -> list[Any]:
     if value is None:
         return []
     if col_type == "INT64":

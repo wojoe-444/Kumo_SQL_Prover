@@ -110,7 +110,7 @@ from .set_operation_types import ASSUMPTION as SET_TYPES_ASSUMPTION, mixed_types
 from .grouped_join_facts import propagate_grouped_join_facts
 from .correlated_key_groups import expose_correlated_key_groups
 from .lateral_boolean_groups import nullable_lateral_boolean_group
-from . import numeric_column_reading, string_number_compare, string_number_literals
+from . import having_filters, numeric_column_reading, string_number_compare, string_number_literals
 from .constant_correlation import propagate_constant_correlations
 from .constant_window_sums import count_constant_window_sums
 from .conditional_count_sums import count_conditional_sums
@@ -148,6 +148,8 @@ from .discrete_bounds import close_strict_bounds, fold_chained_dates
 from .filter_terms import exists_outer_terms, pinned_columns, shared_filter_terms
 from .self_lookup_counts import read_self_lookup_counts, waits_for_lookup
 from .key_fixed_groupings import read_key_fixed_grouping
+from .child_aggregates import read_child_aggregates
+from .keyed_join_distinct import read_keyed_join_distinct
 from .rejoined_parents import drop_rejoined_parent
 from .unread_join_chains import drop_unread_chained_join
 from .labelled_cases import read_labelled_cases
@@ -766,10 +768,11 @@ def _date_of(node: exp.Expression) -> datetime.date | None:
 
 
 def _shift(day: datetime.date, count: int, unit: str) -> datetime.date | None:
-    if unit == "DAY":
-        return day + datetime.timedelta(days=count)
-    if unit == "WEEK":
-        return day + datetime.timedelta(weeks=count)
+    if unit in ("DAY", "WEEK"):
+        try:
+            return day + datetime.timedelta(days=count if unit == "DAY" else 7 * count)
+        except OverflowError:  # past the first or the last day of the calendar: the call stays as written
+            return None
     if unit in ("MONTH", "YEAR"):
         months = day.year * 12 + day.month - 1 + count * (12 if unit == "YEAR" else 1)
         year, month = divmod(months, 12)
@@ -5316,6 +5319,17 @@ def normalize(
             shape_fallback.note_fired("nested_membership_joins")
         elif wrote:
             shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
+    if shape_fallback.rule_enabled("numbered_islands") and schema and keys and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+        from .numbered_islands import read_numbered_islands
+
+        # pre-pass (batch 31, in the twenty-seventh step): runs of consecutive key values found with a row number, as
+        # "a row one below or one above exists"
+        runs, wrote = read_numbered_islands(tree, schema, keys, not_null, types)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = runs
+            shape_fallback.note_fired("numbered_islands")
+        elif wrote:
+            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
     if any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH) and schema and keys and (
         shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()
     ):
@@ -5415,7 +5429,7 @@ def normalize(
         # up one row by its key for the filter alone as scalar lookups
         for name, rule in (
             ("single_row_partitions", lambda node: read_single_row_partitions(node, schema, keys, not_null)),
-            ("neighbour_rows", lambda node: read_neighbour_rows(node, schema, consecutive)),
+            ("neighbour_rows", lambda node: read_neighbour_rows(node, schema, consecutive, not_null, types, dialect)),
             ("lookup_joins", lambda node: read_lookup_joins(node, keys, not_null, types)),
         ):
             if not shape_fallback.rule_enabled(name):
@@ -5537,7 +5551,11 @@ def normalize(
 
         tree = counted_join_rules(tree)  # pre-pass: COUNT(*) over a FULL JOIN as the count of its two halves
         from .count_exists_rules import count_tests_to_exists
+        from .scalar_counts import read_spelled_out_counts
 
+        # pre-pass: MySQL's `HAVING n > 0` on a scalar count arrives as a WHERE on the count itself (having_filters);
+        # read here, before the rules below take the WHERE test and the select item apart
+        tree = worker_rules.prepass(read_spelled_out_counts, tree, schema, keys, not_null)
         tree = count_tests_to_exists(tree)  # pre-pass: (SELECT COUNT(*) ..) > 0 as EXISTS
         from .subquery_absorption import absorb_subquery_tests
 
@@ -5826,6 +5844,7 @@ def normalize(
         lambda sel: _narrow_twenty_seventh("unread_join_chains", lambda s: drop_unread_chained_join(s, schema), sel),
         lambda sel: _narrow_twenty_seventh("rejoined_parents", lambda s: drop_rejoined_parent(s, schema, keys, not_null, types_map), sel),
         lambda sel: _narrow_twenty_seventh("key_fixed_groupings", lambda s: read_key_fixed_grouping(s, schema, keys, not_null, types_map, dialect), sel),
+        lambda sel: _narrow_twenty_seventh("keyed_join_distinct", lambda s: read_keyed_join_distinct(s, schema, keys, not_null, types_map), sel),
         lambda sel: _narrow_sixteenth("labelled_cases", read_labelled_cases, sel),
         lambda sel: _narrow_sixteenth("quotient_comparisons", lambda s: quotient_step(s, types_map, dialect), sel),
         lambda sel: close_strict_bounds(sel, types_map, dialect),
@@ -5879,6 +5898,7 @@ def normalize(
     early_shape_rules = (
         lambda sel: read_anti_join(sel, schema, not_null),
         lambda sel: guard_outer_counts(sel, schema, not_null),
+        lambda sel: _narrow_twenty_seventh("child_aggregates", lambda s: read_child_aggregates(s, schema, keys, not_null, types_map), sel),
     ) if shapes else ()
 
     def step(node: exp.Expression) -> exp.Expression:
@@ -5909,7 +5929,7 @@ def normalize(
                 if node.parent is not None:
                     node.replace(fresh)
                 node = fresh
-            for rule in (null_contradiction, lambda sel: nullable_lateral_boolean_group(sel, schema, not_null), distribute_over_constant_union, collapse_named_counted_intersection, lambda sel: distinct_rules(sel, schema), _mean_times_count, _single_row_source, lambda sel: _drop_exists_witnessed_by_join(sel, dialect), _drop_empty_null_extended_side, _inline_constant_source, _constant_counts, _inline_constant_columns, lambda sel: _push_distinct_into_sources(sel, schema, keys), _push_filter_into_derived, push_filter_into_set_operation, _unwrap_distinct_projection, _drop_redundant_distinct_source, left_join_to_inner, lambda sel: join_rewrites(sel, schema, not_null, foreign_keys), strengthen_under_outer_on, _full_join_to_one_sided, lambda sel: _drop_unused_left_join(sel, keys), lambda sel: compare_with_extremum_as_exists(sel, schema) if shapes else None, lambda sel: decorrelation_step(sel, not_null, schema, dialect), lambda sel: _decorrelate_aggregate(sel, schema), lambda sel: _decorrelate_select_list(sel, schema), lambda sel: _inline_expression_projection(sel, schema), _inline_expression_projection, _prune_derived, _distinct_over_union_all, _merge_spj_source, _fold_filter_into_grouping, _merge_outer_right_filter, lambda sel: move_exists_into_padded_side(sel, schema), lambda sel: _drop_derived_null_guard(sel, not_null or {}), lambda sel: _pull_up_exists(sel, schema), lambda sel: _drop_implied_exists(sel, schema), _flatten_join_source, lambda sel: outer_join_rules(sel, keys), qualify, _order_grouped_columns, fold_literal_int_div, lambda sel: _fold_identity_casts(sel, types_map, dialect), lambda sel: fold_casts_and_constant_cases(sel, types_map, dialect), lambda sel: _shifted_sums(sel, types_map), *early_shape_rules, lambda sel: key_only_group_to_distinct(sel) if shapes else None, lambda sel: distinct_self_outer_join_column(sel) if shapes else None, lambda sel: count_preserved_not_null(sel, not_null, _null_extended) if shapes else None, _wrap_outer_join_aggregate, lambda sel: limit_rule(sel, types_map, dialect), _lift_limit_derived, _group_by_to_distinct, _unwrap_projection, key_having_to_where, window_rules, _collapse_aggregate, _drop_global_null_filter, _roll_up_aggregate, _regroup_distinct, lambda sel: regroup_arithmetic(sel, (_collapse_aggregate, _roll_up_aggregate, _regroup_distinct)), _split_aggregates, _distribute, unnest_grouped_source, flatten_grouped_join, lambda sel: None if shapes and worker_rules.enabled() and own_group_join(sel, schema) else pull_up_aggregate(sel, keys), lambda sel: read_back_eager_sums(sel, not_null), _key_aggregates, rewrite_aggregates, lambda sel: remove_keyed_grouping(sel, keys, not_null), lambda sel: drop_fk_join(sel, keys, not_null, foreign_keys), drop_unread_outer_join, strengthen_derived_outer_join, lambda sel: drop_grouped_sum_coalesce(sel, not_null or {}), lift_derived_expressions, lambda sel: _indicator_join_above(sel, keys), split_distinct_select, grouped_outer_join_rules, lambda sel: propagate_constant_correlations(sel, types_map), lambda sel: propagate_grouped_join_facts(sel, types_map), lambda sel: expose_correlated_key_groups(sel, keys, not_null or {}, types_map), lambda sel: exists_constant_rules(sel, schema, not_null, foreign_keys, types_map), collapse_constant_regroup, regroup_tuple_count, sum_of_grouped_counts,
+            for rule in (null_contradiction, lambda sel: nullable_lateral_boolean_group(sel, schema, not_null), distribute_over_constant_union, collapse_named_counted_intersection, lambda sel: distinct_rules(sel, schema), _mean_times_count, _single_row_source, lambda sel: _drop_exists_witnessed_by_join(sel, dialect), _drop_empty_null_extended_side, _inline_constant_source, _constant_counts, _inline_constant_columns, lambda sel: _push_distinct_into_sources(sel, schema, keys), _push_filter_into_derived, push_filter_into_set_operation, _unwrap_distinct_projection, _drop_redundant_distinct_source, left_join_to_inner, lambda sel: join_rewrites(sel, schema, not_null, foreign_keys), strengthen_under_outer_on, _full_join_to_one_sided, lambda sel: _drop_unused_left_join(sel, keys), lambda sel: compare_with_extremum_as_exists(sel, schema) if shapes else None, lambda sel: decorrelation_step(sel, not_null, schema, dialect), lambda sel: _decorrelate_aggregate(sel, schema), lambda sel: _decorrelate_select_list(sel, schema), lambda sel: _inline_expression_projection(sel, schema), _inline_expression_projection, _prune_derived, _distinct_over_union_all, _merge_spj_source, _fold_filter_into_grouping, _merge_outer_right_filter, lambda sel: move_exists_into_padded_side(sel, schema), lambda sel: _drop_derived_null_guard(sel, not_null or {}), lambda sel: _pull_up_exists(sel, schema), lambda sel: _drop_implied_exists(sel, schema), _flatten_join_source, lambda sel: outer_join_rules(sel, keys), qualify, _order_grouped_columns, fold_literal_int_div, lambda sel: _fold_identity_casts(sel, types_map, dialect), lambda sel: fold_casts_and_constant_cases(sel, types_map, dialect), lambda sel: _shifted_sums(sel, types_map), *early_shape_rules, lambda sel: key_only_group_to_distinct(sel) if shapes else None, lambda sel: distinct_self_outer_join_column(sel) if shapes else None, lambda sel: count_preserved_not_null(sel, not_null, _null_extended) if shapes else None, _wrap_outer_join_aggregate, lambda sel: limit_rule(sel, types_map, dialect), _lift_limit_derived, _group_by_to_distinct, _unwrap_projection, key_having_to_where, window_rules, _collapse_aggregate, _drop_global_null_filter, _roll_up_aggregate, _regroup_distinct, lambda sel: regroup_arithmetic(sel, (_collapse_aggregate, _roll_up_aggregate, _regroup_distinct)), _split_aggregates, _distribute, unnest_grouped_source, flatten_grouped_join, lambda sel: None if shapes and worker_rules.enabled() and own_group_join(sel, schema) else pull_up_aggregate(sel, keys, not_null), lambda sel: read_back_eager_sums(sel, not_null), _key_aggregates, rewrite_aggregates, lambda sel: remove_keyed_grouping(sel, keys, not_null), lambda sel: drop_fk_join(sel, keys, not_null, foreign_keys), drop_unread_outer_join, strengthen_derived_outer_join, lambda sel: drop_grouped_sum_coalesce(sel, not_null or {}), lift_derived_expressions, lambda sel: _indicator_join_above(sel, keys), split_distinct_select, grouped_outer_join_rules, lambda sel: propagate_constant_correlations(sel, types_map), lambda sel: propagate_grouped_join_facts(sel, types_map), lambda sel: expose_correlated_key_groups(sel, keys, not_null or {}, types_map), lambda sel: exists_constant_rules(sel, schema, not_null, foreign_keys, types_map), collapse_constant_regroup, regroup_tuple_count, sum_of_grouped_counts,
                     fold_boolean_identities,
                     relax_membership_dedup,
                     *shape_rules,
@@ -5969,7 +5989,7 @@ def prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtEq
 
 
 def _prove_equivalent_algebraic_as_written(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
-    from . import derived_rounding
+    from . import cross_kind_witness, derived_rounding
 
     def read_numerically(left: str, right: str, **options) -> SmtEquivalenceResult:
         return numeric_column_reading.checked(
@@ -5979,7 +5999,9 @@ def _prove_equivalent_algebraic_as_written(left_sql: str, right_sql: str, **kwar
     # MySQL stores a quotient a derived table materialises rounded to its declared scale (issue 45): the pair is read so.
     result = derived_rounding.proved(read_numerically, left_sql, right_sql, kwargs)
     # The rules below may merge or drop a call; a pair that holds a volatile one as written is never proven.
-    return without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
+    result = without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
+    # a model that sets a text of one query against a number of the other is not a database (issue 60)
+    return cross_kind_witness.without_cross_kind_counterexample(result, left_sql, right_sql, kwargs)
 
 
 def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
@@ -6001,6 +6023,11 @@ def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs)
         return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, Z3_MISSING)
     dialect = kwargs.get("dialect", "bigquery")
     try:
+        if dialect in having_filters.DIALECTS:
+            # MySQL's HAVING in a select that groups nothing filters the selected rows: written as a WHERE, or declined
+            (left_sql, left_unread), (right_sql, right_unread) = (having_filters.read(sql, dialect, kwargs.get("schema")) for sql in (left_sql, right_sql))
+            if left_unread or right_unread:
+                return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, left_unread or right_unread)
         left_sql, right_sql = (string_number_literals.normalize(sql, dialect, kwargs.get("types")) for sql in (left_sql, right_sql))
         if dialect == "bigquery" and (invalid_literal(left_sql) or invalid_literal(right_sql)):
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, "unsupported: a single-quoted literal holds a line break (not valid GoogleSQL)")
@@ -6011,6 +6038,13 @@ def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs)
         if masked:
             return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, masked)
         result = _prove_equivalent_algebraic(left_sql, right_sql, **kwargs)
+        if _outright_proof_may_follow(result, left_sql, right_sql, kwargs):
+            # A step that ends with a proof under conditions ends the staged proof, so the steps after it never
+            # got to prove the pair outright. They get to here, without the search for conditions, and only an
+            # outright proof is taken from them: the pair is then equivalent with no condition at all.
+            outright = _prove_equivalent_algebraic(left_sql, right_sql, **{**kwargs, "conditional": False, "search_counterexample": False})
+            if outright.status is SmtStatus.PROVEN_EQUIVALENT:
+                result = outright
         if result.proven and (unchecked_types(left_sql, kwargs.get("types"), dialect) or unchecked_types(right_sql, kwargs.get("types"), dialect)):
             result = dataclasses.replace(result, assumptions=tuple(dict.fromkeys(tuple(result.assumptions) + (SET_TYPES_ASSUMPTION,))))
     except sqlglot.errors.SqlglotError as error:
@@ -6018,6 +6052,23 @@ def _prove_equivalent_algebraic_checked(left_sql: str, right_sql: str, **kwargs)
     except RecursionError:
         return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, "unsupported: the query nests too deeply")
     return result
+
+
+def _outright_proof_may_follow(result: SmtEquivalenceResult, left_sql: str, right_sql: str, kwargs: dict) -> bool:
+    """Whether a proof under conditions that ``conditional=True`` found may hide an outright proof of a later step.
+
+    Only a proof under conditions taken from the queries counts (one that rests on the value of ``NOW()`` is the same
+    with and without the search for conditions), and only a pair that gets the last steps at all.
+    """
+
+    if not kwargs.get("conditional") or result.status is not SmtStatus.PROVEN_CONDITIONALLY or shape_fallback.fifteenth_staged():
+        return False
+    from . import statement_values
+
+    conditions = tuple(result.conditions or ())
+    if not conditions or all(getattr(c, "kind", None) in statement_values.KINDS for c in conditions):
+        return False
+    return shape_fallback.last_steps_worth_trying(left_sql, right_sql)
 
 
 def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
@@ -6245,6 +6296,12 @@ def _prove_algebraic_levels(left_sql: str, right_sql: str, search: bool, **kwarg
     ) or string_number_compare.problem(original[1], kwargs.get("dialect", "bigquery"), kwargs.get("types"), plain_ok=True, schema=kwargs.get("schema"))
     if compared:
         return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, f"unsupported: {compared}")
+    # the rules below read ``=`` as one shared value, which a text set equal to a number or a date is not (issue 71)
+    equated = string_number_compare.equated_kinds_problem(original[0], kwargs.get("dialect", "bigquery"), kwargs.get("types")) or (
+        string_number_compare.equated_kinds_problem(original[1], kwargs.get("dialect", "bigquery"), kwargs.get("types"))
+    )
+    if equated:
+        return SmtEquivalenceResult(SmtStatus.NOT_PROVEN, f"unsupported: {equated}")
     normalization_cache = {}
 
     def attempt() -> SmtEquivalenceResult:

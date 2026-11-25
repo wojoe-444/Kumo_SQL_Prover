@@ -299,13 +299,40 @@ _NEWER_AGGREGATES = {
     "RegrAvgy": ("REGR_AVGY",), "RegrIntercept": ("REGR_INTERCEPT",), "RegrR2": ("REGR_R2",), "RegrSlope": ("REGR_SLOPE",),
     "RegrSxx": ("REGR_SXX",), "RegrSxy": ("REGR_SXY",), "RegrSyy": ("REGR_SYY",),
 }
-_UNCLASSED_AGGREGATES = frozenset(name for cls, names in _NEWER_AGGREGATES.items() if not hasattr(exp, cls) for name in names)
+# Aggregates that the pinned sqlglot (30.21.0) itself parses as anonymous functions, from the engines' own lists of
+# aggregates (issue 73). With every name of ``_NEWER_AGGREGATES`` classed by now, nothing was refused: ``SELECT STD(x)
+# FROM t`` was read as one value per row and ``SELECT COUNT(*) FROM (SELECT STD(x) FROM t)`` proved equal to
+# ``SELECT COUNT(*) FROM t``. A name that is an aggregate in one engine is refused in every dialect: elsewhere it is a
+# function the provers know nothing about. ``tests/test_unknown_aggregates.py`` holds each name against the parser.
+UNKNOWN_AGGREGATES = frozenset({
+    "STD", "JSON_ARRAYAGG",  # MySQL
+    "ST_UNION_AGG", "ST_CENTROID_AGG", "ST_EXTENT", "JSON_ARRAY_AGG",  # BigQuery
+    "EVERY", "JSONB_AGG", "RANGE_AGG", "RANGE_INTERSECT_AGG", "XMLAGG",  # PostgreSQL
+    "TOTAL", "JSONB_GROUP_ARRAY", "JSONB_GROUP_OBJECT", "PERCENTILE",  # SQLite
+    "ARBITRARY", "BITSTRING_AGG", "FAVG", "FSUM", "GEOMEAN", "GEOMETRIC_MEAN", "HISTOGRAM", "PRODUCT", "SUMKAHAN", "KAHAN_SUM",  # DuckDB
+    "WEIGHTED_AVG", "ENTROPY", "KURTOSIS_POP", "MAD", "RESERVOIR_QUANTILE", "SEM", "BOOL_XOR", "MEAN", "SUM_NO_OVERFLOW",
+})
+# BigQuery's sketch aggregates are written with a dot (``HLL_COUNT.INIT(x)``, ``KLL_QUANTILES.MERGE_INT64(s)``) and
+# parse as a ``Dot`` over an anonymous call; ``HLL_COUNT.EXTRACT`` and ``KLL_QUANTILES.EXTRACT_*`` read one sketch.
+DOTTED_AGGREGATES = {"HLL_COUNT": ("INIT", "MERGE"), "KLL_QUANTILES": ("INIT", "MERGE")}
+_UNCLASSED_AGGREGATES = frozenset(name for cls, names in _NEWER_AGGREGATES.items() if not hasattr(exp, cls) for name in names) | UNKNOWN_AGGREGATES
+
+
+def dotted_aggregate(node: object) -> str | None:
+    """``"HLL_COUNT.INIT"`` for the ``Dot`` of such a call, else ``None``."""
+
+    if not isinstance(node, exp.Dot) or not isinstance(node.expression, exp.Anonymous) or not isinstance(node.this, (exp.Identifier, exp.Column)):
+        return None
+    family, name = node.this.name.upper(), str(node.expression.this).upper()
+    return f"{family}.{name}" if name.startswith(DOTTED_AGGREGATES.get(family, ())) and family in DOTTED_AGGREGATES else None
 
 
 def is_aggregate(node: object) -> bool:
-    """An aggregate call, including one an older sqlglot version parses as an anonymous function."""
+    """An aggregate call, including one sqlglot parses as an anonymous function."""
 
-    return isinstance(node, exp.AggFunc) or (isinstance(node, exp.Anonymous) and str(node.this).upper() in _UNCLASSED_AGGREGATES)
+    if isinstance(node, exp.AggFunc) or dotted_aggregate(node) is not None:
+        return True
+    return isinstance(node, exp.Anonymous) and (str(node.this).upper() in _UNCLASSED_AGGREGATES or dotted_aggregate(node.parent) is not None)
 
 
 # sqlglot parses IS [NOT] DISTINCT FROM (NullSafeEQ, NullSafeNEQ) beside LIKE, IN and BETWEEN: tighter than ``=`` and ``<``,
@@ -483,6 +510,8 @@ def check_modeled(tree: exp.Expression) -> exp.Expression:
             raise UnmodeledConstruct("PERCENT and WITH TIES limits are not modeled")
         if isinstance(node, exp.Anonymous) and str(node.this).upper() in _UNCLASSED_AGGREGATES and not isinstance(node.parent, exp.Window):
             raise UnmodeledConstruct(f"{str(node.this).upper()} is an aggregate this sqlglot version does not know")
+        if dotted_aggregate(node) is not None and not isinstance(node.parent, exp.Window):
+            raise UnmodeledConstruct(f"{dotted_aggregate(node)} is an aggregate this sqlglot version does not know")
     tree = read_is_after_comparison(tree)
     if table_function_reads_cte(tree):
         raise UnmodeledConstruct("a table function that reads a CTE by name is not modeled")

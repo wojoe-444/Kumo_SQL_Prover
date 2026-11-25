@@ -161,7 +161,10 @@ def _neighbours(value, pg_type: str) -> list:
             return [float(value) - 1, float(value) + 1]
         if kind in ("date", "timestamp"):
             base = fit(value, pg_type)
-            return [] if base is None else [base - datetime.timedelta(days=1), base + datetime.timedelta(days=1)]
+            try:
+                return [] if base is None else [base - datetime.timedelta(days=1), base + datetime.timedelta(days=1)]
+            except OverflowError:  # the first or the last day of the calendar
+                return []
         if kind == "text" and isinstance(value, str):
             return [value[:-1], value + "x", value.lower() if value != value.lower() else value.upper()]
     except (ValueError, ArithmeticError, InvalidOperation, TypeError):

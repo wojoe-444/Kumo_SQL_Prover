@@ -18,7 +18,8 @@ which the prover compares with other grouped selects over the same two tables.
 grouping, ``DISTINCT``, ``ORDER BY`` or ``LIMIT``, and returns row values of ``t`` and exactly one *scalar
 item* ``n``. Its only filter is ``n > 0``, ``n >= 1`` or ``n <> 0`` (``n`` read by its output name, in
 ``HAVING`` or ``WHERE``, where no column of ``t`` has that name, and only when the select is the whole statement
-or a derived table, so that no query around it can own the name). The same is read through one derived table:
+or a derived table, so that no query around it can own the name; or the item written out again under ``WHERE``,
+which is how MySQL's ``HAVING n > 0`` arrives since ``having_filters`` reads it). The same is read through one derived table:
 ``SELECT .. FROM (SELECT .., <scalar item> AS n FROM t) AS d WHERE d.n > 0`` with plain columns of ``d`` as
 outputs. The scalar item is one of
 
@@ -145,6 +146,44 @@ def _filter(node: exp.Expression | None) -> tuple[str, type, str, str] | None:
     return column.name.lower(), type(node), literal, column.table.lower()
 
 
+def _spelled_out(node: exp.Expression | None, select: exp.Select):
+    """``<the scalar item> > 0`` with the item written out again instead of named, as :func:`_filter` gives it.
+
+    This is how MySQL's ``HAVING n > 0`` in a select without groups reaches the rule (``having_filters`` writes it
+    as a ``WHERE`` on the item itself). The text must be that of exactly one named item."""
+
+    if node is None:
+        return None
+    node = node.unnest()
+    literal = _FILTERS.get(type(node))
+    if literal is None:
+        return None
+    value, number = node.this.unnest(), node.expression.unnest()
+    if isinstance(value, exp.Column) or not isinstance(number, exp.Literal) or number.is_string or number.this != literal:
+        return None
+    names = [item.alias_or_name.lower() for item in select.expressions if item.alias_or_name and item.unalias().unnest().sql() == value.sql()]
+    return (names[0], type(node), literal, "") if len(names) == 1 else None
+
+
+def read_spelled_out_counts(tree: exp.Expression, schema, keys, not_null) -> exp.Expression:
+    """Pre-pass: the select with its item written out again under ``WHERE`` (see :func:`_spelled_out`), read before
+    the rules that take a scalar count in a ``WHERE`` test or in a select list apart, which the ``HAVING`` spelling
+    never met."""
+
+    for select in list(tree.find_all(exp.Select)):
+        where = select.args.get("where")
+        if where is None or select.args.get("having") is not None or _spelled_out(where.this, select) is None:
+            continue
+        after = scalar_counts_to_grouped_join(select, schema, keys, not_null)
+        if after is None:
+            continue
+        if select is tree:
+            tree = after
+        else:
+            select.replace(after)
+    return tree
+
+
 def _direct(select: exp.Select, known):
     """``SELECT .., <scalar item> AS n FROM t HAVING n > 0`` (or with the filter under ``WHERE``)."""
 
@@ -156,7 +195,11 @@ def _direct(select: exp.Select, known):
         return None
     clause = select.args.get("where") or select.args.get("having")
     test = _filter(clause.this if clause is not None else None)
-    if test is None or test[3] or test[0] in _base_table(sources[0], known):
+    if test is None and clause is not None and clause is select.args.get("where"):
+        test = _spelled_out(clause.this, select)  # the item itself: no column can be meant
+    elif test is None or test[3] or test[0] in _base_table(sources[0], known):
+        return None
+    if test is None:
         return None
     items = []
     for item in select.expressions:

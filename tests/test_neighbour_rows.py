@@ -1,6 +1,7 @@
 """``LAG`` and ``LEAD`` over a column of consecutive whole numbers, read as a keyed lookup (``neighbour_rows``)."""
 
 import itertools
+import sqlite3
 import random
 
 import pytest
@@ -223,3 +224,86 @@ def test_the_rule_never_raises_on_odd_shapes():
     for sql, repeat in itertools.product(shapes, range(2)):
         read(sql)
     assert NAME == "neighbour_rows"
+
+
+# --- a default value (hardest-cases batch 31) ---
+
+NEVER_NULL = {"seats": frozenset({"seat", "free"})}
+DEFAULTED = [
+    (
+        "SELECT d.seat FROM (SELECT seat, free, LEAD(free, 1, 0) OVER (ORDER BY seat) AS after, LAG(free, 1, 0) OVER (ORDER BY seat) AS before FROM seats) AS d "
+        "WHERE d.free = 1 AND (d.after = 1 OR d.before = 1)",
+        "SELECT d.seat FROM seats AS d WHERE d.free = 1 AND (COALESCE((SELECT kqn0.free FROM seats AS kqn0 WHERE kqn0.seat = d.seat + 1), 0) = 1 "
+        "OR COALESCE((SELECT kqn0.free FROM seats AS kqn0 WHERE kqn0.seat = d.seat - 1), 0) = 1)",
+    ),
+    (  # the consecutive column itself, a negative default, two places
+        "SELECT d.seat, d.far FROM (SELECT seat, LAG(seat, 2, -1) OVER (ORDER BY seat) AS far FROM seats) AS d",
+        "SELECT d.seat, COALESCE((SELECT kqn0.seat FROM seats AS kqn0 WHERE kqn0.seat = d.seat - 2), -1) AS far FROM seats AS d",
+    ),
+]
+
+
+WHOLE = {"seats": {"seat": "INT", "free": "INT", "price": "INT"}}
+
+
+def read_defaulted(sql: str, not_null=NEVER_NULL, types=WHOLE, dialect=None) -> str | None:
+    new, wrote = read_neighbour_rows(parse_one(sql, read="mysql"), SCHEMA, CONSECUTIVE, not_null, types, dialect)
+    return new.sql(dialect="mysql") if wrote else None
+
+
+def _filled_tables():
+    """As ``_tables``, with ``free`` never NULL."""
+
+    rng = random.Random(31)
+    for rows in range(0, 6):
+        for _ in range(8):
+            first = rng.choice((1, 4, -2, 0))
+            yield [(first + n, rng.choice((0, 1, 1, 2)), rng.choice((3, 5, None))) for n in range(rows)]
+
+
+@pytest.mark.parametrize("sql, expected", DEFAULTED)
+def test_a_default_beside_a_value_that_is_never_null_is_a_coalesce_of_the_lookup(sql, expected):
+    assert read_defaulted(sql) == expected
+    for rows in _filled_tables():
+        connection = _connection(rows)
+        assert _rows(connection, sql) == _rows(connection, expected), rows
+        lite = sqlite3.connect(":memory:")
+        lite.execute("CREATE TABLE seats (seat INTEGER, free INTEGER, price INTEGER)")
+        lite.executemany("INSERT INTO seats VALUES (?, ?, ?)", rows)
+        assert sorted(lite.execute(sql).fetchall(), key=repr) == sorted(lite.execute(expected).fetchall(), key=repr), rows
+
+
+def test_a_default_is_left_alone_when_the_value_may_be_null_or_the_default_is_not_a_whole_number():
+    sql = DEFAULTED[0][0]
+    assert read_defaulted(sql, not_null=None) is None
+    assert read_defaulted(sql, not_null={"seats": frozenset({"seat"})}) is None  # free may be NULL
+    assert read_defaulted(sql.replace("LEAD(free, 1, 0)", "LEAD(free, 1, 1.5)")) is None
+    assert read_defaulted(sql.replace("LEAD(free, 1, 0)", "LEAD(free, 1, 'x')")) is None
+    assert read_defaulted(sql.replace("LEAD(free, 1, 0)", "LEAD(free, 1, seat)")) is None
+    assert read_defaulted(sql.replace("LEAD(free, 1, 0)", "LEAD(free + 1, 1, 0)")) is None  # a value that is not a plain column
+    # the consecutive column is a whole number that is never NULL by its declaration alone
+    assert read_defaulted(DEFAULTED[1][0], not_null=None, types=None) == DEFAULTED[1][1]
+    # the value must be declared a whole number; a true/false column is one in MySQL only
+    for declared in (None, "VARCHAR(10)", "DECIMAL(6,2)", "DOUBLE", "DATE", "BOOLEAN"):
+        assert read_defaulted(sql, types={"seats": {"seat": "INT", "free": declared}}) is None, declared
+    for declared in ("BOOL", "boolean", "TINYINT", "BIGINT"):
+        assert read_defaulted(sql, types={"seats": {"seat": "INT", "free": declared}}, dialect="mysql") == DEFAULTED[0][1], declared
+
+
+def test_why_the_value_must_never_be_null_and_the_default_a_whole_number():
+    # a neighbour whose value is NULL: the window gives NULL, the COALESCE of the lookup gives the default
+    connection = _connection([(1, 1, 3), (2, None, 3)])
+    window = "SELECT d.seat FROM (SELECT seat, LEAD(free, 1, 7) OVER (ORDER BY seat) AS after FROM seats) AS d WHERE d.after = 7"
+    by_hand = "SELECT d.seat FROM seats AS d WHERE COALESCE((SELECT n.free FROM seats AS n WHERE n.seat = d.seat + 1), 7) = 7"
+    assert _rows(connection, window) == [(2,)] and _rows(connection, by_hand) == [(1,), (2,)]
+    # DuckDB converts the default to the type of the value; COALESCE keeps the decimal
+    assert connection.execute("SELECT LEAD(free, 1, 1.5) OVER (ORDER BY seat) FROM seats WHERE seat = 1").fetchall() == [(2,)]
+    assert float(connection.execute("SELECT COALESCE((SELECT free FROM seats WHERE seat = 9), 1.5)").fetchone()[0]) == 1.5
+    # and why the value must be a whole number: beside a true/false value DuckDB reads the default as true or false
+    flags = duckdb.connect(":memory:")
+    flags.execute("CREATE TABLE seats (seat INTEGER, free BOOLEAN)")
+    flags.execute("INSERT INTO seats VALUES (1, FALSE)")
+    assert flags.execute("SELECT LEAD(free, 1, -1) OVER (ORDER BY seat) = 1 FROM seats").fetchall() == [(True,)]
+    assert flags.execute("SELECT COALESCE((SELECT n.free FROM seats AS n WHERE n.seat = 2), -1) = 1 FROM seats").fetchall() == [(False,)]
+    with pytest.raises(duckdb.Error):
+        flags.execute("SELECT COALESCE((SELECT CAST(n.seat AS VARCHAR) FROM seats AS n WHERE n.seat = 2), 0) FROM seats")
