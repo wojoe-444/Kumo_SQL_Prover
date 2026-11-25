@@ -797,6 +797,9 @@ def zoneless_timestamps(tree: exp.Expression) -> exp.Expression:
     return tree
 
 
+_STATEMENTS = (exp.Update, exp.Delete, exp.Insert, exp.Merge, exp.Create, exp.Drop, exp.Alter, exp.TruncateTable, exp.Set, exp.Use, exp.Command)
+
+
 def to_duckdb(
     sql: str,
     dialect: str = "mysql",
@@ -809,6 +812,9 @@ def to_duckdb(
     reading of a date in arithmetic as a number; ``notes`` then gets ``DATE_NUMBERS`` when a date was read so."""
 
     tree = sqlglot.parse_one(_dollars(sql), read=dialect)
+    if isinstance(tree, _STATEMENTS):
+        # running one would change the tables under the search, and what it returns is a count, not rows
+        raise ValueError(f"a statement, not a query: {type(tree).__name__}")
     if dialect == "mysql":
         tree = _conditions_as_numbers(zoneless_timestamps(tree))
     if known is not None:

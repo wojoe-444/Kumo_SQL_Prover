@@ -130,7 +130,8 @@ def test_a_query_that_uses_listed_names_is_proved():
     result = prove_equivalent_algebraic(WINS, LISTED, **OPTIONS)
     assert result.proven, result.reason
     with shape_fallback.without("listed_cte_names"):
-        assert not prove_equivalent_algebraic(WINS, LISTED, **OPTIONS).proven
+        # the solver layer reads the list itself since batch 26 (``listed_body``; tests/test_listed_cte_reading.py)
+        assert prove_equivalent_algebraic(WINS, LISTED, **OPTIONS).proven
     # the list names the outputs by position: the other medal is another query
     other = LISTED.replace("WITH t (id) AS (SELECT gold FROM rounds", "WITH t (id) AS (SELECT round_id FROM rounds")
     assert not prove_equivalent_algebraic(WINS, other, **OPTIONS).proven

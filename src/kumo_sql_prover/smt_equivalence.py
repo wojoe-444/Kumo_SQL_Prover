@@ -1175,7 +1175,16 @@ class _Compiler:
                 raise Unsupported("recursive CTEs")
             ctes = dict(ctes)
             for cte in with_clause.expressions:
-                ctes[cte.alias_or_name.lower()] = (cte.this, dict(ctes))
+                body = cte.this
+                if isinstance(cte.args.get("alias"), exp.TableAlias) and cte.args["alias"].args.get("columns"):
+                    # A column list renames the outputs by position. Read by the names the query gives them,
+                    # ``t (a, b) AS (SELECT b, a FROM x)`` would give ``t.a`` the other column.
+                    from .listed_cte_names import listed_body
+
+                    body = listed_body(cte)
+                    if body is None:
+                        raise Unsupported("a column list on a WITH name that renames its columns")
+                ctes[cte.alias_or_name.lower()] = (body, dict(ctes))
         if type(node) in (exp.Intersect, exp.Except):
             return self._set_operation(node, ctes)
         if type(node) is exp.Union:

@@ -39,11 +39,11 @@ def switch_off(monkeypatch) -> None:
 
 def test_the_batch_names_its_rules_and_has_its_own_entry_in_the_stage_key():
     assert shape_fallback.TWENTIETH_BATCH == frozenset({"grouped_key_counts", "mirrored_self_joins", "unmatched_row_counts"})
-    assert len(shape_fallback.stage_key()) == 11 and shape_fallback.stage_key()[9] is False
+    assert len(shape_fallback.stage_key()) == 12 and shape_fallback.stage_key()[9] is False
     with shape_fallback.twentieth_deferred():
         assert shape_fallback.stage_key()[9] is False
     with shape_fallback.twentieth_on():
-        assert shape_fallback.stage_key()[5:] == (True, True, True, True, True, False)  # the step runs with the batches before it on too
+        assert shape_fallback.stage_key()[5:] == (True, True, True, True, True, False, False)  # the step runs with the batches before it on too
     assert shape_fallback.stage_key()[9] is False
 
 

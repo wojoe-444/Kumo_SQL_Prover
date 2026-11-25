@@ -3243,8 +3243,15 @@ def _using_to_on(tree: exp.Expression, schema: dict[str, list[str]] | None) -> e
         aliases = [(src.alias_or_name or "").lower() for src in sources]
         if from_ is None or any(k is None for k in known) or "" in aliases or len(set(aliases)) != len(aliases):
             continue
-        stars = [i for i in select.expressions if isinstance(i, exp.Star) or (isinstance(i, exp.Column) and isinstance(i.this, exp.Star))]
-        if stars and (len(stars) > 1 or not isinstance(stars[0], exp.Star) or star_modified(stars[0])):
+        # A bare star is replaced where it stands, and the select items beside it stay. ``t.*`` lists the columns of
+        # one source, which USING does not change: it is left as it is written. Not beside a RIGHT or FULL join,
+        # where SQLite lists the merged column for the left source and the other engines the stored one.
+        stars = [i for i in select.expressions if isinstance(i, exp.Star)]
+        if len(stars) > 1 or any(star_modified(i) for i in select.expressions):
+            continue
+        if any(isinstance(i, exp.Column) and isinstance(i.this, exp.Star) for i in select.expressions) and any(
+            (j.args.get("side") or "").upper() in ("RIGHT", "FULL") for j in joins
+        ):
             continue
         # The columns of the running result, as (name, expression) pairs, to expand a bare star.
         running = [(c, exp.column(c, table=exp.to_identifier(aliases[0]))) for c in known[0]]
@@ -3306,10 +3313,8 @@ def _using_to_on(tree: exp.Expression, schema: dict[str, list[str]] | None) -> e
             if column.name.lower() in merged:
                 column.replace(merged[column.name.lower()].copy())
         if stars:
-            select.set(
-                "expressions",
-                [e.copy() if isinstance(e, exp.Column) and e.name.lower() == n else exp.alias_(e.copy(), n) for n, e in running],
-            )
+            listed = [e.copy() if isinstance(e, exp.Column) and e.name.lower() == n else exp.alias_(e.copy(), n) for n, e in running]
+            select.set("expressions", [new for item in select.expressions for new in (listed if item is stars[0] else [item])])
         select.set("joins", new_joins)
     return tree
 
@@ -5215,6 +5220,8 @@ def normalize(
             else:
                 shape_fallback.note_thirteenth_candidate()  # said here: inlining may decline the query as it is written
     tree = _inline_ctes(tree)
+    if shape_fallback.rule_enabled("early_using") and schema:
+        tree = _using_to_on(tree, schema)  # USING read as ON before the pre-passes, which leave a USING join alone
     if shape_fallback.rule_enabled("apart_table_names") and (shape_fallback.twenty_fourth_batch_enabled() or shape_fallback.twenty_fourth_watching()):
         from .apart_table_names import name_tables_apart
 
@@ -5226,16 +5233,33 @@ def normalize(
             shape_fallback.note_fired("apart_table_names")
         elif wrote:
             shape_fallback.note_twenty_fourth_candidate()  # an earlier step: the step after the last is worth running
-    if shape_fallback.rule_enabled("shared_group_names") and (shape_fallback.eleventh_batch_enabled() or shape_fallback.eleventh_watching()):
+    if shape_fallback.rule_enabled("apart_alias_names") and (shape_fallback.twenty_fifth_batch_enabled() or shape_fallback.twenty_fifth_watching()):
+        from .apart_alias_names import name_aliases_apart
+
+        # pre-pass (twenty-fifth batch): a source name used again inside the derived table a select starts from gets a
+        # name at each place, before any rule that merges a derived table into the select around it
+        apart, wrote = name_aliases_apart(tree)
+        if wrote and shape_fallback.twenty_fifth_batch_enabled():
+            tree = apart
+            shape_fallback.note_fired("apart_alias_names")
+        elif wrote:
+            shape_fallback.note_twenty_fifth_candidate()  # an earlier step: the step after the last is worth running
+    if shape_fallback.rule_enabled("shared_group_names"):
         from .shared_group_names import qualify_shared_group_names
 
-        # pre-pass (eleventh batch): a bare GROUP BY name two joined tables share is the select-list column (MySQL)
+        # pre-pass (eleventh batch): a bare GROUP BY name two joined tables share is the select-list column (MySQL).
+        # It is a reading of the name and not a choice between two shapes: without it such a query is not read at
+        # all. So every stage reads the name (``early_group_names``, batch 26), and stage four still runs for the
+        # pair as it did when only that stage read it.
         named, renamed = qualify_shared_group_names(tree, dialect)
         if renamed and shape_fallback.eleventh_batch_enabled():
             tree = named
             shape_fallback.note_fired("shared_group_names")
         elif renamed:
-            shape_fallback.note_eleventh_candidate()  # an earlier stage: stage four is worth running
+            if shape_fallback.rule_enabled("early_group_names"):
+                tree = named
+            if shape_fallback.eleventh_watching():
+                shape_fallback.note_eleventh_candidate()  # an earlier stage: stage four is worth running
     if shape_fallback.rule_enabled("date_windows") and (shape_fallback.twelfth_batch_enabled() or shape_fallback.twelfth_watching()):
         from .date_windows import write_date_windows
 
@@ -5876,8 +5900,24 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
     if not shape_fallback.last_steps_worth_trying(left_sql, right_sql):
         # Each last step is another whole attempt, and a long pair that stays unproved would pay for every one of
         # them: over the size limit the proof is the one before the steps, for this pair and the proofs inside it.
-        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False), shape_fallback.seventeenth_deferred(watch=False), shape_fallback.eighteenth_deferred(watch=False), shape_fallback.twentieth_deferred(watch=False), shape_fallback.twenty_fourth_deferred(watch=False):
+        with shape_fallback.fifteenth_deferred(watch=False), shape_fallback.sixteenth_deferred(watch=False), shape_fallback.seventeenth_deferred(watch=False), shape_fallback.eighteenth_deferred(watch=False), shape_fallback.twentieth_deferred(watch=False), shape_fallback.twenty_fourth_deferred(watch=False), shape_fallback.twenty_fifth_deferred(watch=False):
             return _prove_equivalent_algebraic_whole(left_sql, right_sql, **kwargs)
+    with shape_fallback.twenty_fifth_deferred() as twenty_fifth_seen:
+        result, pair, assumed = _prove_with_twenty_fourth_step(left_sql, right_sql, **kwargs)
+    if result.status is SmtStatus.NOT_PROVEN and twenty_fifth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_FIFTH_BATCH):
+        # One more step (hardest-cases batch 25): a rule of the twenty-fifth batch would have fired. The staged proof
+        # once more with every last batch on, on the last pair tried before. Only a proof is taken.
+        with shape_fallback.twenty_fifth_on():
+            later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
+        if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
+    return result
+
+
+def _prove_with_twenty_fourth_step(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:
+    """The proof up to and including the step of batch 24, the last pair it tried, and the assumptions of the steps
+    before a later one."""
+
     with shape_fallback.twenty_fourth_deferred() as twenty_fourth_seen:
         result, pair, assumed = _prove_with_twentieth_step(left_sql, right_sql, **kwargs)
     if result.status is SmtStatus.NOT_PROVEN and twenty_fourth_seen and any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_FOURTH_BATCH):
@@ -5886,8 +5926,8 @@ def _prove_equivalent_algebraic(left_sql: str, right_sql: str, **kwargs) -> SmtE
         with shape_fallback.twenty_fourth_on():
             later = _prove_equivalent_algebraic_whole(*pair, **{**kwargs, "search_counterexample": False})
         if later.status in (SmtStatus.PROVEN_EQUIVALENT, SmtStatus.PROVEN_CONDITIONALLY):
-            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed))))
-    return result
+            return dataclasses.replace(later, assumptions=tuple(dict.fromkeys((*later.assumptions, *assumed)))), pair, assumed
+    return result, pair, assumed
 
 
 def _prove_with_twentieth_step(left_sql: str, right_sql: str, **kwargs) -> tuple[SmtEquivalenceResult, tuple[str, str], tuple[str, ...]]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -15,10 +16,13 @@ from bench_sql_repairs import (  # noqa: E402
     barewords_as_strings,
     expand_row_predicates,
     fold_table_names,
+    html_ampersands,
+    joined_strings,
     pipes_as_concat,
     rebind_correlation_variables,
     schema_table_names,
     uniquify_star_columns,
+    update_as_select,
 )
 
 from kumo_sql_prover import counterexample as cx  # noqa: E402
@@ -417,3 +421,215 @@ def test_another_runtime_error_in_a_search_is_still_a_crash(monkeypatch):
         verieql_bench.decide(dict(TIMED_CASE))
     verdict = verieql_bench._work((dict(TIMED_CASE), {}))
     assert (verdict.status, verdict.detail) == (verieql_bench.UNKNOWN, "crash: RuntimeError")
+
+
+# --- LeetCode answers the file holds in a form no parser reads ---------------------------------------------------
+
+# (as the file holds the answer, as it was written)
+AMPERSANDS = [
+    ("SELECT id FROM lamps WHERE watts > 40 &AMP;&AMP; state = 'ON'", "SELECT id FROM lamps WHERE watts > 40 && state = 'ON'"),
+    ("select id from lamps where watts > 40 &amp;&amp; room = 'A&AMP;B'", "select id from lamps where watts > 40 && room = 'A&AMP;B'"),
+    ("SELECT id, watts &AMP; 1 AS odd FROM lamps", "SELECT id, watts & 1 AS odd FROM lamps"),
+]
+
+AMPERSANDS_KEPT = [
+    "SELECT id FROM lamps WHERE watts > 40 && state = 'ON'",
+    "SELECT id FROM lamps WHERE room = 'A&AMP;B'",  # only inside a string
+    'SELECT id FROM lamps WHERE watts > 40 &AMP;&AMP; room = "A"',  # a string this function does not find
+    "SELECT id FROM lamps WHERE watts > 40 &AMP;&AMP; room = 'it''s'",
+    "SELECT id FROM lamps WHERE watts > 40 &AMP;&AMP; AND state = 'ON'",  # no query with the ampersands back either
+]
+
+
+@pytest.mark.parametrize("held,written", AMPERSANDS)
+def test_an_html_ampersand_outside_a_string_is_an_ampersand(held, written):
+    assert html_ampersands(held) == written
+    assert html_ampersands(written) == written
+
+
+@pytest.mark.parametrize("sql", AMPERSANDS_KEPT)
+def test_an_answer_without_an_html_ampersand_to_read_is_kept(sql):
+    assert html_ampersands(sql) == sql
+
+
+def test_two_html_ampersands_are_and():
+    held = "SELECT EMPNO FROM EMP WHERE SAL > 4 &AMP;&AMP; DEPTNO = 10"
+    assert runs(html_ampersands(held)) == runs("SELECT EMPNO FROM EMP WHERE SAL > 4 AND DEPTNO = 10") == [(1,)]
+
+
+LAMP_COLUMNS = {"id", "room", "state", "watts"}
+
+JOINED = [
+    ("SELECT id, CASE WHEN state = 'ON THEN LIT ELSE DARK' END AS look FROM lamps", "SELECT id, CASE WHEN state = 'ON' THEN 'LIT' ELSE 'DARK' END AS look FROM lamps"),
+    (
+        "SELECT id, CASE WHEN state = 'ON THEN LIT' WHEN state = 'OFF THEN DARK ELSE N/A' END AS look FROM lamps",
+        "SELECT id, CASE WHEN state = 'ON' THEN 'LIT' WHEN state = 'OFF' THEN 'DARK' ELSE 'N/A' END AS look FROM lamps",
+    ),
+    ("select id, case when state = 'on then lit else dark' end from lamps where room = 'hall'", "select id, case when state = 'on' then 'lit' else 'dark' end from lamps where room = 'hall'"),
+    # the last piece kept its closing quote: a string, even when it is spelled like a number
+    ("SELECT id, CASE WHEN state = 'ON THEN LIT ELSE 0' END AS look FROM lamps", "SELECT id, CASE WHEN state = 'ON' THEN 'LIT' ELSE '0' END AS look FROM lamps"),
+    ("UPDATE lamps SET state = CASE WHEN state = 'ON THEN OFF ELSE ON' END", "UPDATE lamps SET state = CASE WHEN state = 'ON' THEN 'OFF' ELSE 'ON' END"),
+]
+
+JOINED_KEPT = [
+    "SELECT id FROM lamps WHERE room = 'NOW THEN LATER'",  # a query as written: the string is a string
+    "SELECT id, CASE WHEN state = 'ON' THEN 'LIT' ELSE 'DARK' END AS look FROM lamps",
+    "SELECT id, CASE WHEN state = 'ON THEN 1 ELSE DARK' END AS look FROM lamps",  # the middle piece may have been a number
+    "SELECT id, CASE WHEN state = 'ON THEN ROOM ELSE DARK' END AS look FROM lamps",  # or a column
+    "SELECT id, CASE WHEN state = 'ON THEN  ELSE DARK' END AS look FROM lamps",  # an empty piece
+    'SELECT id, CASE WHEN state = \'ON THEN LIT ELSE DARK\' END AS "look" FROM lamps',
+    "SELECT id, CASE WHEN state = 'ON THEN LIT ELSE DARK' FROM lamps",  # no query with the strings apart either
+]
+
+
+@pytest.mark.parametrize("held,written", JOINED)
+def test_strings_joined_across_then_and_else_are_taken_apart(held, written):
+    assert joined_strings(held, LAMP_COLUMNS) == written
+    assert joined_strings(written, LAMP_COLUMNS) == written
+
+
+@pytest.mark.parametrize("sql", JOINED_KEPT)
+def test_a_string_with_more_than_one_reading_is_kept(sql):
+    assert joined_strings(sql, LAMP_COLUMNS) == sql
+
+
+LAMPS = {
+    "LAMPS": [cx.Column("ID", "INT", not_null=True), cx.Column("ROOM", "VARCHAR"), cx.Column("STATE", "ENUM", values=("ON", "OFF")), cx.Column("WATTS", "INT")],
+    "ROOMS": [cx.Column("ROOM", "VARCHAR")],
+}
+LAMP_KEYS = frozenset({("lamps", "id")})
+
+# (the statement, the table it leaves)
+UPDATES = [
+    ("UPDATE LAMPS SET STATE = CASE WHEN STATE = 'ON' THEN 'OFF' ELSE 'ON' END", "SELECT ID, ROOM, CASE WHEN STATE = 'ON' THEN 'OFF' ELSE 'ON' END AS STATE, WATTS FROM LAMPS"),
+    (
+        "UPDATE LAMPS SET STATE = IF(STATE = 'ON', 'OFF', 'ON') WHERE WATTS > 40",
+        "SELECT ID, ROOM, CASE WHEN WATTS > 40 THEN IF(STATE = 'ON', 'OFF', 'ON') ELSE STATE END AS STATE, WATTS FROM LAMPS",
+    ),
+    (
+        "UPDATE LAMPS L SET L.STATE = (CASE L.STATE WHEN 'ON' THEN 'OFF' WHEN 'OFF' THEN 'ON' END) WHERE L.STATE IN ('ON', 'OFF') AND NOT L.ROOM <> 'HALL'",
+        "SELECT L.ID, L.ROOM, CASE WHEN L.STATE IN ('ON', 'OFF') AND NOT L.ROOM <> 'HALL' THEN (CASE L.STATE WHEN 'ON' THEN 'OFF' WHEN 'OFF' THEN 'ON' END) ELSE L.STATE END AS STATE, "
+        "L.WATTS FROM LAMPS AS L",
+    ),
+    (
+        "UPDATE LAMPS SET WATTS = CASE WHEN WATTS >= 60 THEN 60 WHEN ROOM LIKE 'H%' THEN ID ELSE WATTS END WHERE STATE IS NOT NULL OR WATTS <=> 5",
+        "SELECT ID, ROOM, STATE, CASE WHEN NOT STATE IS NULL OR WATTS <=> 5 THEN CASE WHEN WATTS >= 60 THEN 60 WHEN ROOM LIKE 'H%' THEN ID ELSE WATTS END ELSE WATTS END AS WATTS FROM LAMPS",
+    ),
+    ("UPDATE LAMPS SET LAMPS.STATE = NULL WHERE TRUE", "SELECT ID, ROOM, CASE WHEN TRUE THEN NULL ELSE STATE END AS STATE, WATTS FROM LAMPS"),
+]
+
+# kept as written: storing the value could change or refuse it, or the statement is more than one assignment of one table
+UPDATES_KEPT = [
+    "SELECT ID FROM LAMPS",
+    "UPDATE LAMPS SET STATE = 'BROKEN'",  # not a value the column was declared with
+    "UPDATE LAMPS SET STATE = 'on'",  # another spelling of one
+    "UPDATE LAMPS SET STATE = 1",  # MySQL reads a number as a position in the list
+    "UPDATE LAMPS SET STATE = CASE WHEN WATTS > 40 THEN 'OFF' ELSE STATE = STATE END",
+    "UPDATE LAMPS SET STATE = CHAR(ASCII(STATE))",
+    "UPDATE LAMPS SET ROOM = 'HALL'",  # a text column: its length is not in the file
+    "UPDATE LAMPS SET WATTS = 12345678901",
+    "UPDATE LAMPS SET WATTS = 2.5",
+    "UPDATE LAMPS SET WATTS = WATTS + 1",
+    "UPDATE LAMPS SET ID = 5",  # a key: two rows cannot both hold it
+    "UPDATE LAMPS SET ID = CASE WHEN WATTS > 40 THEN ID END",  # NULL into a column that takes none
+    "UPDATE LAMPS SET STATE = 'ON', WATTS = 5",
+    "UPDATE LAMPS SET STATE = 'ON' ORDER BY ID LIMIT 1",
+    "UPDATE LAMPS SET STATE = 'ON' WHERE WATTS = '40'",  # a test that converts: an error in an UPDATE, a warning in a SELECT
+    "UPDATE LAMPS SET STATE = 'ON' WHERE STATE > 'OFF'",  # an ENUM orders by position
+    "UPDATE LAMPS SET STATE = 'ON' WHERE WATTS + 1 > 5",
+    "UPDATE LAMPS SET STATE = 'ON' WHERE ID IN (SELECT ID FROM LAMPS)",
+    "UPDATE LAMPS SET STATE = 'ON' WHERE ROOM IN (SELECT ROOM FROM ROOMS)",
+    "UPDATE LAMPS, ROOMS SET STATE = 'ON' WHERE LAMPS.ROOM = ROOMS.ROOM",
+    "UPDATE LAMPS JOIN ROOMS ON LAMPS.ROOM = ROOMS.ROOM SET STATE = 'ON'",
+    "UPDATE LAMPS L SET LAMPS.STATE = 'ON'",  # with an alias the table's own name is no name of it
+    "UPDATE LAMPS SET STATE = 'ON' WHERE COLOUR = 'RED'",  # no column of the table
+    "UPDATE SHADES SET STATE = 'ON'",  # no table of the schema
+    "DELETE FROM LAMPS WHERE STATE = 'ON'",
+]
+
+LAMP_ROWS = [(1, "HALL", "ON", 60), (2, "HALL", "OFF", 40), (3, "DEN", None, 100), (4, None, "ON", None), (5, "HUT", "OFF", 5), (6, "DEN", "ON", 41)]
+
+
+@pytest.mark.parametrize("statement,table", UPDATES)
+def test_an_update_is_read_as_the_table_it_leaves(statement, table):
+    assert update_as_select(statement, LAMPS, LAMP_KEYS) == table
+    assert update_as_select(table, LAMPS, LAMP_KEYS) == table
+
+
+@pytest.mark.parametrize("statement", UPDATES_KEPT)
+def test_an_update_whose_new_value_may_not_be_stored_as_it_is_is_kept(statement):
+    assert update_as_select(statement, LAMPS, LAMP_KEYS) == statement
+
+
+def test_an_update_of_a_constrained_column_is_kept():
+    statement = "UPDATE LAMPS SET STATE = 'ON'"
+    assert update_as_select(statement, LAMPS, LAMP_KEYS) != statement
+    assert update_as_select(statement, LAMPS, LAMP_KEYS | {("lamps", "state")}) == statement
+
+
+@pytest.mark.parametrize("statement,table", UPDATES)
+def test_sqlite_leaves_the_table_the_reading_returns(statement, table):
+    import sqlite3
+
+    import sqlglot
+
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE LAMPS (ID INT, ROOM TEXT, STATE TEXT, WATTS INT)")
+    db.executemany("INSERT INTO LAMPS VALUES (?, ?, ?, ?)", LAMP_ROWS)
+    reading = sorted(db.execute(sqlglot.transpile(table, read="mysql", write="sqlite")[0]).fetchall(), key=repr)
+    db.execute(re.sub(r" SET \w+\.", " SET ", sqlglot.transpile(statement, read="mysql", write="sqlite")[0]))  # SQLite names the assigned column alone
+    left = sorted(db.execute("SELECT ID, ROOM, STATE, WATTS FROM LAMPS").fetchall(), key=repr)
+    assert left == reading
+
+
+def test_the_updates_of_the_list_change_rows():
+    import sqlite3
+
+    import sqlglot
+
+    changed = 0
+    for _, table in UPDATES:
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE LAMPS (ID INT, ROOM TEXT, STATE TEXT, WATTS INT)")
+        db.executemany("INSERT INTO LAMPS VALUES (?, ?, ?, ?)", LAMP_ROWS)
+        changed += sorted(db.execute(sqlglot.transpile(table, read="mysql", write="sqlite")[0]).fetchall(), key=repr) != sorted(LAMP_ROWS, key=repr)
+    assert changed == len(UPDATES)
+
+
+@pytest.mark.canary  # hand-written cases through the VeriEQL harness; the family's floors stay in tests/test_verieql_benchmarks.py
+def test_the_leetcode_harness_reads_two_updates_as_the_tables_they_leave():
+    import verieql_bench
+
+    schema = {"LAMPS": {"ID": "INT", "ROOM": "VARCHAR", "STATE": "ENUM,LIT,DARK", "WATTS": "INT"}}
+    constraint = [{"primary": [{"value": "LAMPS__ID"}]}, {"in": [{"value": "LAMPS__STATE"}, [{"literal": "LIT"}, {"literal": "DARK"}]]}, {"gt": [{"value": "LAMPS__WATTS"}, 0]}]
+    flip = "UPDATE LAMPS SET STATE = CASE WHEN STATE = 'LIT THEN DARK ELSE LIT' END"  # as VeriEQL's file holds such an answer
+    same = "UPDATE LAMPS SET STATE = IF(STATE = 'LIT', 'DARK', 'LIT')"
+    lost = "UPDATE LAMPS SET STATE = (CASE WHEN (STATE = 'LIT') THEN DARK ELSE LIT END)"
+    other = "UPDATE LAMPS SET STATE = CASE STATE WHEN 'LIT' THEN 'DARK' ELSE STATE END"  # a dark lamp stays dark
+    some = "UPDATE LAMPS SET STATE = IF(STATE = 'LIT', 'DARK', 'LIT') WHERE WATTS > 40"
+
+    def case(right: str, suite: str = "leetcode") -> dict:
+        return {"index": 13, "suite": suite, "schema": schema, "constraint": constraint, "pair": [flip, right]}
+
+    assert verieql_bench._constrained_columns(case(same)) == {("lamps", "id"), ("lamps", "watts")}
+    spec = verieql_bench.build_spec(case(same))
+    reading = "SELECT ID, ROOM, CASE WHEN STATE = 'LIT' THEN 'DARK' ELSE 'LIT' END AS STATE, WATTS FROM LAMPS"
+    assert verieql_bench.repaired_pair(case(same), spec)[:2] == (reading, "SELECT ID, ROOM, IF(STATE = 'LIT', 'DARK', 'LIT') AS STATE, WATTS FROM LAMPS")
+    assert verieql_bench.repaired_pair(case(lost), spec)[1] == "SELECT ID, ROOM, (CASE WHEN (STATE = 'LIT') THEN 'DARK' ELSE 'LIT' END) AS STATE, WATTS FROM LAMPS"
+    assert verieql_bench.decide(case(same)).status == verieql_bench.EQUIVALENT
+    assert verieql_bench.decide(case(lost)).status == verieql_bench.EQUIVALENT
+    assert verieql_bench.decide(case(other)).status == verieql_bench.DIFFERENT
+    assert verieql_bench.decide(case(some)).status == verieql_bench.DIFFERENT
+    # a statement the reading is not taken for leaves the pair unread, and the other suites hold no statements
+    assert verieql_bench.decide(case("UPDATE LAMPS SET STATE = CHAR(ASCII(STATE))")).status == verieql_bench.UNKNOWN
+    assert verieql_bench.repaired_pair(case(same, "literature"), spec)[1] == same
+
+
+@pytest.mark.parametrize("statement", ["UPDATE EMP SET SAL = 1", "DELETE FROM EMP", "INSERT INTO EMP VALUES (1, 2, 3)", "DROP TABLE EMP", "TRUNCATE TABLE EMP", "REPLACE INTO EMP VALUES (1, 2, 3)"])
+def test_the_search_runs_no_statement_that_is_not_a_query(statement):
+    # an UPDATE "runs" on DuckDB: it changes the table under the search and returns a count the search would compare
+    with pytest.raises(ValueError, match="a statement, not a query"):
+        cx.to_duckdb(statement)
+    for pair in (("SELECT EMPNO FROM EMP", statement), (statement, statement)):
+        with pytest.raises(ValueError, match="a statement, not a query"):
+            cx.Searcher(emp_spec(), *pair)

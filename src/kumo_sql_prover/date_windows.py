@@ -31,6 +31,11 @@ column through (plainly, under ``MIN`` or ``MAX``, or with ``*``). A bare name m
 the select, and a select-list alias of the same name that means something else leaves the test alone. Months and
 years (whose ends the server clamps), times of day, two columns compared, and other dialects are not read.
 
+``MIN`` or ``MAX`` of such a column, tested where it is computed (``HAVING MAX(d) < '2019-04-01'``), is read like the
+column (hardest-cases batch 26, switch ``aggregate_date_windows``): it is one of the column's days or NULL, and the
+server compares it with the constant as two dates, as it does when the test is written on the output of a derived
+table. ``DATEDIFF`` of an aggregate is not read.
+
 A pre-pass of the twelfth hardest-cases batch (``shape_fallback.TWELFTH_BATCH``). Each reading was checked on a
 MySQL 8.0 server (``tests/test_date_windows.py`` records the statements).
 """
@@ -42,6 +47,7 @@ import re
 
 from sqlglot import exp
 
+from . import shape_fallback
 from .ast_utils import select_sources
 
 _DAY = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})\Z")
@@ -231,6 +237,21 @@ class _Dates:
         return node if self.gives_date(source, name, depth) else None
 
 
+def _value(node: exp.Expression | None, select: exp.Select, dates: _Dates) -> exp.Expression | None:
+    """What a test of ``node`` is a test of: a ``DATE`` column of ``select``'s sources, or ``MIN`` or ``MAX`` of one."""
+
+    column = dates.column(node, select)
+    if column is not None:
+        return column
+    node = _unparen(node)
+    if type(node) not in (exp.Min, exp.Max) or not _only(node, "this") or isinstance(node.parent, exp.Window):
+        return None
+    if not shape_fallback.rule_enabled("aggregate_date_windows"):
+        return None
+    column = dates.column(node.this, select)
+    return None if column is None else type(node)(this=column.copy())
+
+
 def _shadowed(name: str, select: exp.Select) -> bool:
     """Whether a select-list alias ``name`` could be what a bare ``name`` means instead of the column."""
 
@@ -242,7 +263,7 @@ def _shadowed(name: str, select: exp.Select) -> bool:
     return False
 
 
-def _test(column: exp.Column, kind: type, day: datetime.date | None) -> exp.Expression | None:
+def _test(column: exp.Expression, kind: type, day: datetime.date | None) -> exp.Expression | None:
     """``column kind 'day'``, a strict test written as the test on the day next to it."""
 
     if day is None:
@@ -256,7 +277,7 @@ def _test(column: exp.Column, kind: type, day: datetime.date | None) -> exp.Expr
     return kind(this=column.copy(), expression=exp.Literal.string(day.isoformat()))
 
 
-def _between(column: exp.Column, low: datetime.date | None, high: datetime.date | None) -> exp.Expression | None:
+def _between(column: exp.Expression, low: datetime.date | None, high: datetime.date | None) -> exp.Expression | None:
     if low is None or high is None:
         return None
     return exp.Between(this=column.copy(), low=exp.Literal.string(low.isoformat()), high=exp.Literal.string(high.isoformat()))
@@ -282,7 +303,7 @@ def _rewritten(node: exp.Expression, select: exp.Select, dates: _Dates) -> exp.E
 
     if type(node) in _FLIPPED and _only(node, "this", "expression"):
         for left, right, kind in ((node.this, node.expression, type(node)), (node.expression, node.this, _FLIPPED[type(node)])):
-            column = dates.column(left, select)
+            column = _value(left, select, dates)
             if column is not None and constant_day(right) is not None:
                 return _test(column, kind, constant_day(right))
             difference, number = _difference(left, select, dates), _whole(right)
@@ -292,7 +313,7 @@ def _rewritten(node: exp.Expression, select: exp.Select, dates: _Dates) -> exp.E
                 return _test(column, kind if sign > 0 else _FLIPPED[kind], _moved(day, sign * number))
         return None
     if type(node) is exp.Between and _only(node, "this", "low", "high"):
-        column = dates.column(node.this, select)
+        column = _value(node.this, select, dates)
         if column is not None:
             return _between(column, constant_day(node.args["low"]), constant_day(node.args["high"]))
         difference, low, high = _difference(node.this, select, dates), _whole(node.args["low"]), _whole(node.args["high"])

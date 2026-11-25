@@ -47,7 +47,17 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from kumo_sql_prover import counterexample as cx  # noqa: E402
 from bench_order_only import TEMPORAL_TYPES, compared_only  # noqa: E402
-from bench_sql_repairs import barewords_as_strings, expand_row_predicates, pipes_as_concat, schema_table_names, rebind_correlation_variables, uniquify_star_columns  # noqa: E402
+from bench_sql_repairs import (  # noqa: E402
+    barewords_as_strings,
+    expand_row_predicates,
+    html_ampersands,
+    joined_strings,
+    pipes_as_concat,
+    rebind_correlation_variables,
+    schema_table_names,
+    uniquify_star_columns,
+    update_as_select,
+)
 
 COMMIT = "493cbb81000205e33b0623cfd1c39106fa035fae"
 BASE = f"https://raw.githubusercontent.com/VeriEQL/VeriEQL/{COMMIT}"
@@ -360,14 +370,42 @@ def _or(values):
 # --- harness repairs --------------------------------------------------------------------
 
 
+def _constrained_columns(case: dict) -> frozenset:
+    """The columns a new value could break a declared constraint of, as lower-case ``(table, column)``: every column
+    a constraint names, except one whose only constraints list the values it may take (an ``ENUM``'s own values)."""
+
+    def named(node) -> list:
+        if isinstance(node, dict):
+            if set(node) == {"value"} and isinstance(node["value"], str):
+                return [node["value"]]
+            return [name for value in node.values() for name in named(value)]
+        if isinstance(node, list):
+            return [name for value in node for name in named(value)]
+        return []
+
+    found = set()
+    for constraint in case.get("constraint") or []:
+        if isinstance(constraint, dict) and set(constraint) == {"in"}:
+            value, options = constraint["in"][0], constraint["in"][1:]
+            if isinstance(value, dict) and set(value) == {"value"} and not named(options):
+                continue
+        for name in named(constraint):
+            owners = [table for table in case["schema"] if name.startswith(table + "__") and name[len(table) + 2 :] in case["schema"][table]]
+            if len(owners) != 1:  # a name this function cannot place: no column is free
+                return frozenset((table.lower(), column.lower()) for table, columns in case["schema"].items() for column in columns)
+            found.add((owners[0].lower(), name[len(owners[0]) + 2 :].lower()))
+    return frozenset(found)
+
+
 def repaired_pair(case: dict, spec: cx.Spec) -> tuple[str, str, dict[str, int]]:
     """The case's two queries as the harness runs and proves them, plus any uninterpreted predicates.
 
     See ``tools/bench_sql_repairs.py``. Calcite-397 gets ``||`` read as concatenation, its correlation
     variables rebound and its repeated star columns named; Literature gets its whole-row predicates spelled out over the row's
     columns; a LeetCode answer whose strings lost their quotes (``THEN YES ELSE NO``) gets them back, read as the
-    counterexample search has always read them. Each repair has one reading; when it cannot apply, the query is
-    kept as written.
+    counterexample search has always read them; one whose ``&&`` is spelled ``&AMP;&AMP;`` or whose strings were
+    joined across ``THEN`` or ``ELSE`` is read as it was written; and one that is an ``UPDATE`` is read as the
+    table it leaves. Each repair has one reading; when it cannot apply, the query is kept as written.
     """
 
     tables = {t.name.lower(): [c.name for c in t.columns] for t in spec.tables.values()}
@@ -388,7 +426,9 @@ def repaired_pair(case: dict, spec: cx.Spec) -> tuple[str, str, dict[str, int]]:
                     return case["pair"][0], case["pair"][1], {}
                 predicates.update(arities)
             elif suite == "leetcode":
+                sql = joined_strings(html_ampersands(sql), known)
                 sql = barewords_as_strings(schema_table_names(sql, set(spec.tables)), known)
+                sql = update_as_select(sql, {t.name: t.columns for t in spec.tables.values()}, _constrained_columns(case))
         except Exception:  # a query the repairs cannot read is scored as written
             pass
         out.append(sql)

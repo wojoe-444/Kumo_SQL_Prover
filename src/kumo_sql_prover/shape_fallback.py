@@ -242,7 +242,11 @@ NINTH_BATCH = frozenset(
 
 # The VeriEQL worker group (``worker_rules.NAME``) is switched off as a whole for a run of the prover as it was before
 # that group. The ninth batch was measured without the group, so it may fire beside the group and with the group off.
-_BESIDE_NINTH = frozenset({"verieql_worker_rules"})
+# The same holds for the two readings of batch 26 that every stage makes (``early_using``: USING read as ON before the
+# pre-passes; ``early_group_names``: a GROUP BY name two joined tables share): nothing in the prover switches them
+# off, and with one of them off the stages run as they did before that reading was made early. ``aggregate_date_windows``
+# is the part of ``date_windows`` that reads MIN and MAX of a DATE column (batch 26): off, the rule reads what it read.
+_BESIDE_NINTH = frozenset({"verieql_worker_rules", "early_using", "early_group_names", "aggregate_date_windows"})
 
 _NINTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_ninth_stage", default=None)
 _NINTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_ninth_seen", default=None)
@@ -331,7 +335,7 @@ def tenth_batch_enabled() -> bool:
     )
 
 
-def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]:
+def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]:
     """Which of the staged batches are on (part of any normalization cache key)."""
 
     return (
@@ -346,6 +350,7 @@ def stage_key() -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, b
         _EIGHTEENTH_STAGE.get() is True,
         _TWENTIETH_STAGE.get() is True,
         _TWENTY_FOURTH_STAGE.get() is True,
+        _TWENTY_FIFTH_STAGE.get() is True,
     )
 
 
@@ -1042,6 +1047,67 @@ def note_twenty_fourth_candidate() -> None:
     """Record that a rule of the twenty-fourth batch would have fired in an earlier step."""
 
     seen = _TWENTY_FOURTH_SEEN.get()
+    if seen is not None and not seen:
+        seen.append(True)
+
+
+# The twenty-fifth batch (2026-11-24: a source name used again inside a derived table gets a name at each place) is
+# one more step after that one, driven in the same way: every step before it runs with the batch off, collecting
+# whether one of its rules would have fired, and then the staged proof runs once more with the fifteenth to the
+# twenty-fifth batch on. So a pair an earlier step decides is decided as it was.
+
+TWENTY_FIFTH_BATCH = frozenset({"apart_alias_names"})
+
+_TWENTY_FIFTH_STAGE: ContextVar[bool | None] = ContextVar("kumo_sql_prover_twenty_fifth_stage", default=None)
+_TWENTY_FIFTH_SEEN: ContextVar[list | None] = ContextVar("kumo_sql_prover_twenty_fifth_seen", default=None)
+
+
+def twenty_fifth_batch_enabled() -> bool:
+    """Whether the rules of ``TWENTY_FIFTH_BATCH`` may fire in the current attempt: only in the last step of a proof."""
+
+    return _TWENTY_FIFTH_STAGE.get() is True and _ENABLED.get() and not _LATE.get()
+
+
+@contextmanager
+def twenty_fifth_deferred(watch: bool = True):
+    """Run the block with the twenty-fifth batch off, collecting whether a rule of it would have fired.
+
+    With ``watch`` false nothing is collected: the batch is off for the whole proof, and for the proofs inside it.
+    """
+
+    seen: list | None = [] if watch else None
+    stage, watch = _TWENTY_FIFTH_STAGE.set(False), _TWENTY_FIFTH_SEEN.set(seen)
+    try:
+        yield seen
+    finally:
+        _TWENTY_FIFTH_SEEN.reset(watch)
+        _TWENTY_FIFTH_STAGE.reset(stage)
+
+
+@contextmanager
+def twenty_fifth_on():
+    """The last step of all: run the block with the fifteenth to the twenty-fifth batch on."""
+
+    with twenty_fourth_on():
+        stage, watch = _TWENTY_FIFTH_STAGE.set(True), _TWENTY_FIFTH_SEEN.set(None)
+        try:
+            yield
+        finally:
+            _TWENTY_FIFTH_SEEN.reset(watch)
+            _TWENTY_FIFTH_STAGE.reset(stage)
+
+
+def twenty_fifth_watching() -> bool:
+    """Whether an earlier step should try the twenty-fifth batch on a copy here: while no rule of it has said yes yet."""
+
+    seen = _TWENTY_FIFTH_SEEN.get()
+    return _TWENTY_FIFTH_STAGE.get() is False and seen is not None and not seen and _ENABLED.get() and not _LATE.get()
+
+
+def note_twenty_fifth_candidate() -> None:
+    """Record that a rule of the twenty-fifth batch would have fired in an earlier step."""
+
+    seen = _TWENTY_FIFTH_SEEN.get()
     if seen is not None and not seen:
         seen.append(True)
 

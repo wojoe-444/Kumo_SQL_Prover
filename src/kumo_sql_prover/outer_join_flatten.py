@@ -525,11 +525,19 @@ def mirror_right_join(select: exp.Select) -> exp.Expression | None:
     return copy if changed else None
 
 
-def _join_tree(node: exp.Expression) -> exp.Table | None:
-    """The table of a parenthesized join tree ``(b JOIN c ON ..)`` (an unaliased subquery around a joined table)."""
+def _join_tree(node: exp.Expression) -> exp.Expression | None:
+    """The first source of a parenthesized join tree ``(b JOIN c ON ..)``: an unaliased subquery around a joined
+    table, or around a joined derived table ``((SELECT ..) AS b JOIN c ON ..)``."""
 
-    if isinstance(node, exp.Subquery) and not node.alias and isinstance(node.this, exp.Table) and node.this.args.get("joins"):
-        return node.this
+    if not isinstance(node, exp.Subquery) or node.alias:
+        return None
+    head = node.this
+    if not head.args.get("joins"):
+        return None
+    if isinstance(head, exp.Table):
+        return head
+    if isinstance(head, exp.Subquery) and head.alias and isinstance(head.this, (exp.Select, exp.SetOperation)):
+        return head
     return None
 
 
