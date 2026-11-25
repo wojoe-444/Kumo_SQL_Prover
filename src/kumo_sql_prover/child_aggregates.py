@@ -614,6 +614,9 @@ def read_matched_parents(select: exp.Select, schema, keys, not_null, types) -> e
     joins, where = select.args.get("joins") or [], select.args.get("where")
     if not joins or where is None:
         return None
+    holder = select.parent
+    if holder is not None and not isinstance(holder, exp.CTE) and not (isinstance(holder, exp.Subquery) and isinstance(holder.parent, (exp.From, exp.Join))):
+        return None  # the query of IN, EXISTS or a comparison is read without its grouping further on: no grouping is built there
     sources = _Sources()
     if type(select.args[FROM_KEY].this) is not exp.Table or not sources.add(select.args[FROM_KEY].this, schema, keys, not_null, types) or not sources.keyed:
         return None

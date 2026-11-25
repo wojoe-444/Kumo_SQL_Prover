@@ -73,7 +73,7 @@ READ += [
     f"SELECT m.staff_id, a.kqv AS known, b.kqv AS total FROM staff AS m {_per_lead('a', 'COUNT(r.age)', 'r.age > 35')} {_per_lead('b', 'SUM(r.age)', 'r.age > 35')} WHERE EXISTS (SELECT 1 FROM staff AS t WHERE t.age > 35 AND m.staff_id = t.lead_id)",
     f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE m.staff_id IN (SELECT t.lead_id FROM staff AS t)",
     f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE m.staff_id IN (SELECT lead_id FROM staff AS t WHERE t.lead_id = m.staff_id)",
-    "SELECT m.staff_id, a.kqv AS pay FROM staff AS m LEFT JOIN (SELECT staff_id AS kqk0, SUM(hours * rate) AS kqv FROM shifts GROUP BY staff_id) AS a ON m.staff_id = a.kqk0 WHERE EXISTS (SELECT 1 FROM shifts AS t WHERE t.staff_id = m.staff_id)",
+    "SELECT m.staff_id, a.kqv AS pay FROM staff AS m LEFT JOIN (SELECT staff_id AS kqk0, SUM(hours * rate) AS kqv FROM shifts GROUP BY staff_id) AS a ON m.staff_id = a.kqk0 WHERE EXISTS (SELECT 1 FROM shifts AS t WHERE t.staff_id = m.staff_id)",    f"SELECT d.staff_id FROM (SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE {HAS_REPORT}) AS d WHERE d.oldest > 40",
 ]
 
 LEFT_ALONE = [
@@ -143,7 +143,8 @@ LEFT_ALONE = [
     f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE EXISTS (SELECT 1 FROM shifts AS t WHERE t.staff_id = m.staff_id)",
     f"SELECT m.staff_id, a.kqk0 AS lead, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE {HAS_REPORT}",
     f"SELECT m.staff_id, a.kqv AS oldest FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE m.lead_id IN (SELECT t.lead_id FROM staff AS t)",
-    "SELECT n.note_id, a.kqv AS total FROM notes AS n LEFT JOIN (SELECT s.staff_id AS kqk0, SUM(s.hours) AS kqv FROM shifts AS s GROUP BY s.staff_id) AS a ON n.staff_id = a.kqk0 WHERE EXISTS (SELECT 1 FROM shifts AS t WHERE t.staff_id = n.staff_id)",
+    "SELECT n.note_id, a.kqv AS total FROM notes AS n LEFT JOIN (SELECT s.staff_id AS kqk0, SUM(s.hours) AS kqv FROM shifts AS s GROUP BY s.staff_id) AS a ON n.staff_id = a.kqk0 WHERE EXISTS (SELECT 1 FROM shifts AS t WHERE t.staff_id = n.staff_id)",    # the form under IN, where no grouping is built
+    f"SELECT s.day FROM shifts AS s WHERE s.hours IN (SELECT a.kqv FROM staff AS m {_per_lead('a', 'MAX(r.age)')} WHERE {HAS_REPORT})",
 ]
 
 
