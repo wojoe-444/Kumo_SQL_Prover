@@ -5618,7 +5618,7 @@ def prove_equivalent_smt(left_sql: str, right_sql: str, **kwargs) -> SmtEquivale
 
 
 def _prove_equivalent_smt_as_written(left_sql: str, right_sql: str, **kwargs) -> SmtEquivalenceResult:
-    from . import derived_rounding
+    from . import cross_kind_witness, derived_rounding
 
     def read_numerically(left: str, right: str, **options) -> SmtEquivalenceResult:
         return numeric_column_reading.checked(
@@ -5627,7 +5627,9 @@ def _prove_equivalent_smt_as_written(left_sql: str, right_sql: str, **kwargs) ->
 
     # MySQL stores a quotient a derived table materialises rounded to its declared scale (issue 45): the pair is read so.
     result = derived_rounding.proved(read_numerically, left_sql, right_sql, kwargs)
-    return without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
+    result = without_volatile_proof(result, left_sql, right_sql, kwargs.get("dialect", "bigquery"))
+    # a model that sets a text of one query against a number of the other is not a database (issue 60)
+    return cross_kind_witness.without_cross_kind_counterexample(result, left_sql, right_sql, kwargs)
 
 
 UNLISTED_FUNCTION_ASSUMPTION = "functions the prover has no definition for return the same value for the same arguments: {names}"
