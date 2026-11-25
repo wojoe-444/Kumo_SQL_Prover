@@ -5316,6 +5316,17 @@ def normalize(
             shape_fallback.note_fired("nested_membership_joins")
         elif wrote:
             shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
+    if shape_fallback.rule_enabled("numbered_islands") and schema and keys and (shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()):
+        from .numbered_islands import read_numbered_islands
+
+        # pre-pass (batch 31, in the twenty-seventh step): runs of consecutive key values found with a row number, as
+        # "a row one below or one above exists"
+        runs, wrote = read_numbered_islands(tree, schema, keys, not_null, types)
+        if wrote and shape_fallback.twenty_seventh_batch_enabled():
+            tree = runs
+            shape_fallback.note_fired("numbered_islands")
+        elif wrote:
+            shape_fallback.note_twenty_seventh_candidate()  # an earlier step: the step after the last is worth running
     if any(shape_fallback.rule_enabled(name) for name in shape_fallback.TWENTY_SEVENTH_BATCH) and schema and keys and (
         shape_fallback.twenty_seventh_batch_enabled() or shape_fallback.twenty_seventh_watching()
     ):
@@ -5415,7 +5426,7 @@ def normalize(
         # up one row by its key for the filter alone as scalar lookups
         for name, rule in (
             ("single_row_partitions", lambda node: read_single_row_partitions(node, schema, keys, not_null)),
-            ("neighbour_rows", lambda node: read_neighbour_rows(node, schema, consecutive)),
+            ("neighbour_rows", lambda node: read_neighbour_rows(node, schema, consecutive, not_null, types, dialect)),
             ("lookup_joins", lambda node: read_lookup_joins(node, keys, not_null, types)),
         ):
             if not shape_fallback.rule_enabled(name):

@@ -65,21 +65,43 @@ def test_a_column_declared_a_number_or_a_text_is_no_clash(pair):
         assert not cross_kind_witness.clash(*pair, "mysql", types, SCHEMA)
 
 
+def mysql_flag(dialect, types) -> bool:
+    """A MySQL column declared BOOL is a TINYINT(1): a string that spells a small whole number is read as the number
+    there (``string_number_literals``), so such a pair is proved and no clash is left to withhold."""
+
+    return dialect == "mysql" and types is FLAG
+
+
 @pytest.mark.parametrize("prover", [prove_equivalent_algebraic, prove_equivalent_smt], ids=["algebraic", "smt"])
 @pytest.mark.parametrize("types", [UNTYPED, FLAG], ids=["untyped", "flag"])
 @pytest.mark.parametrize("dialect", DIALECTS)
 def test_the_pair_of_the_issue_is_not_proven_and_has_no_counterexample(prover, types, dialect):
     result = prover(*CLASH[0], schema=SCHEMA, types=types, dialect=dialect)
-    assert result.status is SmtStatus.NOT_PROVEN and result.counterexample is None
-    assert result.reason == cross_kind_witness.REASON
+    assert result.counterexample is None
+    if mysql_flag(dialect, types):
+        assert result.proven
+    else:
+        assert result.status is SmtStatus.NOT_PROVEN and result.reason == cross_kind_witness.REASON
 
 
 @pytest.mark.parametrize("pair", CLASH[1:], ids=IDS)
 def test_no_clashing_pair_gets_a_counterexample(pair):
+    numeric_strings = "'a'" not in pair[0] and "COALESCE" not in pair[0]
     for dialect in ("mysql", "duckdb"):
         for types in (UNTYPED, FLAG):
             result = prove_equivalent_algebraic(*pair, schema=SCHEMA, types=types, dialect=dialect, compare_names=False)
-            assert result.status is SmtStatus.NOT_PROVEN and result.counterexample is None, (dialect, types)
+            assert result.counterexample is None and result.status is not SmtStatus.NOT_EQUIVALENT, (dialect, types)
+            assert result.proven == (mysql_flag(dialect, types) and numeric_strings), (dialect, types)
+
+
+def test_a_mysql_flag_column_holds_whole_numbers_and_not_two_values():
+    # checked on MySQL 8.0: a BOOL column stores 2, and 2 = '2' there; so c = '2' is c = 2 and not "never"
+    for prover in (prove_equivalent_algebraic, prove_equivalent_smt):
+        assert prover("SELECT id FROM t WHERE c = '2'", "SELECT id FROM t WHERE c = 2", schema=SCHEMA, types=FLAG, dialect="mysql").proven
+        assert not prover("SELECT id FROM t WHERE c = '2'", "SELECT id FROM t WHERE 1 = 0", schema=SCHEMA, types=FLAG, dialect="mysql").proven
+        assert not prover("SELECT id FROM t WHERE c = '2'", "SELECT id FROM t WHERE c = 1", schema=SCHEMA, types=FLAG, dialect="mysql").proven
+        # the other engines have a real two-valued type: nothing is rewritten there
+        assert not prover("SELECT id FROM t WHERE c = '1'", "SELECT id FROM t WHERE c = 1", schema=SCHEMA, types=FLAG, dialect="duckdb").proven
 
 
 @pytest.mark.parametrize("pair", NO_CLASH, ids=IDS)

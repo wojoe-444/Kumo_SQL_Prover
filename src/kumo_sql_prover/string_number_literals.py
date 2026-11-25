@@ -6,7 +6,9 @@ converts at all, so these two forms are rewritten before the provers look at the
 
 - ``'2' = 2`` (a string literal and a number literal) becomes ``TRUE``, ``'2' < 3`` becomes ``TRUE``, and so on;
 - ``t.n = '2'`` where ``t.n`` is declared as an integer type in ``types`` becomes ``t.n = 2``, for ``=``, ``<>``, ``<``, ``<=``,
-  ``>``, ``>=``, ``BETWEEN`` bounds and ``IN`` lists whose items are all numbers or such strings.
+  ``>``, ``>=``, ``BETWEEN`` bounds and ``IN`` lists whose items are all numbers or such strings. In MySQL a column declared
+  ``BOOL`` or ``BOOLEAN`` is such a column too: the two are other names of ``TINYINT(1)`` there, and the column holds
+  whole numbers (hardest-cases batch 31, issue 60).
 
 "A small integer" is an optional minus sign and one to nine digits without a leading zero, so no engine rounds it through a
 float, overflows it, or reads leading spaces and zeros differently. Only the ``mysql``, ``duckdb`` and ``postgres`` dialects
@@ -61,9 +63,10 @@ def _number(value: int) -> exp.Expression:
 
 
 class _Rewriter:
-    def __init__(self, tree: exp.Expression, types):
+    def __init__(self, tree: exp.Expression, types, dialect: str | None = None):
         self.kinds = string_number_compare._Kinds(tree, types)
         self.changed = False
+        self.flags_are_integers = dialect == "mysql"  # BOOL and BOOLEAN are other names of TINYINT(1) there
 
     def integer_column(self, node: exp.Expression) -> bool:
         if not isinstance(node, exp.Column):
@@ -76,7 +79,12 @@ class _Rewriter:
             return False
         else:
             declared = {columns[key[1]] for columns in self.kinds.types.values() if key[1] in columns}
-        return len(declared) == 1 and None not in declared and string_number_compare.is_integer_type(declared.pop())
+        if len(declared) != 1 or None in declared:
+            return False
+        kind = declared.pop()
+        if self.flags_are_integers and re.split(r"[\s(<]", str(kind).strip().upper(), maxsplit=1)[0] in ("BOOL", "BOOLEAN"):
+            return True
+        return string_number_compare.is_integer_type(kind)
 
     def comparison(self, node: exp.Expression) -> exp.Expression | None:
         left, right = node.this, node.expression
@@ -120,7 +128,7 @@ def normalize(sql: str, dialect: str, types: dict[str, dict[str, str]] | None = 
         tree = sqlglot.parse_one(sql, read=dialect)
     except Exception:  # noqa: BLE001 - the prover reports the parse error itself
         return sql
-    rewriter = _Rewriter(tree, types)
+    rewriter = _Rewriter(tree, types, dialect)
     for node in list(tree.find_all(*_COMPARISONS, exp.Between, exp.In)):
         if isinstance(node, _COMPARISONS):
             folded = rewriter.comparison(node)
