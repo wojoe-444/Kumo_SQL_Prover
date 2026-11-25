@@ -148,6 +148,7 @@ from .discrete_bounds import close_strict_bounds, fold_chained_dates
 from .filter_terms import exists_outer_terms, pinned_columns, shared_filter_terms
 from .self_lookup_counts import read_self_lookup_counts, waits_for_lookup
 from .key_fixed_groupings import read_key_fixed_grouping
+from .keyed_join_distinct import read_keyed_join_distinct
 from .rejoined_parents import drop_rejoined_parent
 from .unread_join_chains import drop_unread_chained_join
 from .labelled_cases import read_labelled_cases
@@ -5842,6 +5843,7 @@ def normalize(
         lambda sel: _narrow_twenty_seventh("unread_join_chains", lambda s: drop_unread_chained_join(s, schema), sel),
         lambda sel: _narrow_twenty_seventh("rejoined_parents", lambda s: drop_rejoined_parent(s, schema, keys, not_null, types_map), sel),
         lambda sel: _narrow_twenty_seventh("key_fixed_groupings", lambda s: read_key_fixed_grouping(s, schema, keys, not_null, types_map, dialect), sel),
+        lambda sel: _narrow_twenty_seventh("keyed_join_distinct", lambda s: read_keyed_join_distinct(s, schema, keys, not_null, types_map), sel),
         lambda sel: _narrow_sixteenth("labelled_cases", read_labelled_cases, sel),
         lambda sel: _narrow_sixteenth("quotient_comparisons", lambda s: quotient_step(s, types_map, dialect), sel),
         lambda sel: close_strict_bounds(sel, types_map, dialect),
